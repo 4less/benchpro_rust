@@ -1,0 +1,19 @@
+[package]
+name = "benchpro"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+calamine = "0.26.1"
+clap = { version = "4.5.3", features = ["derive", "wrap_help"] }
+clap_derive = "4.5.3"
+indoc = "2.0.5"
+itertools = "0.13.0"
+lazy_static = "1.5.0"
+micromap = "0.0.15"
+#phylotree = "0.1.2"
+phylotree = { path = "/usr/users/QIB_fr017/fritsche/ProjectsExternal/phylotree-rs" }
+polars = { version="0.43.1", features = ["lazy", "is_in"] }
+regex = "1.11.1"
+strum = { version = "0.26.3", features = ["strum_macros", "derive"] }
+thiserror = "1.0.64"

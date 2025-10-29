@@ -1,0 +1,32 @@
+# Cargo build artifacts
+/target
+
+# Exclude executables and binaries
+*.exe
+*.dll
+*.so
+*.dylib
+*.rlib
+
+
+# Debug / profiling output
+*.pdb
+*.profraw
+*.profdata
+
+# Rust package manager lockfile for libraries (optional — see note below)
+# Uncomment if this is a *library*, but KEEP Cargo.lock if this is a binary app.
+# Cargo.lock
+
+# IDE / editor files
+.vscode/
+.idea/
+*.iml
+
+# OS-specific junk
+.DS_Store
+Thumbs.db
+
+# Logs / temporary files
+*.log
+tmp/
