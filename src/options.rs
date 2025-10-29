@@ -12,7 +12,7 @@ pub struct Args {
     pub meta: Option<String>,
 
     /// Output prefix for all files. E.g. '--outprefix output_folder/output' will produce the files output_folder/output_summary_stats.tsv and output_folder/output_sample_stats.tsv 
-    #[arg(short = 'm', long)] // String::default()
+    #[arg(short = 'o', long)] // String::default()
     pub outprefix: String,
 
     // /// Reverse read of pair (.fastq, .fq)
