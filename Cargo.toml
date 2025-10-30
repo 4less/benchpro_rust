@@ -11,8 +11,8 @@ indoc = "2.0.5"
 itertools = "0.13.0"
 lazy_static = "1.5.0"
 micromap = "0.0.15"
-#phylotree = "0.1.2"
-phylotree = { path = "/usr/users/QIB_fr017/fritsche/ProjectsExternal/phylotree-rs" }
+phylotree = "0.1.2"
+#phylotree = { path = "/usr/users/QIB_fr017/fritsche/ProjectsExternal/phylotree-rs" }
 polars = { version="0.43.1", features = ["lazy", "is_in"] }
 regex = "1.11.1"
 strum = { version = "0.26.3", features = ["strum_macros", "derive"] }

@@ -42,12 +42,19 @@ impl TreeHandler {
     }
 
     fn remove_escape_quotes(tree: &mut Tree) {
-        tree.get_nodes().iter().chain(tree.get_leaves().iter()).for_each(|id| {
+        tree.search_nodes(|_| true).iter().chain(tree.get_leaves().iter()).for_each(|id| {
             let node = tree.get_mut(id).unwrap();
             if let Some(name) = &mut node.name {
                 *name = name.replace("\"", "");
             }
         });
+
+        // tree.get_nodes().iter().chain(tree.get_leaves().iter()).for_each(|id| {
+        //     let node = tree.get_mut(id).unwrap();
+        //     if let Some(name) = &mut node.name {
+        //         *name = name.replace("\"", "");
+        //     }
+        // });
     }
 
     fn tree_from_file_with_cleanup(path: impl AsRef<Path>) -> TreeHandlerResult<Tree> {

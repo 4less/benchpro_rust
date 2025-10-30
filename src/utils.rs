@@ -9,7 +9,7 @@ use std::{
 
 use calamine::{Data, DataType, Reader, Xlsx};
 use itertools::Itertools;
-use phylotree::tree::{Edge, Node, NodeError, NodeId, Tree, TreeError};
+use phylotree::tree::{Node, NodeError, NodeId, Tree, TreeError};
 use polars::prelude::*;
 
 use crate::{common::LINEAGE_DELIMITERS, meta::MetaColumn};
@@ -482,7 +482,10 @@ pub fn tree_collapse_edges(tree: &Tree) -> Result<Tree, TreeError> {
 }
 
 pub fn wrap_names(tree: &mut Tree) -> Result<(), TreeError> {
-    let mut node_ids: Vec<_> = tree.get_nodes().clone();
+    // let mut node_ids: Vec<_> = tree.get_nodes().clone();
+
+    let mut node_ids: Vec<_> = tree.search_nodes(|_| true).iter().cloned().collect();
+
     node_ids.extend(tree.get_leaves());
 
     for node_id in node_ids {
