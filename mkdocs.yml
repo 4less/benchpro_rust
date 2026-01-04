@@ -6,6 +6,7 @@ site_url: https://4less.github.io/benchpro_rust/
 
 nav:
   - Overview: index.md
+  - Installation: installation.md
   - Usage: usage.md
   - Input Formats: input-formats.md
   - Metrics and Adjustments: metrics.md
