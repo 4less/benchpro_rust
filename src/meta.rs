@@ -12,10 +12,13 @@ use polars::{
 };
 use std::{
     collections::HashSet,
+    fs::File,
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
     str::FromStr,
 };
 use strum::{EnumIter, IntoEnumIterator};
+use regex::Regex;
 
 use crate::utils::workbook_to_dataframe;
 
@@ -96,6 +99,8 @@ impl MetaColumnStrings {
     pub const GOLDSTD_COLUMNS: &str = "GoldStdColumns";
     pub const GOLDSTD_TREE: &str = "GoldStdTree";
     pub const AVAILABLE_TAXA: &str = "AvailableSpecies";
+    pub const PROFILE_REGEX: &str = "ProfileRegex";
+    pub const GOLDSTD_REGEX: &str = "GoldStdRegex";
 }
 
 #[derive(Debug, EnumIter, Clone)]
@@ -196,9 +201,10 @@ impl Meta {
         "ProfileFormat",
     ];
 
-    pub fn from_polars_df(meta: DataFrame) -> Option<Self> {
-        let mut entry = MetaEntry::default();
-
+    pub fn from_polars_df(meta: DataFrame, verbose: bool) -> MetaResult {
+        if Self::is_matrix_format(&meta) {
+            return Self::from_matrix_df(meta, verbose);
+        }
         let mut entries = vec![MetaEntry::default(); meta.height()];
 
         eprintln!("Height: {} .. {}", meta.height(), entries.len());
@@ -253,7 +259,7 @@ impl Meta {
             }
         });
 
-        Some(Self { raw: meta, entries })
+        Ok(Self { raw: meta, entries })
     }
 
     pub fn left_join_to(
@@ -364,6 +370,336 @@ impl Meta {
         Ok(self)
     }
 
+    fn is_matrix_format(meta: &DataFrame) -> bool {
+        let names = meta.get_column_names();
+        names
+            .iter()
+            .any(|name| name.as_str() == MetaColumnStrings::PROFILE_REGEX)
+            && names
+                .iter()
+                .any(|name| name.as_str() == MetaColumnStrings::GOLDSTD_REGEX)
+    }
+
+    fn read_matrix_headers(path: &Path) -> Result<Vec<String>, MetaError> {
+        let file = File::open(path).map_err(|e| {
+            MetaError::DataError(format!("Cannot open abundance matrix '{}': {}", path.display(), e))
+        })?;
+        let mut reader = BufReader::new(file);
+        let mut header = String::new();
+        reader.read_line(&mut header).map_err(|e| {
+            MetaError::DataError(format!(
+                "Cannot read header from abundance matrix '{}': {}",
+                path.display(),
+                e
+            ))
+        })?;
+        let header = header.trim_end_matches(['\n', '\r']);
+        if header.is_empty() {
+            return Err(MetaError::DataError(format!(
+                "Abundance matrix '{}' has empty header",
+                path.display()
+            )));
+        }
+        Ok(header.split('\t').map(|s| s.to_string()).collect())
+    }
+
+    fn match_headers_with_regex(
+        headers: &[String],
+        raw_regex: &str,
+        label: &str,
+    ) -> Result<std::collections::HashMap<String, String>, MetaError> {
+        let raw_regex = raw_regex.trim();
+        if raw_regex.is_empty() || raw_regex == "NA" {
+            return Err(MetaError::DataError(format!(
+                "{} is empty or NA in matrix meta",
+                label
+            )));
+        }
+
+        let candidates = if raw_regex.contains("\\\\") {
+            vec![raw_regex.to_string(), raw_regex.replace("\\\\", "\\")]
+        } else {
+            vec![raw_regex.to_string()]
+        };
+
+        for candidate in candidates {
+            let regex = Regex::new(&candidate).map_err(|e| {
+                MetaError::DataError(format!(
+                    "Invalid {} regex '{}': {}",
+                    label, candidate, e
+                ))
+            })?;
+            let mut matches = std::collections::HashMap::new();
+
+            for header in headers.iter().skip(1) {
+                if let Some(captures) = regex.captures(header) {
+                    let capture = captures.get(1).ok_or_else(|| {
+                        MetaError::DataError(format!(
+                            "{} regex '{}' matched '{}' but has no capture group",
+                            label, candidate, header
+                        ))
+                    })?;
+                    let key = capture.as_str().to_string();
+                    if matches.insert(key.clone(), header.clone()).is_some() {
+                        return Err(MetaError::DataError(format!(
+                            "{} regex '{}' produced duplicate capture key '{}'",
+                            label, candidate, key
+                        )));
+                    }
+                }
+            }
+
+            if !matches.is_empty() {
+                return Ok(matches);
+            }
+        }
+
+        Err(MetaError::DataError(format!(
+            "No columns match {} regex '{}'",
+            label, raw_regex
+        )))
+    }
+
+    fn normalize_optional_str(value: Option<&str>) -> Option<String> {
+        let value = value?.trim();
+        if value.is_empty() || value == "NA" {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    }
+
+    fn from_matrix_df(meta: DataFrame, verbose: bool) -> MetaResult {
+        let id_series = meta
+            .column(MetaColumnStrings::ID)
+            .map_err(|e| MetaError::MissingColumns(format!("Missing ID column: {}", e)))?
+            .str()
+            .map_err(|e| MetaError::DataError(format!("Invalid ID column: {}", e)))?;
+        let dataset_series = meta
+            .column(MetaColumnStrings::DATASET)
+            .ok()
+            .and_then(|s| s.str().ok());
+        let tool_series = meta
+            .column(MetaColumnStrings::TOOL)
+            .map_err(|e| MetaError::MissingColumns(format!("Missing Tool column: {}", e)))?
+            .str()
+            .map_err(|e| MetaError::DataError(format!("Invalid Tool column: {}", e)))?;
+        let taxonomy_series = meta
+            .column(MetaColumnStrings::TAXONOMY)
+            .map_err(|e| MetaError::MissingColumns(format!("Missing Taxonomy column: {}", e)))?
+            .str()
+            .map_err(|e| MetaError::DataError(format!("Invalid Taxonomy column: {}", e)))?;
+        let profile_series = meta
+            .column(MetaColumnStrings::PROFILE)
+            .map_err(|e| MetaError::MissingColumns(format!("Missing Profile column: {}", e)))?
+            .str()
+            .map_err(|e| MetaError::DataError(format!("Invalid Profile column: {}", e)))?;
+        let profile_regex_series = meta
+            .column(MetaColumnStrings::PROFILE_REGEX)
+            .map_err(|e| MetaError::MissingColumns(format!("Missing ProfileRegex column: {}", e)))?
+            .str()
+            .map_err(|e| MetaError::DataError(format!("Invalid ProfileRegex column: {}", e)))?;
+        let goldstd_series = meta
+            .column(MetaColumnStrings::GOLDSTD)
+            .map_err(|e| MetaError::MissingColumns(format!("Missing GoldStd column: {}", e)))?
+            .str()
+            .map_err(|e| MetaError::DataError(format!("Invalid GoldStd column: {}", e)))?;
+        let goldstd_regex_series = meta
+            .column(MetaColumnStrings::GOLDSTD_REGEX)
+            .map_err(|e| MetaError::MissingColumns(format!("Missing GoldStdRegex column: {}", e)))?
+            .str()
+            .map_err(|e| MetaError::DataError(format!("Invalid GoldStdRegex column: {}", e)))?;
+        let goldstd_tree_series = meta
+            .column(MetaColumnStrings::GOLDSTD_TREE)
+            .ok()
+            .and_then(|s| s.str().ok());
+        let taxa_series = meta
+            .column(MetaColumnStrings::AVAILABLE_TAXA)
+            .ok()
+            .and_then(|s| s.str().ok());
+
+        let mut entries = Vec::new();
+
+        let mut ids = Vec::new();
+        let mut samples = Vec::new();
+        let mut datasets = Vec::new();
+        let mut tools = Vec::new();
+        let mut taxonomies = Vec::new();
+        let mut profiles = Vec::new();
+        let mut goldstds = Vec::new();
+        let mut goldstd_trees = Vec::new();
+        let mut taxa_lists = Vec::new();
+
+        let mut header_cache: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+
+        for row_index in 0..meta.height() {
+            let base_id = id_series.get(row_index).ok_or_else(|| {
+                MetaError::DataError("Missing ID value in matrix meta".to_string())
+            })?;
+            let tool = tool_series.get(row_index).ok_or_else(|| {
+                MetaError::DataError("Missing Tool value in matrix meta".to_string())
+            })?;
+            let taxonomy = taxonomy_series.get(row_index).ok_or_else(|| {
+                MetaError::DataError("Missing Taxonomy value in matrix meta".to_string())
+            })?;
+            let profile_path = profile_series.get(row_index).ok_or_else(|| {
+                MetaError::DataError("Missing Profile path in matrix meta".to_string())
+            })?.trim();
+            let profile_regex = profile_regex_series.get(row_index).ok_or_else(|| {
+                MetaError::DataError("Missing ProfileRegex in matrix meta".to_string())
+            })?;
+            let goldstd_path = goldstd_series.get(row_index).ok_or_else(|| {
+                MetaError::DataError("Missing GoldStd path in matrix meta".to_string())
+            })?.trim();
+            let goldstd_regex = goldstd_regex_series.get(row_index).ok_or_else(|| {
+                MetaError::DataError("Missing GoldStdRegex in matrix meta".to_string())
+            })?;
+
+            let dataset = dataset_series
+                .as_ref()
+                .and_then(|s| s.get(row_index));
+            let goldstd_tree = goldstd_tree_series
+                .as_ref()
+                .and_then(|s| s.get(row_index));
+            let taxa_list = taxa_series.as_ref().and_then(|s| s.get(row_index));
+
+            let profile_headers = if let Some(headers) = header_cache.get(profile_path) {
+                headers.clone()
+            } else {
+                let headers = Self::read_matrix_headers(Path::new(profile_path))?;
+                header_cache.insert(profile_path.to_string(), headers.clone());
+                headers
+            };
+
+            let goldstd_headers = if let Some(headers) = header_cache.get(goldstd_path) {
+                headers.clone()
+            } else {
+                let headers = Self::read_matrix_headers(Path::new(goldstd_path))?;
+                header_cache.insert(goldstd_path.to_string(), headers.clone());
+                headers
+            };
+
+            let profile_matches = match Self::match_headers_with_regex(
+                &profile_headers,
+                profile_regex,
+                "ProfileRegex",
+            ) {
+                Ok(matches) => matches,
+                Err(err) => {
+                    if Self::match_headers_with_regex(
+                        &goldstd_headers,
+                        profile_regex,
+                        "ProfileRegex",
+                    )
+                    .is_ok()
+                    {
+                        return Err(MetaError::DataError(format!(
+                            "ProfileRegex '{}' matches GoldStd matrix columns but not Profile columns. Check for swapped regex columns.",
+                            profile_regex
+                        )));
+                    }
+                    return Err(err);
+                }
+            };
+            let goldstd_matches = match Self::match_headers_with_regex(
+                &goldstd_headers,
+                goldstd_regex,
+                "GoldStdRegex",
+            ) {
+                Ok(matches) => matches,
+                Err(err) => {
+                    if Self::match_headers_with_regex(
+                        &profile_headers,
+                        goldstd_regex,
+                        "GoldStdRegex",
+                    )
+                    .is_ok()
+                    {
+                        return Err(MetaError::DataError(format!(
+                            "GoldStdRegex '{}' matches Profile matrix columns but not GoldStd columns. Check for swapped regex columns.",
+                            goldstd_regex
+                        )));
+                    }
+                    return Err(err);
+                }
+            };
+
+            let mut keys = profile_matches
+                .keys()
+                .filter(|key| goldstd_matches.contains_key(*key))
+                .cloned()
+                .collect::<Vec<_>>();
+            keys.sort();
+
+            if keys.is_empty() {
+                return Err(MetaError::DataError(format!(
+                    "No matching samples between ProfileRegex '{}' and GoldStdRegex '{}' for row {}",
+                    profile_regex, goldstd_regex, row_index
+                )));
+            }
+
+            for key in keys {
+                let profile_sample = profile_matches.get(&key).unwrap().to_string();
+                let goldstd_sample = goldstd_matches.get(&key).unwrap().to_string();
+
+                if verbose {
+                    eprintln!(
+                        "Matrix match: Profile column '{}' <-> GoldStd column '{}' (key {})",
+                        profile_sample, goldstd_sample, key
+                    );
+                }
+
+                let id = format!("{}_{}", base_id, key);
+                let profile_ref =
+                    format!("matrix:{}::{}", profile_path, profile_sample);
+                let goldstd_ref =
+                    format!("matrix:{}::{}", goldstd_path, goldstd_sample);
+
+                let entry = MetaEntry {
+                    id: id.clone(),
+                    sample: goldstd_sample.clone(),
+                    dataset: Self::normalize_optional_str(dataset),
+                    tool: tool.to_string(),
+                    taxonomy: taxonomy.to_string(),
+                    profile: PathBuf::from(profile_ref.clone()),
+                    profile_columns: None,
+                    goldstd: PathBuf::from(goldstd_ref.clone()),
+                    goldstd_columns: None,
+                    goldstd_tree: Self::normalize_optional_str(goldstd_tree)
+                        .map(PathBuf::from),
+                    taxa_list: Self::normalize_optional_str(taxa_list).map(PathBuf::from),
+                };
+
+                entries.push(entry);
+                ids.push(id);
+                samples.push(goldstd_sample);
+                datasets.push(dataset.unwrap_or("").to_string());
+                tools.push(tool.to_string());
+                taxonomies.push(taxonomy.to_string());
+                profiles.push(profile_ref);
+                goldstds.push(goldstd_ref);
+                goldstd_trees.push(goldstd_tree.unwrap_or("NA").to_string());
+                taxa_lists.push(taxa_list.unwrap_or("NA").to_string());
+            }
+        }
+
+        let raw = DataFrame::new(vec![
+            Series::new(MetaColumnStrings::ID.into(), ids),
+            Series::new(MetaColumnStrings::SAMPLE.into(), samples),
+            Series::new(MetaColumnStrings::DATASET.into(), datasets),
+            Series::new(MetaColumnStrings::TOOL.into(), tools),
+            Series::new(MetaColumnStrings::TAXONOMY.into(), taxonomies),
+            Series::new(MetaColumnStrings::PROFILE.into(), profiles),
+            Series::new(MetaColumnStrings::GOLDSTD.into(), goldstds),
+            Series::new(MetaColumnStrings::GOLDSTD_TREE.into(), goldstd_trees),
+            Series::new(MetaColumnStrings::AVAILABLE_TAXA.into(), taxa_lists),
+        ])
+        .map_err(|e| MetaError::DataError(format!("Failed to build meta DataFrame: {}", e)))?;
+
+        Ok(Self { raw, entries })
+    }
+
     pub fn polars_from_path(path: impl AsRef<Path>) -> Option<DataFrame> {
         let ext = match path.as_ref().extension() {
             Some(ext) => ext,
@@ -388,13 +724,13 @@ impl Meta {
             Some("csv") => Self::df_from_text(path),
             _ => panic!("Found extension is not valid ({:?})", ext),
         };
-
-        let meta = Meta {
-            raw: entries,
-            entries: Vec::default(),
-        };
-
-        meta.validate()
+        let is_matrix = Self::is_matrix_format(&entries);
+        let meta = Self::from_polars_df(entries, false)?;
+        if is_matrix {
+            Ok(meta)
+        } else {
+            meta.validate()
+        }
     }
 
     pub fn get_column(&self, column_name: &str) -> Option<&Series> {

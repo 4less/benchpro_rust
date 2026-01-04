@@ -153,6 +153,7 @@ type NamesEntryMap<'a, T: Taxonomy> = HashMap<String, EntriesRef<'a, T>>;
 pub fn binary_classification_df<T: Taxonomy>(
     prediction: &NamesEntryMap<T>,
     gold_std: &NamesEntryMap<T>,
+    verbose: bool,
 ) -> PolarsResult<DataFrame> 
 {
     let mut df_vectors = BCVectors::default();
@@ -209,7 +210,9 @@ pub fn binary_classification_df<T: Taxonomy>(
 
 
         if taxon == "" && matches!(bp_type, BC::FP) {
-            eprintln!("FIX BC TYPE");
+            if verbose {
+                eprintln!("FIX BC TYPE");
+            }
             bp_type = BC::Unknown;
         }
 
@@ -229,6 +232,7 @@ pub fn binary_classification_df<T: Taxonomy>(
 pub fn binary_classification_alternatives_df<T: Taxonomy>(
     prediction: &TaxonEntryMap<T>,
     gold_std: &TaxonEntryMap<T>,
+    verbose: bool,
 ) -> PolarsResult<DataFrame> 
 {
     // Differences to Name based classification:
@@ -258,8 +262,10 @@ pub fn binary_classification_alternatives_df<T: Taxonomy>(
     if tps.iter().any(|(_,v)| {
         v.secondary.is_some() && v.primary.is_none()
     }) {
-        for (taxon,value) in tps.iter() {
-            eprintln!("Gold {:?}\n\t\tPred {:?}", taxon, value);
+        if verbose {
+            for (taxon,value) in tps.iter() {
+                eprintln!("Gold {:?}\n\t\tPred {:?}", taxon, value);
+            }
         }
 
         // exit(9);
@@ -299,16 +305,17 @@ pub fn binary_classification_alternatives_df<T: Taxonomy>(
             let non_unique_secondary_count = non_unique_secondary_abundance_list.len();
 
             if non_unique_secondary_abundance != 0.0f64 {
+                if verbose {
+                    println!("---- {:?}", taxon);
+                    println!("Abundance: Primary {}  Secondary (U) {} Secondary (NU) {}", primary_abundance, unique_secondary_abundance, non_unique_secondary_abundance);
+                    println!("Counts:    Primary {}  Secondary (U) {} Secondary (NU) {}", primary_entry_count, unique_secondary_count, non_unique_secondary_count);
 
-                println!("---- {:?}", taxon);
-                println!("Abundance: Primary {}  Secondary (U) {} Secondary (NU) {}", primary_abundance, unique_secondary_abundance, non_unique_secondary_abundance);
-                println!("Counts:    Primary {}  Secondary (U) {} Secondary (NU) {}", primary_entry_count, unique_secondary_count, non_unique_secondary_count);
-
-                for g in gold_std {
-                    eprintln!("GOLD: {:?}", g.0);
-                }
-                for p in prediction {
-                    eprintln!("PRED: {:?}", p.0);
+                    for g in gold_std {
+                        eprintln!("GOLD: {:?}", g.0);
+                    }
+                    for p in prediction {
+                        eprintln!("PRED: {:?}", p.0);
+                    }
                 }
             }
 
@@ -320,10 +327,12 @@ pub fn binary_classification_alternatives_df<T: Taxonomy>(
             let entries = match gold_std.get(taxon) {
                 Some(entries) => entries,
                 None => {
-                    println!("--------------------------------");
-                    gold_std.iter().for_each(|(t, _)| {
-                        println!("Gold: {} {}", t.match_exact(taxon), t.match_any(taxon));
-                    });
+                    if verbose {
+                        println!("--------------------------------");
+                        gold_std.iter().for_each(|(t, _)| {
+                            println!("Gold: {} {}", t.match_exact(taxon), t.match_any(taxon));
+                        });
+                    }
                     panic!("Gold set does not contain FN taxon. Unrecoverable error. '{:?}', TP", taxon)
                 },
             };
@@ -350,17 +359,21 @@ pub fn binary_classification_alternatives_df<T: Taxonomy>(
         .chain(fns.iter().map(|&t| (BC::FN, t)))
         .for_each(|(mut bp_type, taxon)| 
     {
-        println!("{}: {:?}", bp_type.to_string(), taxon);
+        if verbose {
+            println!("{}: {:?}", bp_type.to_string(), taxon);
+        }
 
         let (prediction_abundance, prediction_entry_count) = if matches!(bp_type, BC::TP) || matches!(bp_type, BC::FP) {
             
             let entries = match prediction.get(taxon) {
                 Some(entries) => entries,
                 None => {
-                    println!("--------------------------------");
-                    gold_std.iter().for_each(|(t, _)| {
-                        println!("Gold: {} {}", t.match_exact(taxon), t.match_any(taxon));
-                    });
+                    if verbose {
+                        println!("--------------------------------");
+                        gold_std.iter().for_each(|(t, _)| {
+                            println!("Gold: {} {}", t.match_exact(taxon), t.match_any(taxon));
+                        });
+                    }
                     panic!("Prediction set does not contain P taxon. Unrecoverable error. '{:?}', {}", taxon, bp_type.to_string())
                 },
             };
@@ -380,10 +393,12 @@ pub fn binary_classification_alternatives_df<T: Taxonomy>(
             let entries = match gold_std.get(taxon) {
                 Some(entries) => entries,
                 None => {
-                    println!("--------------------------------");
-                    gold_std.iter().for_each(|(t, _)| {
-                        println!("Gold: {} {}", t.match_exact(taxon), t.match_any(taxon));
-                    });
+                    if verbose {
+                        println!("--------------------------------");
+                        gold_std.iter().for_each(|(t, _)| {
+                            println!("Gold: {} {}", t.match_exact(taxon), t.match_any(taxon));
+                        });
+                    }
                     panic!("Gold set does not contain FN taxon. Unrecoverable error. '{:?}', {}", taxon, bp_type.to_string())
                 },
             };
@@ -397,7 +412,9 @@ pub fn binary_classification_alternatives_df<T: Taxonomy>(
 
         // Later check
         if taxon.name == "" && matches!(bp_type, BC::FP) {
-            eprintln!("FIX BC TYPE");
+            if verbose {
+                eprintln!("FIX BC TYPE");
+            }
             bp_type = BC::Unknown;
         }
 
@@ -616,14 +633,20 @@ impl<T: Taxonomy> Profile<T> {
         }
     }
 
-    pub fn get_taxa_string_dict(&self, rank: &TaxonomicRank) -> Option<HashMap<String, Vec<&Entry<T>>>> {
+    pub fn get_taxa_string_dict(
+        &self,
+        rank: &TaxonomicRank,
+        verbose: bool,
+    ) -> Option<HashMap<String, Vec<&Entry<T>>>> {
         match self.unique_ranks() {
             Some(ranks) => {
                 if (ranks.len() > 1 && !ranks.contains(rank)) || rank > ranks.iter().max().expect("Has no max") {
                     return None
                 }
                 if ranks.len() == 1 && rank <= ranks.iter().max().expect("Has no max") {
-                    println!("Option 1: There is only one rank defined {:?}", ranks);
+                    if verbose {
+                        println!("Option 1: There is only one rank defined {:?}", ranks);
+                    }
                     let set = self.taxa.iter()
                         .map(|entry| (entry.lineage().unwrap().get(rank), entry))
                         .filter(|(name, entry)| name.is_some())
@@ -640,7 +663,13 @@ impl<T: Taxonomy> Profile<T> {
                         return Some(set).clone()
                     }
                 }
-                println!("Option 2: There are multiple ranks defined {:?} (Target: {:?})", ranks, rank);
+                if verbose {
+                    println!(
+                        "Option 2: There are multiple ranks defined {:?} (Target: {:?})",
+                        ranks,
+                        rank
+                    );
+                }
                 let set = self.taxa.iter()
                     .filter(|&entry| rank == &entry.rank)
                     .map(|entry| (entry.lineage().unwrap().get(rank), entry))
@@ -662,7 +691,9 @@ impl<T: Taxonomy> Profile<T> {
                 }
             },
             None => {
-                println!("Option3");
+                if verbose {
+                    println!("Option3");
+                }
                 let set = self.taxa.iter()
                     .map(|entry| (entry.lineage().unwrap().get(rank), entry))
                     .filter(|(name, entry)| name.is_some())
@@ -747,24 +778,36 @@ impl<T: Taxonomy> Profile<T> {
 
     
 
-    pub fn binary_classification(&self, gold_std: &Self, ranks: &[TaxonomicRank], allow_ambiguity: bool) -> PolarsResult<DataFrame> {
+    pub fn binary_classification(
+        &self,
+        gold_std: &Self,
+        ranks: &[TaxonomicRank],
+        allow_ambiguity: bool,
+        verbose: bool,
+    ) -> PolarsResult<DataFrame> {
         let mut dfs = Vec::default();
         let mut dfs_alt = Vec::default();
         
         for rank in ranks {
-            println!("----------{}-----------", rank.to_string());
-            let prediction_names = self.get_taxa_string_dict(rank);
-            let gold_std_names = gold_std.get_taxa_string_dict(rank);
+            if verbose {
+                println!("----------{}-----------", rank.to_string());
+            }
+            let prediction_names = self.get_taxa_string_dict(rank, verbose);
+            let gold_std_names = gold_std.get_taxa_string_dict(rank, verbose);
 
 
             if let (Some(prediction), Some(gold_std)) = (prediction_names, gold_std_names) {
-                match binary_classification_df(&prediction, &gold_std) {
+                match binary_classification_df(&prediction, &gold_std, verbose) {
                     Ok(mut df) => {
 
                         let _ = df.with_column(Series::new("Rank".into(), std::iter::repeat_n(rank.to_owned(), df.height()).map(|x| x.to_string()).collect::<Vec<_>>()));
                         dfs.push(df)
                     },
-                    Err(_) => println!("Nothing"),
+                    Err(_) => {
+                        if verbose {
+                            println!("Nothing");
+                        }
+                    },
                 }
             }
 
@@ -772,14 +815,20 @@ impl<T: Taxonomy> Profile<T> {
             let prediction_taxa = self.get_taxa_dict(rank);
             let gold_std_taxa = gold_std.get_taxa_dict(rank);
 
-            if let (Some(prediction), Some(gold_std)) = (prediction_taxa, gold_std_taxa) {
-                match binary_classification_alternatives_df(&prediction, &gold_std) {
-                    Ok(mut df) => {
-                        let _ = add_string_columns(&mut df, 
-                            &[("Rank".to_string(), rank.to_string())]);
-                        dfs_alt.push(df);
-                    },
-                    Err(_) => println!("Nothing"),
+            if allow_ambiguity {
+                if let (Some(prediction), Some(gold_std)) = (prediction_taxa, gold_std_taxa) {
+                    match binary_classification_alternatives_df(&prediction, &gold_std, verbose) {
+                        Ok(mut df) => {
+                            let _ = add_string_columns(&mut df, 
+                                &[("Rank".to_string(), rank.to_string())]);
+                            dfs_alt.push(df);
+                        },
+                        Err(_) => {
+                            if verbose {
+                                println!("Nothing");
+                            }
+                        },
+                    }
                 }
             }
         }
@@ -787,11 +836,13 @@ impl<T: Taxonomy> Profile<T> {
         let mut joined_df = dfs.into_iter().reduce(|df1, df2| df1.vstack(&df2).unwrap()).unwrap();
         joined_df.with_column(Series::new("AllowAlternatives".into(), std::iter::repeat(false).take(joined_df.height()).collect_vec()))?;
 
-        let mut joined_df_alt= dfs_alt.into_iter().reduce(|df1, df2| df1.vstack(&df2).unwrap()).unwrap();
-        joined_df_alt.with_column(Series::new("AllowAlternatives".into(), std::iter::repeat(true).take(joined_df.height()).collect_vec()))?;
-
-
-        joined_df.vstack(&joined_df_alt)
+        if allow_ambiguity {
+            let mut joined_df_alt= dfs_alt.into_iter().reduce(|df1, df2| df1.vstack(&df2).unwrap()).unwrap();
+            joined_df_alt.with_column(Series::new("AllowAlternatives".into(), std::iter::repeat(true).take(joined_df.height()).collect_vec()))?;
+            joined_df.vstack(&joined_df_alt)
+        } else {
+            Ok(joined_df)
+        }
     }
 }
 
@@ -827,11 +878,22 @@ impl ProfileWrapper {
         }
     }
 
-    pub fn binary_classification(&self, gold_std: &ProfileWrapper) -> PolarsResult<DataFrame> {
+    pub fn binary_classification(
+        &self,
+        gold_std: &ProfileWrapper,
+        allow_alternatives: bool,
+        verbose: bool,
+    ) -> PolarsResult<DataFrame> {
         match (self, gold_std) {
-            (ProfileWrapper::GTDBProfile(pred), ProfileWrapper::GTDBProfile(gold)) => pred.binary_classification(gold, &TaxonomicRank::all(), false),
-            (ProfileWrapper::NCBIProfile(pred), ProfileWrapper::NCBIProfile(gold)) => pred.binary_classification(gold, &TaxonomicRank::all(), false),
-            (ProfileWrapper::CustomProfile(pred), ProfileWrapper::CustomProfile(gold)) => pred.binary_classification(gold, &TaxonomicRank::all(), false),
+            (ProfileWrapper::GTDBProfile(pred), ProfileWrapper::GTDBProfile(gold)) => {
+                pred.binary_classification(gold, &TaxonomicRank::all(), allow_alternatives, verbose)
+            }
+            (ProfileWrapper::NCBIProfile(pred), ProfileWrapper::NCBIProfile(gold)) => {
+                pred.binary_classification(gold, &TaxonomicRank::all(), allow_alternatives, verbose)
+            }
+            (ProfileWrapper::CustomProfile(pred), ProfileWrapper::CustomProfile(gold)) => {
+                pred.binary_classification(gold, &TaxonomicRank::all(), allow_alternatives, verbose)
+            }
             (_, _) => panic!("Invalid types"),
         }
     }

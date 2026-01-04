@@ -4,7 +4,10 @@ use std::{cell::RefCell, collections::{HashMap, HashSet}, fs, io, path::Path, pr
 
 use phylotree::tree::{NewickParseError, NodeId, Tree};
 
-use crate::{meta::Meta, utils::{get_subtree_with_leaves, time}};
+use crate::{
+    meta::Meta,
+    utils::{get_subtree_with_leaves, time},
+};
 
 
 
@@ -65,7 +68,7 @@ impl TreeHandler {
         Ok(Tree::from_newick(&clean_newick)?)
     }
 
-    pub fn from_meta(meta: &Meta) -> TreeHandlerResult<Self> {
+    pub fn from_meta(meta: &Meta, verbose: bool) -> TreeHandlerResult<Self> {
         let mut res = TreeMap::default();
 
         let paths = meta.get_tree_path_set();
@@ -75,7 +78,9 @@ impl TreeHandler {
         //     .filter(|x| )
         for ele in paths.iter() {
             let key: String = ele.to_str().unwrap().to_owned();
-            eprintln!("Path: {:?}", ele);
+            if verbose {
+                eprintln!("Path: {:?}", ele);
+            }
             let mut tree = Self::tree_from_file_with_cleanup(ele)?;
             Self::remove_escape_quotes(&mut tree);
 
@@ -95,26 +100,36 @@ impl TreeHandler {
         })
     }
 
-    pub fn get_subtree(&self, tree_path: &str, taxa: &TaxaSet) -> Option<Tree> {
+    pub fn get_subtree(&self, tree_path: &str, taxa: &TaxaSet, verbose: bool) -> Option<Tree> {
         let is_valid_path = |path: &str| std::path::Path::new(path).exists();
 
         if !is_valid_path(tree_path) { return None };
 
 
         let (duration, (name2id, tree)) = time(|| self.tree_map.get(tree_path).unwrap());
-        println!("\tGetting tree took {:?}... name2id size is : {}", duration, name2id.len());
+        if verbose {
+            println!(
+                "\tGetting tree took {:?}... name2id size is : {}",
+                duration,
+                name2id.len()
+            );
+        }
 
         let (duration, ids) = time(|| taxa.iter()
             .filter(|&name| name2id.contains_key(name))
             .map(|name| { tree.get(name2id.get(name).unwrap()).unwrap().id })
             .collect_vec());
 
-        println!("\tGetting ids took {:?} ... {}", duration, ids.len());
+        if verbose {
+            println!("\tGetting ids took {:?} ... {}", duration, ids.len());
+        }
 
         
-        let (duration, result) = time(|| get_subtree_with_leaves(tree, &ids, true));
+        let (duration, result) = time(|| get_subtree_with_leaves(tree, &ids, true, verbose));
 
-        println!("\tGet Subtree with leaves took {:?}", duration);
+        if verbose {
+            println!("\tGet Subtree with leaves took {:?}", duration);
+        }
         let result = match result {
             Ok(t) => Some(t),
             Err(e) => {
@@ -125,4 +140,3 @@ impl TreeHandler {
         result
     }
 }
-

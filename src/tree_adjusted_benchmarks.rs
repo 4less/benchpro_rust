@@ -23,11 +23,14 @@ pub fn get_adjusted_benchmarks(
     meta: &Meta,
     tree_handler: &Mutex<TreeHandler>,
     profile_handler: &ProfileHandler,
+    verbose: bool,
 ) -> PolarsResult<DataFrame> {
     let threshold =  0.04_f64;
 
-    println!("--FIND--");
-    println!("{:?}", data);
+    if verbose {
+        println!("--FIND--");
+        println!("{:?}", data);
+    }
 
     // Filter for only species and remove allow alternatives
     let mut_species_df: DataFrame = data
@@ -81,9 +84,11 @@ pub fn get_adjusted_benchmarks(
         let th_locked = tree_handler.lock().unwrap();
 
         
-        let (duration, result) = time(|| th_locked.get_subtree(tree_path, &names));
+        let (duration, result) = time(|| th_locked.get_subtree(tree_path, &names, verbose));
 
-        println!("Get Subtree took {:?}", duration);
+        if verbose {
+            println!("Get Subtree took {:?}", duration);
+        }
 
         if let Some(tree) = result {
             if tree.n_leaves() < 2 {

@@ -90,6 +90,7 @@ pub fn workbook_to_dataframe(workbook: &mut Xlsx<impl Read + Seek>) -> PolarsRes
     Ok(df)
 }
 
+
 pub fn time<F, T>(f: F) -> (Duration, T)
 where
     F: FnOnce() -> T,
@@ -320,6 +321,7 @@ pub fn get_subtree_with_leaves(
     tree: &Tree,
     leaves: &[usize],
     collapse_edges: bool,
+    verbose: bool,
 ) -> Result<Tree, TreeError> {
     let lca_id = get_lca(tree, leaves).ok_or(TreeError::GeneralError("Cannot get LCA"));
     let lca_id = lca_id?;
@@ -327,12 +329,14 @@ pub fn get_subtree_with_leaves(
 
     let (dur, keep_set) = time(|| get_node_ids_for_leaf_set(tree, leaves, true));
 
-    println!(
-        "\t\tKeepset: {} for {} took {:?}",
-        keep_set.len(),
-        lca_id,
-        dur
-    );
+    if verbose {
+        println!(
+            "\t\tKeepset: {} for {} took {:?}",
+            keep_set.len(),
+            lca_id,
+            dur
+        );
+    }
 
     let mut new_tree = Tree::new();
     let mut new_root = Node::new();
@@ -342,12 +346,16 @@ pub fn get_subtree_with_leaves(
         time(|| add_recursively_with_keep(tree, &mut new_tree, &keep_set, &lca_node, None));
     res?;
 
-    println!("\t\tAdd recursively: {:?}", dur);
+    if verbose {
+        println!("\t\tAdd recursively: {:?}", dur);
+    }
 
     if collapse_edges {
         let (dur, res) = time(|| tree_collapse_edges(&new_tree));
         new_tree = res?;
-        println!("\t\tAdd recursively: {:?}", dur);
+        if verbose {
+            println!("\t\tAdd recursively: {:?}", dur);
+        }
     }
 
     Ok(new_tree)

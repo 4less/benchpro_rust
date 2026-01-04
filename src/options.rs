@@ -15,6 +15,18 @@ pub struct Args {
     #[arg(short = 'o', long)] // String::default()
     pub outprefix: String,
 
+    /// Enable adjusted benchmarks (tree-based adjustments)
+    #[arg(long, default_value_t = false)]
+    pub adjusted: bool,
+
+    /// Allow alternative taxon matching
+    #[arg(long, default_value_t = false)]
+    pub allow_alternatives: bool,
+
+    /// Enable verbose logging
+    #[arg(long, default_value_t = false)]
+    pub verbose: bool,
+
     // /// Reverse read of pair (.fastq, .fq)
     // #[arg(num_args(0..), short = '2', long, default_values_t = ["".to_string()], action = clap::ArgAction::Append)]
     // pub rev: Vec<String>,

@@ -1,4 +1,10 @@
-use std::{collections::{HashMap, HashSet}, fs::File, path::Path, process::exit};
+use std::{
+    collections::{HashMap, HashSet},
+    fs::File,
+    io::{BufRead, BufReader, Cursor},
+    path::{Path, PathBuf},
+    process::exit,
+};
 
 use itertools::izip;
 
@@ -24,6 +30,90 @@ pub struct ProfileHandler {
 }
 
 impl ProfileHandler {
+    fn split_matrix_reference(path: &Path) -> Option<(PathBuf, String)> {
+        let path_str = path.to_string_lossy();
+        let prefix = "matrix:";
+        if !path_str.starts_with(prefix) {
+            return None;
+        }
+        let rest = &path_str[prefix.len()..];
+        let (matrix_path, column) = rest.split_once("::")?;
+        Some((PathBuf::from(matrix_path), column.to_string()))
+    }
+
+    fn load_matrix_profile(
+        matrix_path: &Path,
+        column: &str,
+        taxonomy: Option<impl AsRef<str>>,
+    ) -> Option<ProfileWrapper> {
+        let file = File::open(matrix_path).ok()?;
+        let mut reader = BufReader::new(file);
+
+        let mut header = String::new();
+        reader.read_line(&mut header).ok()?;
+        let header = header.trim_end_matches(['\n', '\r']);
+        let headers = header.split('\t').collect::<Vec<_>>();
+        let column_index = headers.iter().position(|&h| h == column)?;
+
+        let mut body = String::new();
+        for line in reader.lines() {
+            let line = line.ok()?;
+            if line.is_empty() {
+                continue;
+            }
+            let tokens = line.split('\t').collect::<Vec<_>>();
+            if tokens.len() <= column_index {
+                continue;
+            }
+            let lineage = tokens[0];
+            if lineage.is_empty() {
+                continue;
+            }
+            let abundance_str = tokens[column_index];
+            let abundance = abundance_str.parse::<f64>().unwrap_or(0.0);
+            if abundance == 0.0 {
+                continue;
+            }
+            body.push_str(lineage);
+            body.push('\t');
+            body.push_str(&abundance.to_string());
+            body.push('\n');
+        }
+
+        let mut cursor = Cursor::new(body);
+        let columns = Some(Columns {
+            lineage: Some(0),
+            abundance: Some(1),
+            ..Columns::default()
+        });
+
+        let profile = match taxonomy {
+            Some(s) if s.as_ref().starts_with("GTDB") => {
+                Profile::<GTDB>::load::<Auto, _>(&mut cursor, columns)
+                    .map(|profile| profile.wrap())
+            }
+            Some(s) if s.as_ref().starts_with("NCBI") => {
+                Profile::<NCBI>::load::<Auto, _>(&mut cursor, columns)
+                    .map(|profile| profile.wrap())
+            }
+            Some(_) => Profile::<Custom>::load::<Auto, _>(&mut cursor, columns)
+                .map(|profile| profile.wrap()),
+            None => return None,
+        };
+
+        match profile {
+            Ok(profile) => Some(profile),
+            Err(e) => {
+                eprintln!(
+                    "Matrix load error: {}\nFile: {}\nColumn: {}",
+                    e,
+                    matrix_path.display(),
+                    column
+                );
+                None
+            }
+        }
+    }
     pub fn load_prediction_profiles(&mut self, meta: &Meta, prediction_column: &str, taxonomy_column: &str, column_format_column: &str) -> Result<(), ProfileHandlerError> {
 
         let profiles = meta.raw.column(prediction_column).unwrap().str().unwrap().iter();
@@ -101,6 +191,10 @@ impl ProfileHandler {
     pub fn load_profile(path: impl AsRef<Path>, taxonomy: Option<impl AsRef<str>>, column_format: Option<impl AsRef<str>>) -> Option<ProfileWrapper> {
 
         println!("File: {:?}", path.as_ref());
+        if let Some((matrix_path, column)) = Self::split_matrix_reference(path.as_ref()) {
+            return Self::load_matrix_profile(&matrix_path, &column, taxonomy);
+        }
+
         let mut file = File::open(&path).unwrap();
         let columns = column_format.map_or(None, |str| Columns::from_format_str(str.as_ref()).ok());
 
@@ -138,11 +232,12 @@ impl ProfileHandler {
         profile
     }
 
-    pub fn from_meta(path: impl AsRef<Path>) -> Result<Self, ProfileHandlerError> {
+    pub fn from_meta(path: impl AsRef<Path>, verbose: bool) -> Result<Self, ProfileHandlerError> {
         // let meta = Meta::from_path(&path).expect("Meta file not valid");
         
         let polars_df = Meta::polars_from_path(&path).expect("Meta file not valid");
-        let meta = Meta::from_polars_df(polars_df).unwrap();
+        let meta = Meta::from_polars_df(polars_df, verbose)
+            .map_err(|e| ProfileHandlerError::GenericError(e.to_string()))?;
 
         // eprintln!("{:?}", newmeta.entries);
 
