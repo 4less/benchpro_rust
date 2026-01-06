@@ -238,13 +238,9 @@ impl ProfileHandler {
     }
 
     pub fn from_meta(path: impl AsRef<Path>) -> Result<Self, ProfileHandlerError> {
-        // let meta = Meta::from_path(&path).expect("Meta file not valid");
-        
         let polars_df = Meta::polars_from_path(&path).expect("Meta file not valid");
         let meta = Meta::from_polars_df(polars_df)
             .map_err(|e| ProfileHandlerError::GenericError(e.to_string()))?;
-
-        // eprintln!("{:?}", newmeta.entries);
 
         let mut res = Self::default();
         let _ = res.load_prediction_profiles(&meta, "Profile", "Taxonomy", "ProfileColumns");
@@ -254,7 +250,6 @@ impl ProfileHandler {
         for (path, profile) in  &res.prediction_map {
             let uranks = profile.unique_ranks();
             let species = profile.taxa(&TaxonomicRank::Species);
-            // eprintln!("Path: {}\n\t\t{:?}", path, uranks);
             if species.is_none() {
                 warn!(
                     "NONE {} Species: {}\n\t\t{:?} ---- {:?}",

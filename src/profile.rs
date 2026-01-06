@@ -114,7 +114,6 @@ impl BCVectors {
 
     pub fn into_polars_df(self) -> PolarsResult<DataFrame> {
         let df = DataFrame::new(vec![
-            // Series::new("Rank".into(), rank_vec.iter().map(|x| x.to_string()).collect::<Vec<_>>()),
             Series::new("Name".into(), self.taxon_names),
             Series::new("Type".into(), self.pred_type),
             Series::new("PredictionAbundance".into(), self.prediction_abundances),
@@ -127,7 +126,6 @@ impl BCVectors {
 
     pub fn polars_df(&self) -> PolarsResult<DataFrame> {
         let df = DataFrame::new(vec![
-            // Series::new("Rank".into(), rank_vec.iter().map(|x| x.to_string()).collect::<Vec<_>>()),
             Series::new("Name".into(), self.taxon_names.clone()),
             Series::new("Type".into(), self.pred_type.clone()),
             Series::new("PredictionAbundance".into(), self.prediction_abundances.clone()),
@@ -141,15 +139,6 @@ impl BCVectors {
 
 type TaxonEntryMap<'a, T: Taxonomy> = HashMap<&'a Taxon, EntriesRef<'a, T>>;
 type NamesEntryMap<'a, T: Taxonomy> = HashMap<String, EntriesRef<'a, T>>;
-
-// fn get_binary_classification_alternative_names<T: Taxonomy>(
-//         vectors: &mut BCVectors, 
-//         prediction: TaxonEntryMap<T>,
-//         gold_std: TaxonEntryMap<T>,
-//     ) -> PolarsResult<DataFrame> 
-// {
-
-// }
 
 pub fn binary_classification_df<T: Taxonomy>(
     prediction: &NamesEntryMap<T>,
@@ -165,24 +154,11 @@ pub fn binary_classification_df<T: Taxonomy>(
     let fps = pred_set.difference(&gold_set).map(|&x| x).collect::<HashSet<_>>();
     let fns = gold_set.difference(&pred_set).map(|&x| x).collect::<HashSet<_>>();
 
-    // eprintln!("Prediction set:");
-
-    // for (name, entries) in prediction {
-    //     println!("---{}", name);
-    //     for entry in entries {
-    //         println!("{} - {:?}", entry.abundance, entry.lineage().unwrap().to_string());
-    //     }
-    // }
-
     tps.iter().map(|&t| (BC::TP, t))
         .chain(fps.iter().map(|&t| (BC::FP, t)))
         .chain(fns.iter().map(|&t| (BC::FN, t)))
         .for_each(|(mut bp_type, taxon)| 
     {
-        // match (prediction.get(taxon), gold_std.get(taxon) {
-
-        // }
-
         let (prediction_abundance, prediction_entry_count) = if matches!(bp_type, BC::TP) || matches!(bp_type, BC::FP) {
             let entries = prediction.get(taxon)
                  .expect(&format!("Gold set does not contain TP taxon. Unrecoverable error. '{}', {}", taxon, bp_type.to_string()));
@@ -204,10 +180,6 @@ pub fn binary_classification_df<T: Taxonomy>(
                 entries.len()
            )
         } else { (0f64, 0usize) };
-
-        // println!(">> {} {}", prediction_abundance, gold_std_abundance);
-
-
 
         if taxon == "" && matches!(bp_type, BC::FP) {
             debug!("FIX BC TYPE");
@@ -232,19 +204,7 @@ pub fn binary_classification_alternatives_df<T: Taxonomy>(
     gold_std: &TaxonEntryMap<T>,
 ) -> PolarsResult<DataFrame> 
 {
-    // Differences to Name based classification:
-    // - some Taxa have alternative names e.g. (SpeciesA/SpeciesB/SpeciesC)
-    // New information needed:
-    // - Does an alternative names entry match with multiple entries in the Gold STd?
-
     let mut df_vectors = BCVectors::default();
-
-    // let pred_set = prediction.keys().collect::<HashSet<_>>();
-    // let gold_set = gold_std.keys().collect::<HashSet<_>>();
-
-    // let tps = pred_set.intersection(&gold_set).map(|&x| x).collect::<HashSet<_>>();
-    // let fps = pred_set.difference(&gold_set).map(|&x| x).collect::<HashSet<_>>();
-    // let fns = gold_set.difference(&pred_set).map(|&x| x).collect::<HashSet<_>>();
 
     let prediction_taxa = prediction.keys().collect::<HashSet<_>>();
     let gold_std_taxa = gold_std.keys().collect::<HashSet<_>>();
@@ -263,12 +223,9 @@ pub fn binary_classification_alternatives_df<T: Taxonomy>(
             debug!("Gold {:?}\n\t\tPred {:?}", taxon, value);
         }
 
-        // exit(9);
     }
 
     tps.iter().for_each(|(&taxon, predictions)| {
-        // println!("TP: {:?}", taxon);
-
         let (prediction_abundance, prediction_entry_count) = {
             // if primary is set, primary abundance always counts.
             // if secondary is set, only secondary entries count that only match ONE gold std entry
@@ -667,9 +624,6 @@ impl<T: Taxonomy> Profile<T> {
                         acc
                     });
                     
-                // set.iter().flat_map(|(name, entries)| entries)//.all(|entry|)
-                //     .for_each(|entry| println!("{}", entry.rank.to_string()));
-
                 if set.is_empty() {
                     return None
                 } else {
@@ -705,8 +659,7 @@ impl<T: Taxonomy> Profile<T> {
                     return None
                 }
                 if ranks.len() == 1 && rank <= ranks.iter().max().expect("Has no max") {
-                    // println!("Option 1: There is only one rank defined {:?}", ranks);
-                    let set = self.taxa.iter()
+                let set = self.taxa.iter()
                         .map(|entry| (entry.lineage().unwrap().get(rank), entry))
                         .filter(|(name, _)| name.is_some())
                         .map(|(taxon, entry)| (taxon.unwrap(), entry))
@@ -721,7 +674,6 @@ impl<T: Taxonomy> Profile<T> {
                         return Some(set)
                     }
                 }
-                // println!("Option 2: There are multiple ranks defined {:?}", ranks);
                 let set = self.taxa.iter()
                     .filter(|&entry| &entry.rank == rank)
                     .map(|entry| (entry.lineage().unwrap().get(rank), entry))
@@ -740,7 +692,6 @@ impl<T: Taxonomy> Profile<T> {
                 }
             },
             None => {
-                // println!("Option3");
                 let set = self.taxa.iter()
                     .map(|entry| (entry.lineage().unwrap().get(rank), entry))
                     .filter(|(name, _)| name.is_some())

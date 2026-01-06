@@ -93,10 +93,6 @@ pub fn get_adjusted_benchmarks(
 
             let mut print_tree = tree.clone();
             let _ = wrap_names(&mut print_tree);
-
-            // println!("Tree:\n: {}", print_tree.to_newick().unwrap());
-
-            // for name in &names {
             taxon_to_type.clear();
             taxon_to_detectable.clear();
 

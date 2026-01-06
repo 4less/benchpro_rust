@@ -53,12 +53,6 @@ impl TreeHandler {
             }
         });
 
-        // tree.get_nodes().iter().chain(tree.get_leaves().iter()).for_each(|id| {
-        //     let node = tree.get_mut(id).unwrap();
-        //     if let Some(name) = &mut node.name {
-        //         *name = name.replace("\"", "");
-        //     }
-        // });
     }
 
     fn tree_from_file_with_cleanup(path: impl AsRef<Path>) -> TreeHandlerResult<Tree> {
@@ -75,8 +69,6 @@ impl TreeHandler {
         let paths = meta.get_tree_path_set();
     
 
-        // let res = paths.iter()
-        //     .filter(|x| )
         for ele in paths.iter() {
             let key: String = ele.to_str().unwrap().to_owned();
             debug!("Path: {:?}", ele);
@@ -87,10 +79,6 @@ impl TreeHandler {
                 .filter(|(id, name)| name.is_some()) 
                 .map(|(id, name)| (name.unwrap().to_owned(), id))
                 .collect::<Name2Id>();
-
-            // eprintln!("{:?}", name2id.keys());
-
-            // exit(9);
 
             res.insert(key, (name2id, tree));
         }

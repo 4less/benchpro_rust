@@ -23,51 +23,6 @@ use regex::Regex;
 
 use crate::utils::workbook_to_dataframe;
 
-fn read_excel_to_dataframe(path: impl AsRef<Path>) -> PolarsResult<DataFrame> {
-    // Open the Excel file
-    let mut workbook: Xlsx<_> = calamine::open_workbook(path).expect("Cannot open Excel file");
-
-    // Access the first sheet (assuming there's at least one)
-    let range = workbook
-        .worksheet_range("Sheet1")
-        .expect("Cannot find sheet");
-
-    // Prepare vectors to hold data for DataFrame columns
-    let mut columns: Vec<Series> = Vec::new();
-    let mut column_names: Vec<String> = Vec::new();
-
-    // Iterate over each row and column in the sheet
-    for (col_idx, row) in range.rows().enumerate() {
-        let mut column_data: Vec<String> = Vec::new();
-
-        for cell in row.iter() {
-            // Extract cell content and push it to column data
-
-            let value = match cell {
-                calamine::Data::Int(i) => i.to_string(),
-                calamine::Data::Float(f) => f.to_string(),
-                calamine::Data::String(s) => s.to_string(),
-                calamine::Data::Bool(b) => b.to_string(),
-                calamine::Data::DateTime(time) => time.to_string(),
-                calamine::Data::DateTimeIso(time_iso) => time_iso.to_string(),
-                calamine::Data::DurationIso(duration_iso) => duration_iso.to_string(),
-                calamine::Data::Error(cell_error_type) => cell_error_type.to_string(),
-                calamine::Data::Empty => "".to_string(),
-            };
-
-            column_data.push(value);
-        }
-
-        // Create a Series for each column, then add to DataFrame
-        let series = Series::new((&format!("column_{}", col_idx)).into(), column_data);
-        columns.push(series);
-        column_names.push(format!("column_{}", col_idx));
-    }
-
-    // Create the DataFrame from all columns
-    DataFrame::new(columns).map_err(|e| PolarsError::ComputeError(format!("{}", e).into()))
-}
-
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum MetaError {
     #[error("{0}")]

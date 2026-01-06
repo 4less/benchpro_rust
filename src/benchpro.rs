@@ -124,8 +124,6 @@ pub fn get_taxon_df(handler: &ProfileHandler, allow_alternatives: bool) -> DataF
         }
 
         if let (Some(prediction), Some(goldstd)) = (prediction, goldstd) {
-            // println!("START---{}---{}-\n{}\n{}\n---------------------------", row.id, row.taxonomy, row.profile.to_str().unwrap(), row.goldstd.to_str().unwrap());
-            
             debug!("Dataset: {} ... {:?}", row.id, row.goldstd);
             let df = prediction.binary_classification(goldstd, allow_alternatives);
 
@@ -158,7 +156,6 @@ pub fn get_taxon_df(handler: &ProfileHandler, allow_alternatives: bool) -> DataF
                 ));
 
                 if let Some(available_taxa) = taxa.as_ref() {
-                    // let string_vec: Vec<String> = ;
                     let detectable_series = Series::new(
                         "detectable".into(),
                         available_taxa
@@ -275,19 +272,6 @@ pub fn meta_based_workflow(args: &Args) {
 
                 new_complete_df = new_complete_df.vstack(&dfa).unwrap();
 
-            // let file_name_detailed_adj = format!("{}_detailed_adj.tsv", args.outprefix);
-            // let file_path = Path::new(&file_name_detailed_adj);
-
-            // // Open the file for writing
-            // let mut file = File::create(file_path).expect("Could not create file");
-
-            // // Write the DataFrame to the CSV file using CsvWriter
-            // let _ = CsvWriter::new(&mut file)
-            //     .include_header(true)
-            //     .with_separator(b'\t')
-            //     .with_quote_style(polars::prelude::QuoteStyle::Never)
-            //     .finish(&mut dfa);
-            // println!("File written to: {}", file_name_detailed_adj);
         }
             Err(e) => {
                 warn!("Adjusted benchmarks failed: {:?}", e);

@@ -212,39 +212,6 @@ pub fn add_string_columns(df: &mut DataFrame, columns: &[NameValuePair]) -> Pola
     Ok(())
 }
 
-// pub fn add_columns<T, V, U>(df: &mut DataFrame, name: &str, value: T) -> PolarsResult<()>
-// where
-//     T: Clone + IntoSeries + 'static, // T must implement Clone and IntoSeries
-//     V: NamedFrom<&'static [T], U>,          // V must be Vec<T> or something that can be treated as a slice of T
-// {
-//     // Create a Vec<T> by repeating the value
-//     let values: V = std::iter::repeat(value.clone()).take(df.height()).collect::<Vec<T>>().into();
-
-//     // Use AsRef to convert values into a slice and then create a Series from it
-//     let series = Series::new(name.into(), values);
-
-//     // Add the column to the DataFrame
-//     df.with_column(series)?;
-
-//     Ok(())
-// }
-
-
-// pub fn add_columns<T>(df: &mut DataFrame, name: &str, value: T) -> PolarsResult<()>
-// where
-//     T: Clone + IntoSeries + 'static, // T must implement Clone and IntoSeries
-// {
-//     // Create a Vec<T> by repeating the value
-//     let values: Vec<T> = std::iter::repeat(value.clone()).take(df.height()).collect();
-
-//     // Convert the Vec<T> into a Series
-//     let series = Series::new(name.into(), values);
-
-//     // Add the column to the DataFrame
-//     df.with_column(series)?;
-
-//     Ok(())
-// }
 
 pub fn sample_apply<F>(df: &DataFrame, mut f: F) -> PolarsResult<DataFrame>
 where
@@ -540,22 +507,3 @@ pub fn closest_neighbor<'a>(tree: &Tree, id: &NodeId) -> Result<NeighborDist, Tr
         distance: *closest.1,
     })
 }
-
-// pub fn closest_neighbor_str<'a>(tree: &Tree, id: &str) -> Result<(NodeId, f64), TreeError> {
-//     let dm = tree.distance_matrix()?;
-
-//     let node = tree.get_root()?;
-
-//     let name = tree.get(id)?.name.as_ref().ok_or(TreeError::UnnamedLeaves)?;
-
-//     println!("DM: {:?}", dm);
-
-//     for leaf_name in tree.get_leaf_names() {
-//         if let Some(leaf_name) = leaf_name {
-//             if &leaf_name == name { continue };
-//             println!("{} {} => {:?}", name, leaf_name, dm.get(&name, &leaf_name));
-//         }
-//     }
-
-//     Ok((node, 0f64))
-// }
