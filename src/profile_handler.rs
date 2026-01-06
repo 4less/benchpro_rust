@@ -7,6 +7,7 @@ use std::{
 };
 
 use itertools::izip;
+use log::{debug, warn};
 
 use crate::{common::{Custom, TaxonomicRank, GTDB, NCBI}, format::{Auto, Columns, CAMI}, meta::Meta, profile::{LoadProfile, Profile, ProfileWrapper}, utils::{load_file_lineages_to_hashset, load_file_to_hashset}};
 
@@ -104,7 +105,7 @@ impl ProfileHandler {
         match profile {
             Ok(profile) => Some(profile),
             Err(e) => {
-                eprintln!(
+                warn!(
                     "Matrix load error: {}\nFile: {}\nColumn: {}",
                     e,
                     matrix_path.display(),
@@ -190,7 +191,7 @@ impl ProfileHandler {
 
     pub fn load_profile(path: impl AsRef<Path>, taxonomy: Option<impl AsRef<str>>, column_format: Option<impl AsRef<str>>) -> Option<ProfileWrapper> {
 
-        println!("File: {:?}", path.as_ref());
+        debug!("File: {:?}", path.as_ref());
         if let Some((matrix_path, column)) = Self::split_matrix_reference(path.as_ref()) {
             return Self::load_matrix_profile(&matrix_path, &column, taxonomy);
         }
@@ -203,7 +204,11 @@ impl ProfileHandler {
                 match Profile::<GTDB>::load::<Auto, _>(&mut file, columns) {
                     Ok(profile) => Some(profile.wrap()),
                     Err(e) => {
-                        eprintln!("GTDB Autodetect Error: {}\nFile: {}", e, path.as_ref().display());
+                        warn!(
+                            "GTDB Autodetect Error: {}\nFile: {}",
+                            e,
+                            path.as_ref().display()
+                        );
                         None
                     },
                 }
@@ -212,7 +217,7 @@ impl ProfileHandler {
                 match Profile::<NCBI>::load::<CAMI, _>(&mut file, None) {
                     Ok(profile) => Some(profile.wrap()),
                     Err(e) => {
-                        eprintln!("NCBI CAMI Error: {}", e);
+                        warn!("NCBI CAMI Error: {}", e);
                         None
                     },
                 }
@@ -221,7 +226,7 @@ impl ProfileHandler {
                 match Profile::<Custom>::load::<Auto, _>(&mut file, columns) {
                     Ok(profile) => Some(profile.wrap()),
                     Err(e) => {
-                        eprintln!("CAMI Error: {}", e);
+                        warn!("CAMI Error: {}", e);
                         None
                     },
                 }
@@ -232,11 +237,11 @@ impl ProfileHandler {
         profile
     }
 
-    pub fn from_meta(path: impl AsRef<Path>, verbose: bool) -> Result<Self, ProfileHandlerError> {
+    pub fn from_meta(path: impl AsRef<Path>) -> Result<Self, ProfileHandlerError> {
         // let meta = Meta::from_path(&path).expect("Meta file not valid");
         
         let polars_df = Meta::polars_from_path(&path).expect("Meta file not valid");
-        let meta = Meta::from_polars_df(polars_df, verbose)
+        let meta = Meta::from_polars_df(polars_df)
             .map_err(|e| ProfileHandlerError::GenericError(e.to_string()))?;
 
         // eprintln!("{:?}", newmeta.entries);
@@ -251,7 +256,13 @@ impl ProfileHandler {
             let species = profile.taxa(&TaxonomicRank::Species);
             // eprintln!("Path: {}\n\t\t{:?}", path, uranks);
             if species.is_none() {
-                eprintln!("NONE {} Species: {}\n\t\t{:?} ---- {:?}", profile.taxonomy() , path, species, uranks);
+                warn!(
+                    "NONE {} Species: {}\n\t\t{:?} ---- {:?}",
+                    profile.taxonomy(),
+                    path,
+                    species,
+                    uranks
+                );
             }
         }
     

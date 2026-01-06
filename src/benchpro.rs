@@ -10,6 +10,7 @@ use std::{
 };
 
 use itertools::{izip, Itertools};
+use log::{debug, info, warn};
 use polars::{
     error::PolarsResult,
     frame::DataFrame,
@@ -100,13 +101,9 @@ pub fn add_binary_classification(df: DataFrame) -> PolarsResult<DataFrame> {
     Ok(newdf)
 }
 
-pub fn get_taxon_df(
-    handler: &ProfileHandler,
-    allow_alternatives: bool,
-    verbose: bool,
-) -> DataFrame {
-    println!("Number of profiles: {}", handler.prediction_map.len());
-    println!("Number of gold profiles: {}", handler.gold_std_map.len());
+pub fn get_taxon_df(handler: &ProfileHandler, allow_alternatives: bool) -> DataFrame {
+    debug!("Number of profiles: {}", handler.prediction_map.len());
+    debug!("Number of gold profiles: {}", handler.gold_std_map.len());
 
     let mut dfs: Vec<DataFrame> = Vec::default();
     let mut dfs_with_taxa: Vec<DataFrame> = Vec::default();
@@ -123,14 +120,14 @@ pub fn get_taxon_df(
         });
 
         if prediction.is_some() && !goldstd.is_some() {
-            println!(">>>>>>>>>>>> {:?}", row);
+            warn!("Missing gold standard for row: {:?}", row);
         }
 
         if let (Some(prediction), Some(goldstd)) = (prediction, goldstd) {
             // println!("START---{}---{}-\n{}\n{}\n---------------------------", row.id, row.taxonomy, row.profile.to_str().unwrap(), row.goldstd.to_str().unwrap());
             
-            println!("Dataset: {} ... {:?}", row.id, row.goldstd);
-            let df = prediction.binary_classification(goldstd, allow_alternatives, verbose);
+            debug!("Dataset: {} ... {:?}", row.id, row.goldstd);
+            let df = prediction.binary_classification(goldstd, allow_alternatives);
 
             if let Ok(mut df) = df {
                 let _ = df.with_column(Series::new(
@@ -206,12 +203,12 @@ pub fn meta_based_workflow(args: &Args) {
     type C = MetaColumn;
     let path = Path::new(args.meta.as_ref().unwrap());
 
-    let handler = match ProfileHandler::from_meta(path, args.verbose) {
+    let handler = match ProfileHandler::from_meta(path) {
         Ok(handler) => handler,
         Err(e) => panic!("Failed to load profiles: {}", e),
     };
 
-    let tree_handler = TreeHandler::from_meta(&handler.meta, args.verbose);
+    let tree_handler = TreeHandler::from_meta(&handler.meta);
 
     let tree_handler = match tree_handler {
         Ok(th) => th,
@@ -221,7 +218,7 @@ pub fn meta_based_workflow(args: &Args) {
     ///////////////////////////////////////////////////////////////////////
     // Binary classification DF
 
-    let mut complete_df = get_taxon_df(&handler, args.allow_alternatives, args.verbose);
+    let mut complete_df = get_taxon_df(&handler, args.allow_alternatives);
 
     
 
@@ -245,36 +242,22 @@ pub fn meta_based_workflow(args: &Args) {
     let safe_th = Mutex::new(tree_handler);
 
     if args.adjusted {
-        let df_adjusted = get_adjusted_benchmarks(
-            &complete_df,
-            &handler.meta,
-            &safe_th,
-            &handler,
-            args.verbose,
-        );
-        if args.verbose {
-            eprintln!("DF Adjusted {:?}", df_adjusted);
-            println!("Height {}", new_complete_df.height());
-        }
+        let df_adjusted = get_adjusted_benchmarks(&complete_df, &handler.meta, &safe_th, &handler);
+        debug!("DF Adjusted {:?}", df_adjusted);
+        debug!("Height {}", new_complete_df.height());
         match df_adjusted {
             Ok(mut dfa) => {
-                if args.verbose {
-                    println!("Height DFA {}", dfa.height());
-                }
+                debug!("Height DFA {}", dfa.height());
                 dfa = handler
                     .meta
                     .left_join_to(&dfa, &[MetaColumn::Dataset, MetaColumn::Taxonomy, MetaColumn::Tool], true)
                     .expect("Cannot join dfs?");
 
-                if args.verbose {
-                    println!("Height DFA {}", dfa.height());
-                }
+                debug!("Height DFA {}", dfa.height());
 
                 add_string_columns(&mut dfa, &[("Adjusted".to_string(), "True".to_string())]);
 
-                if args.verbose {
-                    println!("Height DFA {}", dfa.height());
-                }
+                debug!("Height DFA {}", dfa.height());
                 let _ = add_string_columns(
                     &mut new_complete_df,
                     &[
@@ -307,9 +290,7 @@ pub fn meta_based_workflow(args: &Args) {
             // println!("File written to: {}", file_name_detailed_adj);
         }
             Err(e) => {
-                if args.verbose {
-                    println!("Disappointing {:?}", e);
-                }
+                warn!("Adjusted benchmarks failed: {:?}", e);
             },
         }
     }
@@ -352,11 +333,9 @@ pub fn meta_based_workflow(args: &Args) {
         .with_quote_style(QuoteStyle::Never)
         .finish(&mut newdf);
 
-    if args.verbose {
-        println!("NEWDF {}", newdf);
-        println!("File written to: {}", file_name_detailed);
-        println!("File written to: {}", file_name_bc);
-    }
+    debug!("NEWDF {}", newdf);
+    info!("File written to: {}", file_name_detailed);
+    info!("File written to: {}", file_name_bc);
 }
 
 pub fn meta_free_workflow(args: &Args) {}

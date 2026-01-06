@@ -20,6 +20,8 @@ pub mod taxonomic_profiling;
 use benchpro::run;
 use clap::Parser;
 use options::Args;
+use env_logger::Env;
+use log::info;
 use utils::time;
 
 
@@ -31,10 +33,24 @@ Benchpro statistics
 }
 
 fn main() {
-    eprintln!("{}", logo());
-
     let args: Args = Args::parse();
+    let level = match args.log_level.to_lowercase().as_str() {
+        "debug" => "debug",
+        "info" => "info",
+        "warn" | "warning" => "warn",
+        "error" => "error",
+        other => {
+            panic!(
+                "Invalid --log-level '{}'. Use: debug, info, warning, error.",
+                other
+            );
+        }
+    };
+    let env = Env::default().default_filter_or(level);
+    env_logger::Builder::from_env(env).init();
+
+    info!("{}", logo());
     let (duration, _) = time(|| run(&args));
 
-    eprintln!("Benchpro took {:?}", duration);
+    info!("Benchpro took {:?}", duration);
 }

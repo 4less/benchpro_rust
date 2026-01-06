@@ -18,6 +18,7 @@ use std::{
     str::FromStr,
 };
 use strum::{EnumIter, IntoEnumIterator};
+use log::debug;
 use regex::Regex;
 
 use crate::utils::workbook_to_dataframe;
@@ -201,19 +202,19 @@ impl Meta {
         "ProfileFormat",
     ];
 
-    pub fn from_polars_df(meta: DataFrame, verbose: bool) -> MetaResult {
+    pub fn from_polars_df(meta: DataFrame) -> MetaResult {
         if Self::is_matrix_format(&meta) {
-            return Self::from_matrix_df(meta, verbose);
+            return Self::from_matrix_df(meta);
         }
         let mut entries = vec![MetaEntry::default(); meta.height()];
 
-        eprintln!("Height: {} .. {}", meta.height(), entries.len());
+        debug!("Height: {} .. {}", meta.height(), entries.len());
 
         meta.get_column_names()
             .iter()
             .map(|x| x.to_string())
             .for_each(|name| {
-                println!("{} -> {:?}", name, MetaColumn::from_string(&name));
+                debug!("{} -> {:?}", name, MetaColumn::from_string(&name));
             });
 
         MetaColumn::iter().for_each(|col| {
@@ -324,7 +325,7 @@ impl Meta {
                 .collect::<Vec<_>>()
                 .contains(&field.to_string())
         });
-        println!(
+        debug!(
             "Columns({}) {:?}",
             required_fields_present,
             self.raw.get_column_names()
@@ -469,7 +470,7 @@ impl Meta {
         }
     }
 
-    fn from_matrix_df(meta: DataFrame, verbose: bool) -> MetaResult {
+    fn from_matrix_df(meta: DataFrame) -> MetaResult {
         let id_series = meta
             .column(MetaColumnStrings::ID)
             .map_err(|e| MetaError::MissingColumns(format!("Missing ID column: {}", e)))?
@@ -643,12 +644,10 @@ impl Meta {
                 let profile_sample = profile_matches.get(&key).unwrap().to_string();
                 let goldstd_sample = goldstd_matches.get(&key).unwrap().to_string();
 
-                if verbose {
-                    eprintln!(
-                        "Matrix match: Profile column '{}' <-> GoldStd column '{}' (key {})",
-                        profile_sample, goldstd_sample, key
-                    );
-                }
+                debug!(
+                    "Matrix match: Profile column '{}' <-> GoldStd column '{}' (key {})",
+                    profile_sample, goldstd_sample, key
+                );
 
                 let id = format!("{}_{}", base_id, key);
                 let profile_ref =
@@ -725,7 +724,7 @@ impl Meta {
             _ => panic!("Found extension is not valid ({:?})", ext),
         };
         let is_matrix = Self::is_matrix_format(&entries);
-        let meta = Self::from_polars_df(entries, false)?;
+        let meta = Self::from_polars_df(entries)?;
         if is_matrix {
             Ok(meta)
         } else {

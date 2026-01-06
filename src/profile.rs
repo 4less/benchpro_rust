@@ -1,6 +1,7 @@
 use std::{cmp::max, collections::{HashMap, HashSet}, default, fmt::Display, io::{BufRead, BufReader, Read, Seek}, process::exit, str::FromStr};
 
 use itertools::Itertools;
+use log::{debug, error, warn};
 use polars::{error::PolarsResult, frame::DataFrame, prelude::NamedFrom, series::Series};
 
 use crate::{common::{Custom, Lineage, LineageFromString, Taxon, TaxonomicRank, Taxonomy, TaxonomyEnum, GTDB, NCBI}, format::{Columns, Format}, utils::add_string_columns};
@@ -153,7 +154,6 @@ type NamesEntryMap<'a, T: Taxonomy> = HashMap<String, EntriesRef<'a, T>>;
 pub fn binary_classification_df<T: Taxonomy>(
     prediction: &NamesEntryMap<T>,
     gold_std: &NamesEntryMap<T>,
-    verbose: bool,
 ) -> PolarsResult<DataFrame> 
 {
     let mut df_vectors = BCVectors::default();
@@ -210,9 +210,7 @@ pub fn binary_classification_df<T: Taxonomy>(
 
 
         if taxon == "" && matches!(bp_type, BC::FP) {
-            if verbose {
-                eprintln!("FIX BC TYPE");
-            }
+            debug!("FIX BC TYPE");
             bp_type = BC::Unknown;
         }
 
@@ -232,7 +230,6 @@ pub fn binary_classification_df<T: Taxonomy>(
 pub fn binary_classification_alternatives_df<T: Taxonomy>(
     prediction: &TaxonEntryMap<T>,
     gold_std: &TaxonEntryMap<T>,
-    verbose: bool,
 ) -> PolarsResult<DataFrame> 
 {
     // Differences to Name based classification:
@@ -262,10 +259,8 @@ pub fn binary_classification_alternatives_df<T: Taxonomy>(
     if tps.iter().any(|(_,v)| {
         v.secondary.is_some() && v.primary.is_none()
     }) {
-        if verbose {
-            for (taxon,value) in tps.iter() {
-                eprintln!("Gold {:?}\n\t\tPred {:?}", taxon, value);
-            }
+        for (taxon, value) in tps.iter() {
+            debug!("Gold {:?}\n\t\tPred {:?}", taxon, value);
         }
 
         // exit(9);
@@ -305,17 +300,25 @@ pub fn binary_classification_alternatives_df<T: Taxonomy>(
             let non_unique_secondary_count = non_unique_secondary_abundance_list.len();
 
             if non_unique_secondary_abundance != 0.0f64 {
-                if verbose {
-                    println!("---- {:?}", taxon);
-                    println!("Abundance: Primary {}  Secondary (U) {} Secondary (NU) {}", primary_abundance, unique_secondary_abundance, non_unique_secondary_abundance);
-                    println!("Counts:    Primary {}  Secondary (U) {} Secondary (NU) {}", primary_entry_count, unique_secondary_count, non_unique_secondary_count);
+                debug!("---- {:?}", taxon);
+                debug!(
+                    "Abundance: Primary {}  Secondary (U) {} Secondary (NU) {}",
+                    primary_abundance,
+                    unique_secondary_abundance,
+                    non_unique_secondary_abundance
+                );
+                debug!(
+                    "Counts:    Primary {}  Secondary (U) {} Secondary (NU) {}",
+                    primary_entry_count,
+                    unique_secondary_count,
+                    non_unique_secondary_count
+                );
 
-                    for g in gold_std {
-                        eprintln!("GOLD: {:?}", g.0);
-                    }
-                    for p in prediction {
-                        eprintln!("PRED: {:?}", p.0);
-                    }
+                for g in gold_std {
+                    debug!("GOLD: {:?}", g.0);
+                }
+                for p in prediction {
+                    debug!("PRED: {:?}", p.0);
                 }
             }
 
@@ -327,12 +330,10 @@ pub fn binary_classification_alternatives_df<T: Taxonomy>(
             let entries = match gold_std.get(taxon) {
                 Some(entries) => entries,
                 None => {
-                    if verbose {
-                        println!("--------------------------------");
-                        gold_std.iter().for_each(|(t, _)| {
-                            println!("Gold: {} {}", t.match_exact(taxon), t.match_any(taxon));
-                        });
-                    }
+                    debug!("--------------------------------");
+                    gold_std.iter().for_each(|(t, _)| {
+                        debug!("Gold: {} {}", t.match_exact(taxon), t.match_any(taxon));
+                    });
                     panic!("Gold set does not contain FN taxon. Unrecoverable error. '{:?}', TP", taxon)
                 },
             };
@@ -359,21 +360,17 @@ pub fn binary_classification_alternatives_df<T: Taxonomy>(
         .chain(fns.iter().map(|&t| (BC::FN, t)))
         .for_each(|(mut bp_type, taxon)| 
     {
-        if verbose {
-            println!("{}: {:?}", bp_type.to_string(), taxon);
-        }
+        debug!("{}: {:?}", bp_type.to_string(), taxon);
 
         let (prediction_abundance, prediction_entry_count) = if matches!(bp_type, BC::TP) || matches!(bp_type, BC::FP) {
             
             let entries = match prediction.get(taxon) {
                 Some(entries) => entries,
                 None => {
-                    if verbose {
-                        println!("--------------------------------");
-                        gold_std.iter().for_each(|(t, _)| {
-                            println!("Gold: {} {}", t.match_exact(taxon), t.match_any(taxon));
-                        });
-                    }
+                    debug!("--------------------------------");
+                    gold_std.iter().for_each(|(t, _)| {
+                        debug!("Gold: {} {}", t.match_exact(taxon), t.match_any(taxon));
+                    });
                     panic!("Prediction set does not contain P taxon. Unrecoverable error. '{:?}', {}", taxon, bp_type.to_string())
                 },
             };
@@ -393,12 +390,10 @@ pub fn binary_classification_alternatives_df<T: Taxonomy>(
             let entries = match gold_std.get(taxon) {
                 Some(entries) => entries,
                 None => {
-                    if verbose {
-                        println!("--------------------------------");
-                        gold_std.iter().for_each(|(t, _)| {
-                            println!("Gold: {} {}", t.match_exact(taxon), t.match_any(taxon));
-                        });
-                    }
+                    debug!("--------------------------------");
+                    gold_std.iter().for_each(|(t, _)| {
+                        debug!("Gold: {} {}", t.match_exact(taxon), t.match_any(taxon));
+                    });
                     panic!("Gold set does not contain FN taxon. Unrecoverable error. '{:?}', {}", taxon, bp_type.to_string())
                 },
             };
@@ -412,9 +407,7 @@ pub fn binary_classification_alternatives_df<T: Taxonomy>(
 
         // Later check
         if taxon.name == "" && matches!(bp_type, BC::FP) {
-            if verbose {
-                eprintln!("FIX BC TYPE");
-            }
+            debug!("FIX BC TYPE");
             bp_type = BC::Unknown;
         }
 
@@ -462,9 +455,10 @@ pub fn binary_classification_helper<'a, TREF: AsRef<Taxon>>(
     
     if !all_gold_no_alt {
         for gs in gold_std.iter() {
-            println!("{:?}", gs.as_ref());
+            debug!("{:?}", gs.as_ref());
         }
         
+        error!("Gold standard may not have any alternative names.");
         panic!("Gold standard may not have any alternative names.")
     }
 
@@ -494,12 +488,12 @@ pub fn binary_classification_helper<'a, TREF: AsRef<Taxon>>(
         .for_each(|(gold, prediction)| {
             assert!(gold.alternative_names.is_none());
             if matched_gold_stds.contains(gold) {
-                eprintln!("Entry: {:?}", matched_gold_stds.get(gold).unwrap());
-                eprintln!("GoldEntry: {:?}", fn_return.tps.get(gold).unwrap());
-                eprintln!("Pred: {:?}", prediction);
+                warn!("Entry: {:?}", matched_gold_stds.get(gold).unwrap());
+                warn!("GoldEntry: {:?}", fn_return.tps.get(gold).unwrap());
+                warn!("Pred: {:?}", prediction);
 
                 exact_match_pairs.clone().for_each(|(g,p)| {
-                    println!("----MATCH\nG: {:?}\nP: {:?}", g, p);
+                    debug!("----MATCH\nG: {:?}\nP: {:?}", g, p);
                 });
             }
             assert!(!matched_gold_stds.contains(gold));
@@ -633,20 +627,14 @@ impl<T: Taxonomy> Profile<T> {
         }
     }
 
-    pub fn get_taxa_string_dict(
-        &self,
-        rank: &TaxonomicRank,
-        verbose: bool,
-    ) -> Option<HashMap<String, Vec<&Entry<T>>>> {
+    pub fn get_taxa_string_dict(&self, rank: &TaxonomicRank) -> Option<HashMap<String, Vec<&Entry<T>>>> {
         match self.unique_ranks() {
             Some(ranks) => {
                 if (ranks.len() > 1 && !ranks.contains(rank)) || rank > ranks.iter().max().expect("Has no max") {
                     return None
                 }
                 if ranks.len() == 1 && rank <= ranks.iter().max().expect("Has no max") {
-                    if verbose {
-                        println!("Option 1: There is only one rank defined {:?}", ranks);
-                    }
+                    debug!("Option 1: There is only one rank defined {:?}", ranks);
                     let set = self.taxa.iter()
                         .map(|entry| (entry.lineage().unwrap().get(rank), entry))
                         .filter(|(name, entry)| name.is_some())
@@ -663,13 +651,11 @@ impl<T: Taxonomy> Profile<T> {
                         return Some(set).clone()
                     }
                 }
-                if verbose {
-                    println!(
-                        "Option 2: There are multiple ranks defined {:?} (Target: {:?})",
-                        ranks,
-                        rank
-                    );
-                }
+                debug!(
+                    "Option 2: There are multiple ranks defined {:?} (Target: {:?})",
+                    ranks,
+                    rank
+                );
                 let set = self.taxa.iter()
                     .filter(|&entry| rank == &entry.rank)
                     .map(|entry| (entry.lineage().unwrap().get(rank), entry))
@@ -691,9 +677,7 @@ impl<T: Taxonomy> Profile<T> {
                 }
             },
             None => {
-                if verbose {
-                    println!("Option3");
-                }
+                debug!("Option3");
                 let set = self.taxa.iter()
                     .map(|entry| (entry.lineage().unwrap().get(rank), entry))
                     .filter(|(name, entry)| name.is_some())
@@ -783,30 +767,25 @@ impl<T: Taxonomy> Profile<T> {
         gold_std: &Self,
         ranks: &[TaxonomicRank],
         allow_ambiguity: bool,
-        verbose: bool,
     ) -> PolarsResult<DataFrame> {
         let mut dfs = Vec::default();
         let mut dfs_alt = Vec::default();
         
         for rank in ranks {
-            if verbose {
-                println!("----------{}-----------", rank.to_string());
-            }
-            let prediction_names = self.get_taxa_string_dict(rank, verbose);
-            let gold_std_names = gold_std.get_taxa_string_dict(rank, verbose);
+            debug!("----------{}-----------", rank.to_string());
+            let prediction_names = self.get_taxa_string_dict(rank);
+            let gold_std_names = gold_std.get_taxa_string_dict(rank);
 
 
             if let (Some(prediction), Some(gold_std)) = (prediction_names, gold_std_names) {
-                match binary_classification_df(&prediction, &gold_std, verbose) {
+                match binary_classification_df(&prediction, &gold_std) {
                     Ok(mut df) => {
 
                         let _ = df.with_column(Series::new("Rank".into(), std::iter::repeat_n(rank.to_owned(), df.height()).map(|x| x.to_string()).collect::<Vec<_>>()));
                         dfs.push(df)
                     },
                     Err(_) => {
-                        if verbose {
-                            println!("Nothing");
-                        }
+                        debug!("Nothing");
                     },
                 }
             }
@@ -817,16 +796,14 @@ impl<T: Taxonomy> Profile<T> {
 
             if allow_ambiguity {
                 if let (Some(prediction), Some(gold_std)) = (prediction_taxa, gold_std_taxa) {
-                    match binary_classification_alternatives_df(&prediction, &gold_std, verbose) {
+                    match binary_classification_alternatives_df(&prediction, &gold_std) {
                         Ok(mut df) => {
                             let _ = add_string_columns(&mut df, 
                                 &[("Rank".to_string(), rank.to_string())]);
                             dfs_alt.push(df);
                         },
                         Err(_) => {
-                            if verbose {
-                                println!("Nothing");
-                            }
+                            debug!("Nothing");
                         },
                     }
                 }
@@ -882,17 +859,16 @@ impl ProfileWrapper {
         &self,
         gold_std: &ProfileWrapper,
         allow_alternatives: bool,
-        verbose: bool,
     ) -> PolarsResult<DataFrame> {
         match (self, gold_std) {
             (ProfileWrapper::GTDBProfile(pred), ProfileWrapper::GTDBProfile(gold)) => {
-                pred.binary_classification(gold, &TaxonomicRank::all(), allow_alternatives, verbose)
+                pred.binary_classification(gold, &TaxonomicRank::all(), allow_alternatives)
             }
             (ProfileWrapper::NCBIProfile(pred), ProfileWrapper::NCBIProfile(gold)) => {
-                pred.binary_classification(gold, &TaxonomicRank::all(), allow_alternatives, verbose)
+                pred.binary_classification(gold, &TaxonomicRank::all(), allow_alternatives)
             }
             (ProfileWrapper::CustomProfile(pred), ProfileWrapper::CustomProfile(gold)) => {
-                pred.binary_classification(gold, &TaxonomicRank::all(), allow_alternatives, verbose)
+                pred.binary_classification(gold, &TaxonomicRank::all(), allow_alternatives)
             }
             (_, _) => panic!("Invalid types"),
         }
@@ -953,9 +929,8 @@ mod tests {
 
         let columns1 = Auto::derive_columns(&mut test_data1);
         let columns2 = Auto::derive_columns(&mut test_data2);
-        
-        eprintln!("Columns1: {:?}", columns1);
-        eprintln!("Columns2: {:?}", columns2);
+        debug!("Columns1: {:?}", columns1);
+        debug!("Columns2: {:?}", columns2);
 
 
         assert!(columns1.is_some());

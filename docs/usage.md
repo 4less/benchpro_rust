@@ -12,7 +12,7 @@ cargo run -- --meta path/to/meta.xlsx --outprefix output/path/prefix
 - `--outprefix <PREFIX>`: Output prefix for TSV outputs.
 - `--adjusted <true|false>`: Enable phylogeny-based adjustments. Default: `false`.
 - `--allow-alternatives <true|false>`: Enable alternative-name matching. Default: `false`.
-- `--verbose`: Enable verbose logging.
+- `--log-level <level>`: Log level (`debug`, `info`, `warning`, `error`).
 
 ## Outputs
 

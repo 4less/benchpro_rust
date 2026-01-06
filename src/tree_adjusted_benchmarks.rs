@@ -2,6 +2,7 @@ use core::f64;
 use std::{collections::{HashMap, HashSet}, process::exit, str::FromStr, sync::{Arc, Mutex}};
 
 use itertools::Itertools;
+use log::debug;
 use polars::{
     error::PolarsResult,
     frame::DataFrame,
@@ -23,14 +24,11 @@ pub fn get_adjusted_benchmarks(
     meta: &Meta,
     tree_handler: &Mutex<TreeHandler>,
     profile_handler: &ProfileHandler,
-    verbose: bool,
 ) -> PolarsResult<DataFrame> {
     let threshold =  0.04_f64;
 
-    if verbose {
-        println!("--FIND--");
-        println!("{:?}", data);
-    }
+    debug!("--FIND--");
+    debug!("{:?}", data);
 
     // Filter for only species and remove allow alternatives
     let mut_species_df: DataFrame = data
@@ -84,11 +82,9 @@ pub fn get_adjusted_benchmarks(
         let th_locked = tree_handler.lock().unwrap();
 
         
-        let (duration, result) = time(|| th_locked.get_subtree(tree_path, &names, verbose));
+        let (duration, result) = time(|| th_locked.get_subtree(tree_path, &names));
 
-        if verbose {
-            println!("Get Subtree took {:?}", duration);
-        }
+        debug!("Get Subtree took {:?}", duration);
 
         if let Some(tree) = result {
             if tree.n_leaves() < 2 {

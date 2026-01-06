@@ -23,9 +23,9 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub allow_alternatives: bool,
 
-    /// Enable verbose logging
-    #[arg(long, default_value_t = false)]
-    pub verbose: bool,
+    /// Log level: debug, info, warning, error
+    #[arg(long, default_value = "info")]
+    pub log_level: String,
 
     // /// Reverse read of pair (.fastq, .fq)
     // #[arg(num_args(0..), short = '2', long, default_values_t = ["".to_string()], action = clap::ArgAction::Append)]
