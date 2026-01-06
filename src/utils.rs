@@ -15,6 +15,19 @@ use polars::prelude::*;
 
 use crate::{common::LINEAGE_DELIMITERS, meta::MetaColumn};
 
+/// Convert the first sheet of an XLSX workbook into a Polars DataFrame.
+///
+/// # Arguments
+///
+/// * `workbook` - Mutable workbook handle positioned at any sheet
+///
+/// # Returns
+///
+/// DataFrame containing the first worksheet.
+///
+/// # Errors
+///
+/// Returns a Polars error when the sheet cannot be converted.
 pub fn workbook_to_dataframe(workbook: &mut Xlsx<impl Read + Seek>) -> PolarsResult<DataFrame> {
     // Access the first sheet in the workbook
     let binding = workbook.sheet_names();
@@ -92,6 +105,15 @@ pub fn workbook_to_dataframe(workbook: &mut Xlsx<impl Read + Seek>) -> PolarsRes
 }
 
 
+/// Measure the duration of a closure and return both the duration and result.
+///
+/// # Arguments
+///
+/// * `f` - Closure to execute
+///
+/// # Returns
+///
+/// Tuple of elapsed `Duration` and the closure result.
 pub fn time<F, T>(f: F) -> (Duration, T)
 where
     F: FnOnce() -> T,
@@ -117,20 +139,64 @@ macro_rules! flatten_tuple {
     };
 }
 
+/// Compute F1 from TP/FP/FN.
+///
+/// # Arguments
+///
+/// * `tp` - True positives
+/// * `fp` - False positives
+/// * `fn_` - False negatives
+///
+/// # Returns
+///
+/// F1 score.
 pub fn f1_score(tp: usize, fp: usize, fn_: usize) -> f64 {
     (tp * 2) as f64 / (2 * tp + fp + fn_) as f64
 }
 
+/// Compute sensitivity (recall) from TP/FP/FN.
+///
+/// # Arguments
+///
+/// * `tp` - True positives
+/// * `fp` - False positives
+/// * `fn_` - False negatives
+///
+/// # Returns
+///
+/// Sensitivity (recall).
 pub fn sensitivity(tp: usize, fp: usize, fn_: usize) -> f64 {
     tp as f64 / (tp + fn_) as f64
 }
 
+/// Compute precision from TP/FP/FN.
+///
+/// # Arguments
+///
+/// * `tp` - True positives
+/// * `fp` - False positives
+/// * `fn_` - False negatives
+///
+/// # Returns
+///
+/// Precision.
 pub fn precision(tp: usize, fp: usize, fn_: usize) -> f64 {
     tp as f64 / (tp + fp) as f64
 }
 
-/// Reads a file line by line and loads each unique line into a HashSet of Strings.
-/// Returns a Result with the HashSet or an error if something goes wrong.
+/// Reads a file line by line and loads each unique line into a `HashSet`.
+///
+/// # Arguments
+///
+/// * `file_path` - Path to the input file
+///
+/// # Returns
+///
+/// Set of unique lines from the file.
+///
+/// # Errors
+///
+/// Returns I/O errors when the file cannot be read.
 pub fn load_file_to_hashset<P>(file_path: P) -> std::io::Result<HashSet<String>>
 where
     P: AsRef<Path>,
@@ -151,8 +217,19 @@ where
     Ok(lines_set)
 }
 
-/// Reads a file line by line and loads each unique line into a HashSet of Strings.
-/// Returns a Result with the HashSet or an error if something goes wrong.
+/// Reads a file line by line and loads each unique lineage into a `HashSet`.
+///
+/// # Arguments
+///
+/// * `file_path` - Path to the input file
+///
+/// # Returns
+///
+/// Set of unique lineage tokens.
+///
+/// # Errors
+///
+/// Returns I/O errors when the file cannot be read.
 pub fn load_file_lineages_to_hashset<P>(file_path: P) -> std::io::Result<HashSet<String>>
 where
     P: AsRef<Path>,
@@ -184,6 +261,20 @@ where
     Ok(lines_set)
 }
 
+/// Write a DataFrame to disk as TSV.
+///
+/// # Arguments
+///
+/// * `df` - DataFrame to write
+/// * `path` - Output file path
+///
+/// # Returns
+///
+/// `Ok(())` on success.
+///
+/// # Errors
+///
+/// Returns I/O or serialization errors when writing fails.
 pub fn write_df(
     df: &mut DataFrame,
     path: impl AsRef<Path>,
@@ -199,7 +290,22 @@ pub fn write_df(
     Ok(())
 }
 
+/// Name/value pair used for bulk column additions.
 pub type NameValuePair = (String, String);
+/// Add constant string columns to a DataFrame.
+///
+/// # Arguments
+///
+/// * `df` - Target DataFrame to mutate
+/// * `columns` - Name/value pairs to add
+///
+/// # Returns
+///
+/// `Ok(())` when columns are added.
+///
+/// # Errors
+///
+/// Returns a Polars error if column insertion fails.
 pub fn add_string_columns(df: &mut DataFrame, columns: &[NameValuePair]) -> PolarsResult<()> {
     for (name, value) in columns {
         df.with_column(Series::new(
@@ -213,6 +319,20 @@ pub fn add_string_columns(df: &mut DataFrame, columns: &[NameValuePair]) -> Pola
 }
 
 
+/// Apply a DataFrame transform per sample grouping.
+///
+/// # Arguments
+///
+/// * `df` - Input DataFrame grouped by `ID`
+/// * `f` - Function applied to each sample-specific DataFrame
+///
+/// # Returns
+///
+/// DataFrame containing the concatenated outputs.
+///
+/// # Errors
+///
+/// Returns a Polars error if concatenation fails.
 pub fn sample_apply<F>(df: &DataFrame, mut f: F) -> PolarsResult<DataFrame>
 where
     F: FnMut(DataFrame) -> PolarsResult<DataFrame> + Send + Sync,
@@ -226,6 +346,16 @@ where
     result
 }
 
+/// Collect all node IDs on the path from leaf to root.
+///
+/// # Arguments
+///
+/// * `tree` - Tree containing the node
+/// * `leaf_id` - Leaf node id
+///
+/// # Returns
+///
+/// Set of node ids from the leaf to the root.
 pub fn get_node_ids_for_leaf(tree: &Tree, leaf_id: &usize) -> HashSet<usize> {
     let mut node = tree.get(leaf_id).unwrap();
 
@@ -243,6 +373,17 @@ pub fn get_node_ids_for_leaf(tree: &Tree, leaf_id: &usize) -> HashSet<usize> {
     res
 }
 
+/// Collect all node IDs for a set of leaves, optionally including ancestors.
+///
+/// # Arguments
+///
+/// * `tree` - Tree containing the nodes
+/// * `leaf_ids` - Leaf node ids to include
+/// * `from_lca` - If true, include nodes from the LCA instead of the root
+///
+/// # Returns
+///
+/// Set of node ids in the induced subtree.
 pub fn get_node_ids_for_leaf_set(
     tree: &Tree,
     leaf_ids: &[usize],
@@ -273,6 +414,20 @@ pub fn get_node_ids_for_leaf_set(
     res
 }
 
+/// Extract a subtree rooted at the given node.
+///
+/// # Arguments
+///
+/// * `tree` - Source tree
+/// * `id` - Root node id for the subtree
+///
+/// # Returns
+///
+/// Subtree rooted at the given node.
+///
+/// # Errors
+///
+/// Returns `TreeError` when the subtree cannot be constructed.
 pub fn get_subtree(tree: &Tree, id: &usize) -> Result<Tree, TreeError> {
     let mut new_tree = Tree::new();
 
@@ -285,6 +440,21 @@ pub fn get_subtree(tree: &Tree, id: &usize) -> Result<Tree, TreeError> {
     Ok(new_tree)
 }
 
+/// Extract the subtree spanning a set of leaves, optionally collapsing edges.
+///
+/// # Arguments
+///
+/// * `tree` - Source tree
+/// * `leaves` - Leaf node ids to include
+/// * `collapse_edges` - Whether to collapse single-child edges
+///
+/// # Returns
+///
+/// Subtree containing the requested leaves.
+///
+/// # Errors
+///
+/// Returns `TreeError` when subtree extraction fails.
 pub fn get_subtree_with_leaves(
     tree: &Tree,
     leaves: &[usize],
@@ -322,6 +492,21 @@ pub fn get_subtree_with_leaves(
     Ok(new_tree)
 }
 
+/// Recursively copy a node and its children into a new tree.
+///
+/// # Arguments
+///
+/// * `old_tree` - Source tree
+/// * `new_tree` - Destination tree to populate
+/// * `node` - Node to copy
+///
+/// # Returns
+///
+/// `Ok(())` on success.
+///
+/// # Errors
+///
+/// Returns `TreeError` if tree operations fail.
 pub fn add_recursively(old_tree: &Tree, new_tree: &mut Tree, node: &Node) -> Result<(), TreeError> {
     new_tree.add(node.clone());
 
@@ -333,6 +518,23 @@ pub fn add_recursively(old_tree: &Tree, new_tree: &mut Tree, node: &Node) -> Res
     Ok(())
 }
 
+/// Recursively copy nodes contained in a keep-set into a new tree.
+///
+/// # Arguments
+///
+/// * `old_tree` - Source tree
+/// * `new_tree` - Destination tree to populate
+/// * `keep` - Set of node ids to keep
+/// * `old_node` - Current node in the source tree
+/// * `new_parent_id` - Optional parent id in the destination tree
+///
+/// # Returns
+///
+/// `Ok(())` on success.
+///
+/// # Errors
+///
+/// Returns `TreeError` if tree operations fail.
 pub fn add_recursively_with_keep(
     old_tree: &Tree,
     new_tree: &mut Tree,
@@ -362,6 +564,16 @@ pub fn add_recursively_with_keep(
     Ok(())
 }
 
+/// Compute the lowest common ancestor for a set of node IDs.
+///
+/// # Arguments
+///
+/// * `tree` - Tree containing the nodes
+/// * `ids` - Node ids to consider
+///
+/// # Returns
+///
+/// Node id for the LCA, or `None` if input is empty.
 pub fn get_lca(tree: &Tree, ids: &[usize]) -> Option<usize> {
     if ids.is_empty() {
         return None;
@@ -383,6 +595,22 @@ pub fn get_lca(tree: &Tree, ids: &[usize]) -> Option<usize> {
     Some(*lcas.iter().next().unwrap())
 }
 
+/// Collapse single-child chains in a tree.
+///
+/// # Arguments
+///
+/// * `new_tree` - Destination tree to populate
+/// * `active_node_id` - Current node id in the destination tree
+/// * `tree` - Source tree
+/// * `current_id` - Current node id in the source tree
+///
+/// # Returns
+///
+/// `Ok(())` on success.
+///
+/// # Errors
+///
+/// Returns `TreeError` if tree operations fail.
 pub fn tree_collapse_edges_helper(
     new_tree: &mut Tree,
     active_node_id: &NodeId,
@@ -435,6 +663,19 @@ pub fn tree_collapse_edges_helper(
     Ok(())
 }
 
+/// Collapse redundant edges in a tree.
+///
+/// # Arguments
+///
+/// * `tree` - Source tree
+///
+/// # Returns
+///
+/// Tree with collapsed single-child edges.
+///
+/// # Errors
+///
+/// Returns `TreeError` if tree operations fail.
 pub fn tree_collapse_edges(tree: &Tree) -> Result<Tree, TreeError> {
     // To compress, the condition is that consecutive nodes have only one child each
     let mut new_tree = Tree::new();
@@ -450,6 +691,19 @@ pub fn tree_collapse_edges(tree: &Tree) -> Result<Tree, TreeError> {
     Ok(new_tree)
 }
 
+/// Wrap node names in quotes for Newick output.
+///
+/// # Arguments
+///
+/// * `tree` - Tree to mutate
+///
+/// # Returns
+///
+/// `Ok(())` on success.
+///
+/// # Errors
+///
+/// Returns `TreeError` if tree operations fail.
 pub fn wrap_names(tree: &mut Tree) -> Result<(), TreeError> {
     // let mut node_ids: Vec<_> = tree.get_nodes().clone();
 
@@ -469,12 +723,27 @@ pub fn wrap_names(tree: &mut Tree) -> Result<(), TreeError> {
     Ok(())
 }
 
+/// Closest-neighbor metadata for a node.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NeighborDist {
     pub id: usize,
     pub name: String,
     pub distance: f64,
 }
+/// Find the closest leaf neighbor to a given node.
+///
+/// # Arguments
+///
+/// * `tree` - Tree to search
+/// * `id` - Node id to find neighbors for
+///
+/// # Returns
+///
+/// Closest leaf neighbor and distance.
+///
+/// # Errors
+///
+/// Returns `TreeError` if the tree is too small or distance lookup fails.
 pub fn closest_neighbor<'a>(tree: &Tree, id: &NodeId) -> Result<NeighborDist, TreeError> {
     if tree.get_leaf_names().len() < 2 {
         return Err(TreeError::GeneralError("Tree has only 2 leaves"));

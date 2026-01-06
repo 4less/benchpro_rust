@@ -19,6 +19,22 @@ use crate::{
     utils::{closest_neighbor, sample_apply, time, wrap_names, NeighborDist},
 };
 
+/// Reclassifies TP/FP/FN using phylogenetic proximity.
+///
+/// # Arguments
+///
+/// * `data` - Detailed benchmark DataFrame to adjust
+/// * `meta` - Parsed meta table for tree references
+/// * `tree_handler` - Cached tree handler for subtree extraction
+/// * `profile_handler` - Loaded profiles and meta context
+///
+/// # Returns
+///
+/// DataFrame with adjusted classification labels.
+///
+/// # Errors
+///
+/// Returns a Polars error when DataFrame operations fail.
 pub fn get_adjusted_benchmarks(
     data: &DataFrame,
     meta: &Meta,

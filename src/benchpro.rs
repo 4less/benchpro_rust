@@ -36,6 +36,11 @@ use crate::{
     },
 };
 
+/// Run Benchpro using the provided CLI arguments.
+///
+/// # Arguments
+///
+/// * `args` - Parsed CLI arguments
 pub fn run(args: &Args) {
     match &args.meta {
         Some(_) => meta_based_workflow(args),
@@ -43,6 +48,19 @@ pub fn run(args: &Args) {
     }
 }
 
+/// Aggregate TP/FP/FN counts per group and compute summary metrics.
+///
+/// # Arguments
+///
+/// * `df` - Detailed per-taxon DataFrame
+///
+/// # Returns
+///
+/// DataFrame with aggregated counts and summary metrics.
+///
+/// # Errors
+///
+/// Returns a Polars error when aggregation fails.
 pub fn add_binary_classification(df: DataFrame) -> PolarsResult<DataFrame> {
     let mut newdf = df
         .lazy()
@@ -101,6 +119,16 @@ pub fn add_binary_classification(df: DataFrame) -> PolarsResult<DataFrame> {
     Ok(newdf)
 }
 
+/// Build the per-taxon binary classification DataFrame for all meta entries.
+///
+/// # Arguments
+///
+/// * `handler` - Profile handler with loaded profiles and meta
+/// * `allow_alternatives` - Whether to allow alternative name matching
+///
+/// # Returns
+///
+/// DataFrame with per-taxon classification rows.
 pub fn get_taxon_df(handler: &ProfileHandler, allow_alternatives: bool) -> DataFrame {
     debug!("Number of profiles: {}", handler.prediction_map.len());
     debug!("Number of gold profiles: {}", handler.gold_std_map.len());
@@ -196,6 +224,12 @@ pub fn get_taxon_df(handler: &ProfileHandler, allow_alternatives: bool) -> DataF
     return complete_df;
 }
 
+/// Execute the meta-driven workflow and write detailed and summary outputs.
+/// Execute the meta-driven benchmark workflow and write outputs.
+///
+/// # Arguments
+///
+/// * `args` - Parsed CLI arguments
 pub fn meta_based_workflow(args: &Args) {
     type C = MetaColumn;
     let path = Path::new(args.meta.as_ref().unwrap());
@@ -336,4 +370,10 @@ pub fn meta_based_workflow(args: &Args) {
     info!("File written to: {}", file_name_bc);
 }
 
+/// Placeholder for a meta-free workflow.
+/// Execute the meta-free workflow (not implemented).
+///
+/// # Arguments
+///
+/// * `args` - Parsed CLI arguments
 pub fn meta_free_workflow(args: &Args) {}

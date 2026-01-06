@@ -23,6 +23,7 @@ use regex::Regex;
 
 use crate::utils::workbook_to_dataframe;
 
+/// Errors produced while parsing or validating meta files.
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum MetaError {
     #[error("{0}")]
@@ -36,11 +37,13 @@ pub enum MetaError {
 pub type MetaResult = Result<Meta, MetaError>;
 
 #[derive(Default)]
+/// Parsed meta table and expanded entries.
 pub struct Meta {
     pub raw: DataFrame,
     pub entries: Vec<MetaEntry>,
 }
 
+/// Column name constants for supported meta formats.
 pub struct MetaColumnStrings;
 
 impl MetaColumnStrings {
@@ -59,6 +62,7 @@ impl MetaColumnStrings {
     pub const GOLDSTD_REGEX: &str = "GoldStdRegex";
 }
 
+/// Enumeration of supported meta columns.
 #[derive(Debug, EnumIter, Clone)]
 pub enum MetaColumn {
     ID,
@@ -75,6 +79,11 @@ pub enum MetaColumn {
 }
 
 impl MetaColumn {
+    /// Returns the canonical column name string.
+    ///
+    /// # Returns
+    ///
+    /// Column name as a string slice.
     pub fn to_str(&self) -> &str {
         match self {
             MetaColumn::ID => MetaColumnStrings::ID,
@@ -91,6 +100,15 @@ impl MetaColumn {
         }
     }
 
+    /// Parses a column enum from a column name.
+    ///
+    /// # Arguments
+    ///
+    /// * `str` - Column name as provided in the meta file
+    ///
+    /// # Returns
+    ///
+    /// `Some(MetaColumn)` for recognized columns, otherwise `None`.
     pub fn from_string(str: &str) -> Option<Self> {
         match str {
             MetaColumnStrings::ID => Some(Self::ID),
@@ -128,6 +146,7 @@ impl Into<Expr> for MetaColumn {
     }
 }
 
+/// Single meta row expanded into a resolved input pair.
 #[derive(Default, Clone, Debug)]
 pub struct MetaEntry {
     pub id: String,
@@ -157,6 +176,19 @@ impl Meta {
         "ProfileFormat",
     ];
 
+    /// Builds a `Meta` from an in-memory DataFrame.
+    ///
+    /// # Arguments
+    ///
+    /// * `meta` - DataFrame with meta columns
+    ///
+    /// # Returns
+    ///
+    /// Parsed `Meta` with expanded entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MetaError` when required columns are missing or data is invalid.
     pub fn from_polars_df(meta: DataFrame) -> MetaResult {
         if Self::is_matrix_format(&meta) {
             return Self::from_matrix_df(meta);
@@ -269,6 +301,15 @@ impl Meta {
         df.unwrap()
     }
 
+    /// Validates required columns and consistency constraints.
+    ///
+    /// # Returns
+    ///
+    /// `Meta` if validation succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MetaError` when columns are missing or inconsistent.
     pub fn validate(self) -> MetaResult {
         type C = MetaColumn;
         // let colnames =
@@ -654,6 +695,15 @@ impl Meta {
         Ok(Self { raw, entries })
     }
 
+    /// Loads a meta file into a Polars DataFrame based on extension.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to `.xlsx`, `.csv`, or `.tsv` meta file
+    ///
+    /// # Returns
+    ///
+    /// DataFrame if the file can be read.
     pub fn polars_from_path(path: impl AsRef<Path>) -> Option<DataFrame> {
         let ext = match path.as_ref().extension() {
             Some(ext) => ext,
@@ -667,6 +717,19 @@ impl Meta {
         }
     }
 
+    /// Loads and parses a meta file from disk.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to `.xlsx`, `.csv`, or `.tsv` meta file
+    ///
+    /// # Returns
+    ///
+    /// Parsed `Meta` with expanded entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MetaError` when loading or validation fails.
     pub fn from_path(path: impl AsRef<Path>) -> MetaResult {
         let ext = match path.as_ref().extension() {
             Some(ext) => ext,
@@ -687,6 +750,15 @@ impl Meta {
         }
     }
 
+    /// Returns a reference to a column by name.
+    ///
+    /// # Arguments
+    ///
+    /// * `column_name` - Column name to retrieve
+    ///
+    /// # Returns
+    ///
+    /// Column series if present.
     pub fn get_column(&self, column_name: &str) -> Option<&Series> {
         self.raw.get_columns().get(
             self.raw
@@ -695,6 +767,19 @@ impl Meta {
         )
     }
 
+    /// Returns the unique values for a column by name.
+    ///
+    /// # Arguments
+    ///
+    /// * `column_name` - Column name to retrieve
+    ///
+    /// # Returns
+    ///
+    /// Series of unique values.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Polars error when the column cannot be accessed.
     pub fn get_unique_col_values(&self, column_name: &str) -> PolarsResult<Series> {
         self.raw
             .get_columns()
@@ -707,6 +792,19 @@ impl Meta {
             .unwrap()
     }
 
+    /// Returns the unique values for a known meta column.
+    ///
+    /// # Arguments
+    ///
+    /// * `column` - Meta column identifier
+    ///
+    /// # Returns
+    ///
+    /// Series of unique values.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Polars error when the column cannot be accessed.
     pub fn get_unique_col_values_from_col(&self, column: &MetaColumn) -> PolarsResult<Series> {
         self.raw
             .get_columns()
@@ -719,6 +817,11 @@ impl Meta {
             .unwrap()
     }
 
+    /// Returns the list of tools defined in the meta file.
+    ///
+    /// # Returns
+    ///
+    /// Vector of tool names, or `None` if unavailable.
     pub fn get_tools(&self) -> Option<Vec<String>> {
         Some(
             self.get_unique_col_values("Tool")
@@ -731,6 +834,11 @@ impl Meta {
         )
     }
 
+    /// Returns the list of datasets defined in the meta file.
+    ///
+    /// # Returns
+    ///
+    /// Vector of dataset names, or `None` if unavailable.
     pub fn get_datasets(&self) -> Option<Vec<String>> {
         Some(
             self.get_unique_col_values("Dataset")
@@ -743,6 +851,11 @@ impl Meta {
         )
     }
 
+    /// Returns the unique set of tree paths referenced by the meta file.
+    ///
+    /// # Returns
+    ///
+    /// Set of tree file paths.
     pub fn get_tree_path_set(&self) -> HashSet<PathBuf> {
         let col_vals = self
             .get_unique_col_values_from_col(&MetaColumn::GoldStdTree)

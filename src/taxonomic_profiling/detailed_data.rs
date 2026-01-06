@@ -7,6 +7,7 @@ use thiserror::Error;
 
 use crate::{common::TaxonomicRank, profile::BC};
 
+/// Errors produced when parsing or serializing detailed benchmark data.
 #[derive(Error, Debug)]
 pub enum DetailedDataError {
     #[error("Column `{0}` is not available in polars df but is not optional")]
@@ -22,6 +23,7 @@ pub enum DetailedDataError {
 
 pub type DC = DetailedColumn;
 
+/// Columns used in the detailed benchmark output.
 #[derive(Debug, Clone, EnumIter)]
 pub enum DetailedColumn {
     ID,
@@ -42,6 +44,11 @@ pub enum DetailedColumn {
 }
 
 impl DetailedColumn {
+    /// Returns the column name string.
+    ///
+    /// # Returns
+    ///
+    /// Column name as a `String`.
     pub fn to_string(&self) -> String {
         match self {
             DetailedColumn::ID => "ID".to_owned(),
@@ -62,6 +69,11 @@ impl DetailedColumn {
         }
     }
 
+    /// Returns the columns required to parse a detailed DataFrame.
+    ///
+    /// # Returns
+    ///
+    /// Slice of mandatory columns.
     pub fn mandatory_columns() -> &'static [DetailedColumn] {
         &[
             Self::Name,
@@ -93,6 +105,7 @@ impl TryFrom<&str> for DetailedColumn {
     }
 }
 
+/// Row-level representation of detailed benchmark data.
 #[derive(Clone, Debug, Default)]
 pub struct DetailedDataRow {
     pub id: String,
@@ -114,6 +127,20 @@ pub struct DetailedDataRow {
 
 impl DetailedDataRow {
 
+    /// Parses an optional field value or returns a typed parse error.
+    ///
+    /// # Arguments
+    ///
+    /// * `field` - Column being parsed
+    /// * `value` - Raw string value
+    ///
+    /// # Returns
+    ///
+    /// Parsed optional value.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DetailedDataError::WrongValue` when parsing fails.
     pub fn empty_none_or_parse_err<T: FromStr>(
         field: DetailedColumn,
         value: &str,
@@ -130,6 +157,20 @@ impl DetailedDataRow {
         }
     }
 
+    /// Sets a field from a raw string value.
+    ///
+    /// # Arguments
+    ///
+    /// * `field` - Column being set
+    /// * `value` - Raw string value
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when the field is parsed and set.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DetailedDataError` when parsing fails.
     pub fn set_field(
         &mut self,
         field: DetailedColumn,
@@ -229,6 +270,7 @@ impl DetailedDataRow {
     }
 }
 
+/// Collection wrapper for detailed benchmark rows.
 #[derive(Clone, Debug, Default)]
 pub struct DetailedData {
     data: Vec<DetailedDataRow>,
@@ -236,12 +278,30 @@ pub struct DetailedData {
 }
 
 impl DetailedData {
+    /// Initializes the name-to-index map for quick lookups.
+    ///
+    /// # Returns
+    ///
+    /// `()` after mutation.
     pub fn init_map(&mut self) {
         for (index, row) in self.data.iter().enumerate() {
             self.name_map.insert(row.name.to_string(), index);
         }
     }
 
+    /// Constructs detailed data from a Polars DataFrame.
+    ///
+    /// # Arguments
+    ///
+    /// * `df` - DataFrame containing detailed benchmark columns
+    ///
+    /// # Returns
+    ///
+    /// Parsed `DetailedData`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DetailedDataError` when required columns are missing or parsing fails.
     pub fn from_polars_df(df: &DataFrame) -> Result<Self, DetailedDataError> {
         let mut data = Self::default();
         data.data
@@ -261,6 +321,15 @@ impl DetailedData {
         Ok(data)
     }
 
+    /// Serializes detailed data back into a Polars DataFrame.
+    ///
+    /// # Returns
+    ///
+    /// DataFrame containing detailed benchmark columns.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Polars error when DataFrame creation fails.
     pub fn to_polars_df(&self) -> PolarsResult<DataFrame> {
         let bool_to_str = |b: bool| -> &str {
             if b { "true" } else { "false" }
@@ -300,19 +369,43 @@ impl DetailedData {
     }
     
 
+    /// Returns a mutable row by taxon name.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - Taxon name
+    ///
+    /// # Returns
+    ///
+    /// Mutable row reference if present.
     pub fn get_mut<'a>(&'a mut self, name: &str) -> Option<&'a mut DetailedDataRow> {
         let idx: &usize = self.name_map.get(name)?;
         self.data.get_mut(*idx)
     }
 
+    /// Returns an immutable view of the rows.
+    ///
+    /// # Returns
+    ///
+    /// Slice of detailed rows.
     pub fn data(&self) -> &Vec<DetailedDataRow> {
         &self.data
     }
 
+    /// Returns a mutable view of the rows.
+    ///
+    /// # Returns
+    ///
+    /// Mutable slice of detailed rows.
     pub fn data_mut(&mut self) -> &mut Vec<DetailedDataRow> {
         &mut self.data
     }
 
+    /// Sorts rows by a derived key and rebuilds the lookup map.
+    ///
+    /// # Arguments
+    ///
+    /// * `f` - Key extraction function
     pub fn sort_by_key<F, K>(&mut self, f: F)
     where
         F: FnMut(&DetailedDataRow) -> K,
@@ -322,6 +415,11 @@ impl DetailedData {
         self.init_map();
     }
 
+    /// Sorts rows using a custom comparator and rebuilds the lookup map.
+    ///
+    /// # Arguments
+    ///
+    /// * `compare` - Comparator function
     pub fn sort_by<F>(&mut self, compare: F)
     where
     F: FnMut(&DetailedDataRow, &DetailedDataRow) -> Ordering, {

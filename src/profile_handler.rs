@@ -12,6 +12,7 @@ use log::{debug, warn};
 use crate::{common::{Custom, TaxonomicRank, GTDB, NCBI}, format::{Auto, Columns, CAMI}, meta::Meta, profile::{LoadProfile, Profile, ProfileWrapper}, utils::{load_file_lineages_to_hashset, load_file_to_hashset}};
 
 
+/// Errors raised while loading profiles from meta or files.
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum ProfileHandlerError {
     #[error("{0}")]
@@ -22,6 +23,7 @@ pub enum ProfileHandlerError {
     TaxonomyError(String),
 }
 
+/// Caches loaded profiles and auxiliary data referenced by meta.
 #[derive(Default)]
 pub struct ProfileHandler {
     pub meta: Meta,
@@ -115,6 +117,22 @@ impl ProfileHandler {
             }
         }
     }
+    /// Loads prediction profiles referenced in the meta table.
+    ///
+    /// # Arguments
+    ///
+    /// * `meta` - Parsed meta table
+    /// * `prediction_column` - Column holding prediction profile paths
+    /// * `taxonomy_column` - Column holding taxonomy identifiers
+    /// * `column_format_column` - Column holding optional column format strings
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when loading succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProfileHandlerError` on duplicate entries or parsing failures.
     pub fn load_prediction_profiles(&mut self, meta: &Meta, prediction_column: &str, taxonomy_column: &str, column_format_column: &str) -> Result<(), ProfileHandlerError> {
 
         let profiles = meta.raw.column(prediction_column).unwrap().str().unwrap().iter();
@@ -145,6 +163,22 @@ impl ProfileHandler {
         Ok(())
     }
 
+    /// Loads gold standard profiles referenced in the meta table.
+    ///
+    /// # Arguments
+    ///
+    /// * `meta` - Parsed meta table
+    /// * `gold_column` - Column holding gold standard profile paths
+    /// * `taxonomy_column` - Column holding taxonomy identifiers
+    /// * `column_format_column` - Column holding optional column format strings
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when loading succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProfileHandlerError` on parsing failures.
     pub fn load_gold_profiles(&mut self, meta: &Meta, gold_column: &str, taxonomy_column: &str, column_format_column: &str) -> Result<(), ProfileHandlerError> {
 
         let profiles = meta.raw.column(gold_column).unwrap().str().unwrap().iter();
@@ -179,6 +213,19 @@ impl ProfileHandler {
         Ok(())
     }
 
+    /// Loads available taxa lists referenced in the meta table.
+    ///
+    /// # Arguments
+    ///
+    /// * `meta` - Parsed meta table
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when all taxa lists are loaded.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors when taxa files cannot be read.
     pub fn load_available_taxa(&mut self, meta: &Meta) -> std::io::Result<()> {
         for row in meta.entries.iter() {
             if let Some(taxa) = &row.taxa_list {
@@ -189,6 +236,17 @@ impl ProfileHandler {
         Ok(())
     }
 
+    /// Loads a single profile from disk or a matrix reference.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path or matrix reference
+    /// * `taxonomy` - Optional taxonomy identifier
+    /// * `column_format` - Optional column mapping override
+    ///
+    /// # Returns
+    ///
+    /// Parsed `ProfileWrapper` if loading succeeds.
     pub fn load_profile(path: impl AsRef<Path>, taxonomy: Option<impl AsRef<str>>, column_format: Option<impl AsRef<str>>) -> Option<ProfileWrapper> {
 
         debug!("File: {:?}", path.as_ref());
@@ -237,6 +295,19 @@ impl ProfileHandler {
         profile
     }
 
+    /// Builds a handler by loading profiles referenced in a meta file.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Meta file path
+    ///
+    /// # Returns
+    ///
+    /// Initialized `ProfileHandler`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProfileHandlerError` when meta parsing fails.
     pub fn from_meta(path: impl AsRef<Path>) -> Result<Self, ProfileHandlerError> {
         let polars_df = Meta::polars_from_path(&path).expect("Meta file not valid");
         let meta = Meta::from_polars_df(polars_df)

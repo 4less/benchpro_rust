@@ -14,6 +14,15 @@ pub type Entries<T: Taxonomy> = Vec<Entry<T>>;
 pub type EntriesRef<'a, T: Taxonomy> = Vec<&'a Entry<T>>;
 
 
+/// Single taxon abundance entry parsed from a profile.
+///
+/// # Fields
+///
+/// - `taxon_name` - Optional raw taxon name as provided in the input
+/// - `lineage` - Optional lineage parsed into taxonomy-specific ranks
+/// - `alternative_names` - Optional alternative names for matching
+/// - `abundance` - Relative abundance for this taxon
+/// - `rank` - Parsed taxonomic rank for this entry
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Entry<T: Taxonomy> {
     pub taxon_name: Option<String>,
@@ -24,6 +33,11 @@ pub struct Entry<T: Taxonomy> {
 }
 
 impl<T: Taxonomy> Entry<T> {
+    /// Returns the lineage for this entry if available.
+    ///
+    /// # Returns
+    ///
+    /// Optional reference to the lineage.
     pub fn lineage(&self) -> Option<&Lineage<T>> {
         self.lineage.as_ref()
     }
@@ -40,6 +54,7 @@ struct BCVectors {
     gold_std_count: Vec::<usize>,
 }
 
+/// Binary classification label used in benchmarking.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BC {
     TP, FP, FN, TN, FFP, FFN, Unknown
@@ -52,6 +67,11 @@ impl Default for BC {
 }
 
 impl BC {
+    /// Returns the short string representation used in reports.
+    ///
+    /// # Returns
+    ///
+    /// Short label such as `TP`, `FP`, or `FN`.
     pub fn to_string(&self) -> String {
         match self {
             BC::TP => "TP".to_string(),
@@ -140,6 +160,20 @@ impl BCVectors {
 type TaxonEntryMap<'a, T: Taxonomy> = HashMap<&'a Taxon, EntriesRef<'a, T>>;
 type NamesEntryMap<'a, T: Taxonomy> = HashMap<String, EntriesRef<'a, T>>;
 
+/// Computes TP/FP/FN counts based on exact taxon name matches.
+///
+/// # Arguments
+///
+/// * `prediction` - Predicted taxa grouped by name
+/// * `gold_std` - Gold standard taxa grouped by name
+///
+/// # Returns
+///
+/// DataFrame containing TP/FP/FN rows with abundances and counts.
+///
+/// # Errors
+///
+/// Returns a Polars error when DataFrame creation fails.
 pub fn binary_classification_df<T: Taxonomy>(
     prediction: &NamesEntryMap<T>,
     gold_std: &NamesEntryMap<T>,
@@ -199,6 +233,20 @@ pub fn binary_classification_df<T: Taxonomy>(
 }
 
 
+/// Computes binary classification counts when alternative names are allowed.
+///
+/// # Arguments
+///
+/// * `prediction` - Predicted taxa mapped by taxon object
+/// * `gold_std` - Gold standard taxa mapped by taxon object
+///
+/// # Returns
+///
+/// DataFrame containing TP/FP/FN entries with abundance summaries.
+///
+/// # Errors
+///
+/// Returns a Polars error when the output DataFrame cannot be created.
 pub fn binary_classification_alternatives_df<T: Taxonomy>(
     prediction: &TaxonEntryMap<T>,
     gold_std: &TaxonEntryMap<T>,
@@ -389,6 +437,7 @@ struct TPMapValue<'a> {
 pub type TPMap<'a> = HashMap<&'a Taxon, TPMapValue<'a>>;
 pub type OtherSet<'a> = HashSet<&'a Taxon>;
 pub type MatchCountMap<'a> = HashMap<&'a Taxon, usize>;
+/// Aggregated TP/FP/FN sets and match counts for alternative matching.
 #[derive(Default)]
 pub struct BCData<'a> {
     tps: TPMap<'a>,
@@ -397,6 +446,16 @@ pub struct BCData<'a> {
     prediction_counts: MatchCountMap<'a>,
 }
 
+/// Computes TP/FP/FN sets and match counts for alternative-name matching.
+///
+/// # Arguments
+///
+/// * `prediction` - Predicted taxa set
+/// * `gold_std` - Gold standard taxa set
+///
+/// # Returns
+///
+/// Aggregated TP/FP/FN sets with prediction match counts.
 pub fn binary_classification_helper<'a, TREF: AsRef<Taxon>>(
     prediction: &'a HashSet<TREF>,
     gold_std: &'a HashSet<TREF>,
@@ -495,6 +554,7 @@ pub fn binary_classification_helper<'a, TREF: AsRef<Taxon>>(
 }
 
 
+/// Parsed taxonomic profile plus optional metadata.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Profile<T: Taxonomy> {
         pub unstructured_meta: StringList,
@@ -503,24 +563,44 @@ pub struct Profile<T: Taxonomy> {
 }
 
 impl Profile<GTDB> {
+    /// Wraps a GTDB profile for type-erased handling.
+    ///
+    /// # Returns
+    ///
+    /// `ProfileWrapper::GTDBProfile`.
     pub fn wrap(self) -> ProfileWrapper {
         ProfileWrapper::GTDBProfile(self)
     }
 }
 
 impl Profile<NCBI> {
+    /// Wraps an NCBI profile for type-erased handling.
+    ///
+    /// # Returns
+    ///
+    /// `ProfileWrapper::NCBIProfile`.
     pub fn wrap(self) -> ProfileWrapper {
         ProfileWrapper::NCBIProfile(self)
     }
 }
 
 impl Profile<Custom> {
+    /// Wraps a custom profile for type-erased handling.
+    ///
+    /// # Returns
+    ///
+    /// `ProfileWrapper::CustomProfile`.
     pub fn wrap(self) -> ProfileWrapper {
         ProfileWrapper::CustomProfile(self)
     }
 }
 
 impl<T: Taxonomy> Profile<T> {
+    /// Returns the set of unique ranks present in the profile.
+    ///
+    /// # Returns
+    ///
+    /// `None` when ranks are unknown; otherwise the set of ranks.
     pub fn unique_ranks(&self) -> Option<HashSet::<TaxonomicRank>> {
 
 
@@ -538,6 +618,14 @@ impl<T: Taxonomy> Profile<T> {
     /// If ranks are undefined, see if the lineage contains the target ranks. 
     /// - This only works for the GTDB taxonomy. 
     /// - For the NCBI taxonomy, something more elaborate needss to be figured out
+    ///
+    /// # Arguments
+    ///
+    /// * `rank` - Target rank to extract
+    ///
+    /// # Returns
+    ///
+    /// `Some` set of taxon names for the rank or `None` if unavailable.
     pub fn get_taxa_with_rank(&self, rank: &TaxonomicRank) -> Option<HashSet<String>> {
         match self.unique_ranks() {
             Some(ranks) => {
@@ -584,6 +672,15 @@ impl<T: Taxonomy> Profile<T> {
         }
     }
 
+    /// Groups entries by taxon name at the requested rank.
+    ///
+    /// # Arguments
+    ///
+    /// * `rank` - Target rank to extract
+    ///
+    /// # Returns
+    ///
+    /// Map from taxon name to matching entries, or `None` if the rank is absent.
     pub fn get_taxa_string_dict(&self, rank: &TaxonomicRank) -> Option<HashMap<String, Vec<&Entry<T>>>> {
         match self.unique_ranks() {
             Some(ranks) => {
@@ -652,6 +749,15 @@ impl<T: Taxonomy> Profile<T> {
     }
 
 
+    /// Groups entries by taxon object at the requested rank.
+    ///
+    /// # Arguments
+    ///
+    /// * `rank` - Target rank to extract
+    ///
+    /// # Returns
+    ///
+    /// Map from taxon reference to matching entries, or `None` if the rank is absent.
     pub fn get_taxa_dict<'a>(&'a self, rank: &TaxonomicRank) -> Option<HashMap<&'a Taxon, Vec<&Entry<T>>>> {
         match self.unique_ranks() {
             Some(ranks) => {
@@ -713,6 +819,21 @@ impl<T: Taxonomy> Profile<T> {
 
     
 
+    /// Runs binary classification for a list of ranks.
+    ///
+    /// # Arguments
+    ///
+    /// * `gold_std` - Gold standard profile for comparison
+    /// * `ranks` - Ranks to evaluate
+    /// * `allow_ambiguity` - Whether to allow alternative name matching
+    ///
+    /// # Returns
+    ///
+    /// DataFrame combining TP/FP/FN rows across ranks.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Polars error when DataFrame operations fail.
     pub fn binary_classification(
         &self,
         gold_std: &Self,
@@ -774,6 +895,7 @@ impl<T: Taxonomy> Profile<T> {
     }
 }
 
+/// Type-erased wrapper around profiles of different taxonomies.
 #[derive(Debug)]
 pub enum ProfileWrapper {
     GTDBProfile(Profile<GTDB>),
@@ -782,6 +904,11 @@ pub enum ProfileWrapper {
 }
 
 impl ProfileWrapper {
+    /// Returns the taxonomy identifier for the wrapped profile.
+    ///
+    /// # Returns
+    ///
+    /// `TaxonomyEnum` describing the profile taxonomy.
     pub fn taxonomy(&self) -> TaxonomyEnum {
         match self {
             ProfileWrapper::GTDBProfile(_) => TaxonomyEnum::GTDB,
@@ -790,6 +917,15 @@ impl ProfileWrapper {
         }
     }
 
+    /// Returns taxa names at a given rank for the wrapped profile.
+    ///
+    /// # Arguments
+    ///
+    /// * `rank` - Target rank to extract
+    ///
+    /// # Returns
+    ///
+    /// Set of taxon names, or `None` if unavailable.
     pub fn taxa(&self, rank: &TaxonomicRank) -> Option<HashSet<String>> {
         match self {
             ProfileWrapper::GTDBProfile(profile) => profile.get_taxa_with_rank(rank),
@@ -798,6 +934,11 @@ impl ProfileWrapper {
         }
     }
 
+    /// Returns the set of ranks present in the wrapped profile.
+    ///
+    /// # Returns
+    ///
+    /// `None` if ranks are unknown; otherwise a set of ranks.
     pub fn unique_ranks(&self) -> Option<HashSet<TaxonomicRank>> {
         match self {
             ProfileWrapper::GTDBProfile(profile) => profile.unique_ranks(),
@@ -806,6 +947,20 @@ impl ProfileWrapper {
         }
     }
 
+    /// Runs binary classification between matching taxonomy profiles.
+    ///
+    /// # Arguments
+    ///
+    /// * `gold_std` - Gold standard profile with the same taxonomy
+    /// * `allow_alternatives` - Whether to consider alternative names
+    ///
+    /// # Returns
+    ///
+    /// DataFrame containing TP/FP/FN rows for each rank.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Polars error when DataFrame operations fail.
     pub fn binary_classification(
         &self,
         gold_std: &ProfileWrapper,
@@ -826,6 +981,7 @@ impl ProfileWrapper {
     }
 }
 
+/// Errors returned while loading or validating profiles.
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum ProfileError {
     #[error("{0}")]
@@ -841,8 +997,22 @@ pub enum ProfileError {
 pub type ProfileResult<T: Taxonomy> = Result<Profile<T>, ProfileError>;
 
 
-// LoadProfile trait for dynamic loading
+/// Loads a profile from a reader using a format-specific parser.
 pub trait LoadProfile<T: Taxonomy + Default> {
+    /// Parse the provided reader using the given format and columns.
+    ///
+    /// # Arguments
+    ///
+    /// * `input` - Reader positioned at the start of the profile
+    /// * `columns` - Optional column definition override
+    ///
+    /// # Returns
+    ///
+    /// Parsed profile with taxonomy-aware entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProfileError` when parsing fails.
     fn load<F: Format, R: Read + Seek>(input: &mut R, columns: Option<Columns>) -> ProfileResult<T>;
 }
 

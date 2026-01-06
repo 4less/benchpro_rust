@@ -17,11 +17,13 @@ pub type TaxaSet = HashSet<String>;
 pub type Name2Id = HashMap<String, NodeId>;
 pub type TreeMap = HashMap<String, (Name2Id, Tree)>;
 
+/// Caches trees and name-to-id maps for fast subtree queries.
 #[derive(Clone)]
 pub struct TreeHandler {
     pub tree_map: TreeMap,
 }
 
+/// Errors encountered while loading or parsing trees.
 #[derive(thiserror::Error, Debug)]
 pub enum TreeHandlerError {
     #[error("Newick Parse Error: {0}")]
@@ -63,6 +65,19 @@ impl TreeHandler {
         Ok(Tree::from_newick(&clean_newick)?)
     }
 
+    /// Loads all tree files referenced by the meta table.
+    ///
+    /// # Arguments
+    ///
+    /// * `meta` - Parsed meta table
+    ///
+    /// # Returns
+    ///
+    /// Initialized `TreeHandler` with cached trees.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TreeHandlerError` when trees cannot be read or parsed.
     pub fn from_meta(meta: &Meta) -> TreeHandlerResult<Self> {
         let mut res = TreeMap::default();
 
@@ -87,6 +102,16 @@ impl TreeHandler {
         })
     }
 
+    /// Builds a subtree containing the requested taxa from a cached tree.
+    ///
+    /// # Arguments
+    ///
+    /// * `tree_path` - Path identifying the cached tree
+    /// * `taxa` - Set of taxa names to include
+    ///
+    /// # Returns
+    ///
+    /// Subtree if the tree is found and taxa can be resolved.
     pub fn get_subtree(&self, tree_path: &str, taxa: &TaxaSet) -> Option<Tree> {
         let is_valid_path = |path: &str| std::path::Path::new(path).exists();
 

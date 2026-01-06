@@ -17,6 +17,7 @@ type TaxonAbundancePair = (Taxon, Abundance);
 type TaxonMap = micromap::Map<TaxonomicRank, Taxon, { TaxonomicRank::COUNT }>;
 
 
+/// Supported taxonomic ranks.
 #[derive(Debug, EnumIter, EnumCount, PartialEq, PartialOrd, Eq, Ord, Clone, Hash, Display)]
 pub enum TaxonomicRank {
     Superkingdom,
@@ -38,10 +39,24 @@ impl Default for TaxonomicRank {
 }
 
 impl TaxonomicRank {
+    /// Returns all supported ranks in enum order.
+    ///
+    /// # Returns
+    ///
+    /// Vector of all `TaxonomicRank` variants.
     pub fn all() -> Vec::<TaxonomicRank> {
         TaxonomicRank::iter().collect_vec()
     }
 
+    /// Parses a GTDB-style rank prefix into a `TaxonomicRank`.
+    ///
+    /// # Arguments
+    ///
+    /// * `str` - Token with GTDB prefix, e.g. `d__Bacteria`
+    ///
+    /// # Returns
+    ///
+    /// Matching rank or `None` if the prefix is not recognized.
     pub fn from_gtdb_prefix(str: &str) -> Option<Self> {
         if str.len() < 3 { return None };
         match &str[..3] {
@@ -58,6 +73,15 @@ impl TaxonomicRank {
         }
     }
 
+    /// Parses a rank name into a `TaxonomicRank`.
+    ///
+    /// # Arguments
+    ///
+    /// * `str` - Rank name such as `species` or `genus`
+    ///
+    /// # Returns
+    ///
+    /// Matching rank or `None` if the name is not recognized.
     pub fn from_string(str: &str) -> Option<Self> {
         match &str.to_lowercase().as_str() {
             &"domain" => Some(Self::Domain),
@@ -94,6 +118,7 @@ impl FromStr for TaxonomicRank {
 }
 
 
+/// Taxonomic lineage keyed by rank.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Lineage<T: Taxonomy> {
     data: TaxonMap,
@@ -101,34 +126,79 @@ pub struct Lineage<T: Taxonomy> {
 }
 
 
+/// Parses a lineage from a string representation.
 pub trait LineageFromString<T: Taxonomy> {
+    /// Parses a lineage from a delimited string.
+    ///
+    /// # Arguments
+    ///
+    /// * `str` - Lineage string
+    ///
+    /// # Returns
+    ///
+    /// Parsed lineage.
     fn from_string(str: &str) -> Lineage<T>;
+    /// Parses a lineage from a string using explicit rank columns.
+    ///
+    /// # Arguments
+    ///
+    /// * `str` - Lineage string
+    /// * `ranks` - Ordered rank list aligned with tokens
+    ///
+    /// # Returns
+    ///
+    /// Parsed lineage.
     fn from_string_with_columns(str: &str, ranks: &Vec<TaxonomicRank>) -> Lineage<T>;
 }
 
 impl<T: Taxonomy> Lineage<T> {
+    /// Returns the taxon at a specific rank.
+    ///
+    /// # Arguments
+    ///
+    /// * `rank` - Rank to retrieve
+    ///
+    /// # Returns
+    ///
+    /// Taxon at the rank or `None` if missing.
     pub fn get(&self, rank: &TaxonomicRank) -> Option<&Taxon> {
         self.data.get(rank)
     }
 
+    /// Returns the deepest (lowest) taxon in the lineage.
+    ///
+    /// # Returns
+    ///
+    /// Lowest taxon, or `None` if empty.
     pub fn lowest(&self) -> Option<&Taxon> {
         self.data.iter().max_by_key(|x| {
             x.0
         }).map(|(_, taxon)| taxon)
     }
 
+    /// Normalizes taxon names in-place for matching.
+    ///
+    /// # Returns
+    ///
+    /// `()` after mutation.
     pub fn normalize(&mut self) {
         self.data.iter_mut().for_each(|(r, t)| {
             t.normalize_name()
         });
     }
 
+    /// Returns a debug-friendly string representation.
+    ///
+    /// # Returns
+    ///
+    /// String with rank/name tuples.
     pub fn to_string(&self) -> String {
         self.data.iter().map(|(k,v)| format!("({},{:?})", k.to_string(), v)).join(";")
     }
 }
 
 
+/// Errors produced while parsing taxonomy lineages.
 #[derive(Error, Debug)]
 pub enum TaxonomyLineageError {
     // #[error("data store disconnected")]
@@ -146,6 +216,7 @@ pub enum TaxonomyLineageError {
 
 
 
+/// Enumeration of supported taxonomy systems.
 #[derive(Debug, Clone, PartialEq, Eq, ConstParamTy, Display)]
 pub enum TaxonomyEnum {
     NCBI,
@@ -155,14 +226,29 @@ pub enum TaxonomyEnum {
 
 
 
+/// Trait implemented by taxonomy systems with lineage parsing.
 pub trait Taxonomy {
+    /// Parses a lineage string into a taxonomy-specific lineage.
+    ///
+    /// # Arguments
+    ///
+    /// * `str` - Lineage string to parse
+    /// * `ranks` - Optional rank list aligned with tokens
+    ///
+    /// # Returns
+    ///
+    /// Parsed lineage.
     fn lineage_from_string(str: &str, ranks: Option<&Vec<TaxonomicRank>>) -> Lineage<Self> where Self: Sized;
+    /// Returns the enum identifier for this taxonomy.
     fn get_enum() -> TaxonomyEnum;
 }
+/// NCBI taxonomy marker type.
 #[derive(Default, Debug)]
 pub struct NCBI;
+/// GTDB taxonomy marker type.
 #[derive(Default, Debug)]
 pub struct GTDB;
+/// Custom taxonomy marker type.
 #[derive(Default, Debug)]
 pub struct Custom;
 
@@ -285,6 +371,7 @@ impl Taxonomy for NCBI {
     }
 }
 
+/// Taxon with optional rank, id, and alternative names.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Taxon {
     pub name: String,
@@ -309,6 +396,16 @@ impl Taxon {
         }
     }
 
+    /// Constructs a taxon with a name and rank.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - Taxon name
+    /// * `rank` - Taxonomic rank
+    ///
+    /// # Returns
+    ///
+    /// Initialized `Taxon`.
     pub fn with_name_and_rank(name: &str, rank: &TaxonomicRank) -> Self {
         let mut obj = Self::internal_default();
         obj.name = name.to_string();
@@ -316,6 +413,15 @@ impl Taxon {
         obj
     }
 
+    /// Returns true if any name (primary or alternative) matches another taxon.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - Taxon to compare against
+    ///
+    /// # Returns
+    ///
+    /// True when names and ranks are compatible.
     pub fn match_any(&self, other: &Self) -> bool {
         // Early condition to throw
         if self.rank != other.rank { return false }
@@ -328,6 +434,15 @@ impl Taxon {
         })
     }
 
+    /// Returns true if both taxa match exactly with no alternatives.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - Taxon to compare against
+    ///
+    /// # Returns
+    ///
+    /// True when ranks and names match and no alternatives exist.
     pub fn match_exact(&self, other: &Self) -> bool {
         other.alternative_names.is_none() && 
             self.alternative_names.is_none() && 
@@ -335,6 +450,11 @@ impl Taxon {
             self.name == other.name
     }
 
+    /// Iterates over the primary name and any alternative names.
+    ///
+    /// # Returns
+    ///
+    /// Iterator over taxon names.
     pub fn names_iter<'a>(&'a self) -> Box<dyn Iterator<Item = &'a str> + 'a> {
         let names = std::iter::once(self.name.as_str());
         if let Some(ambig) = &self.alternative_names {
@@ -343,6 +463,11 @@ impl Taxon {
         Box::new(names)
     }
 
+    /// Normalizes name formatting to improve matching.
+    ///
+    /// # Returns
+    ///
+    /// `()` after mutation.
     pub fn normalize_name(&mut self) {
         self.name = self.name.replace("-", "_");
         self.name = self.name.replace(" ", "_");
@@ -360,11 +485,17 @@ impl Taxon {
 }
 
 
+/// Marker for whether a taxon is detectable.
 pub enum Detectable {
     Unknown, True, False
 }
 
 impl Detectable {
+    /// Returns the string form used in outputs.
+    ///
+    /// # Returns
+    ///
+    /// String representation of the enum.
     pub fn to_string(&self) -> String {
         match(self) {
             Detectable::Unknown => "Unknown".to_string(),
@@ -373,6 +504,15 @@ impl Detectable {
         }
     }
 
+    /// Parses a string into a `Detectable` enum.
+    ///
+    /// # Arguments
+    ///
+    /// * `var` - String value from outputs
+    ///
+    /// # Returns
+    ///
+    /// `Some(Detectable)` when the value is recognized.
     pub fn from_string(var: &str) -> Option<Self> {
         match(var) {
             "Unknown" => Some(Self::Unknown),

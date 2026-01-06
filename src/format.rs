@@ -5,13 +5,19 @@ use itertools::{all, Itertools};
 use crate::{common::{Taxon, TaxonomicRank, Taxonomy, NCBI}, profile::{Entry, Profile, ProfileError, ProfileResult}};
 
 
+/// Header keywords used to identify the taxon name or id column.
 pub const NAME_KEYWORDS: &[&str] = &["TAXID", "NAME", "ID"];
+/// Header keywords used to identify the rank column.
 pub const RANK_KEYWORDS: &[&str] = &["RANK"];
+/// Header keywords used to identify the lineage column.
 pub const LINEAGE_KEYWORDS: &[&str] = &["TAXPATHSN", "Lineage", "clade_name"];
+/// Header keywords used to identify lineage id columns.
 pub const LINEAGE_ID_KEYWORDS: &[&str] = &["TAXPATH"];
+/// Header keywords used to identify abundance columns.
 pub const ABUNDANCE_KEYWORDS: &[&str] = &["PERCENTAGE", "abundance", "relative_abundance"];
 
 
+/// Column index mapping for a taxonomic profile file.
 #[derive(Debug, Clone, Default)]
 pub struct Columns {
     pub taxon_name: Option<usize>,
@@ -36,6 +42,19 @@ impl Display for Columns {
 
 type ColumnResult = Result<Columns, ProfileError>;
 impl Columns {
+    /// Parses a custom format string into column indices.
+    ///
+    /// # Arguments
+    ///
+    /// * `str` - Format string in `Name|Lineage|Abundance|Rank` order
+    ///
+    /// # Returns
+    ///
+    /// Column mapping when the format is valid.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProfileError::FormatError` for invalid format strings.
     pub fn from_format_str(str: &str) -> Result<Self,ProfileError> {
         let tokens = str.split('|').collect::<Vec<_>>();
 
@@ -75,6 +94,15 @@ impl Columns {
         Ok(res)
     }
 
+    /// Returns true if a lineage string appears to be in GTDB format.
+    ///
+    /// # Arguments
+    ///
+    /// * `str` - Lineage string to inspect
+    ///
+    /// # Returns
+    ///
+    /// True when the string matches GTDB rank prefixes.
     pub fn is_gtdb_lineage(str: &str) -> bool {
         let gtdb_delimiter = ";";
         // conditions: 
@@ -87,6 +115,15 @@ impl Columns {
         })
     }
 
+    /// Attempts to infer columns from a tokenized row.
+    ///
+    /// # Arguments
+    ///
+    /// * `tokens` - Tokenized row values
+    ///
+    /// # Returns
+    ///
+    /// Column mapping when inference succeeds.
     pub fn auto<T: AsRef<str>>(tokens: &[T]) -> Option<Self> {
         if tokens.iter().all(|token| !token.as_ref().parse::<f64>().is_ok()) {
             return None
@@ -109,6 +146,19 @@ impl Columns {
         None
     }
     
+    /// Finds a CAMI header in the provided lines.
+    ///
+    /// # Arguments
+    ///
+    /// * `lines` - Candidate header lines
+    ///
+    /// # Returns
+    ///
+    /// Column mapping derived from a CAMI header.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProfileError::CamiFormatError` if no CAMI header is found.
     pub fn find_cami_header<T: AsRef<str>>(lines: &[T]) -> ColumnResult {
         match lines.iter().find(|&line| {
             Self::from_cami(line.as_ref()).is_ok()
@@ -118,6 +168,19 @@ impl Columns {
         }
     }
 
+    /// Finds a generic header in the provided lines.
+    ///
+    /// # Arguments
+    ///
+    /// * `lines` - Candidate header lines
+    ///
+    /// # Returns
+    ///
+    /// Column mapping derived from the first valid header.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProfileError::CamiFormatError` if no header is found.
     pub fn find_any_header<T: AsRef<str>>(lines: &[T]) -> ColumnResult {
         match lines.iter().find(|&line| {
             Self::from_generic_header(line.as_ref()).is_ok()
@@ -127,6 +190,19 @@ impl Columns {
         }
     }
 
+    /// Parses a CAMI header line into column indices.
+    ///
+    /// # Arguments
+    ///
+    /// * `str` - CAMI header line starting with `@@`
+    ///
+    /// # Returns
+    ///
+    /// Column mapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProfileError::CamiFormatError` on invalid headers.
     pub fn from_cami(str: &str) -> ColumnResult {
         if !str.starts_with("@@") {
             return Err(ProfileError::CamiFormatError("Cami header line expected but line does not start with '@@'".to_owned()));
@@ -158,6 +234,19 @@ impl Columns {
     }
 
 
+    /// Parses a generic header line into column indices.
+    ///
+    /// # Arguments
+    ///
+    /// * `str` - Header line with column names
+    ///
+    /// # Returns
+    ///
+    /// Column mapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProfileError::FormatError` when header parsing fails.
     pub fn from_generic_header(str: &str) -> ColumnResult {
         // eprintln!("From generic header: \n{}", str);
         if str.len() == 0 {
@@ -219,6 +308,11 @@ impl Columns {
         Ok(columns)
     }
 
+    /// Returns the maximum column index referenced by this mapping.
+    ///
+    /// # Returns
+    ///
+    /// Highest column index, or `None` if no columns are set.
     pub fn max_col(&self) -> Option<usize> {
         let list = [self.taxon_id, self.taxon_name, self.lineage, self.lineage_ids, self.abundance, self.rank];
         list.iter()
@@ -228,17 +322,34 @@ impl Columns {
 }
 
 
-// Define the Format trait
+/// Parser trait for profile formats.
 pub trait Format {
+    /// Loads a profile from a reader and optional column mapping.
+    ///
+    /// # Arguments
+    ///
+    /// * `input` - Reader positioned at the start of the file
+    /// * `columns` - Optional column mapping override
+    ///
+    /// # Returns
+    ///
+    /// Parsed profile with taxonomy-specific entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProfileError` when parsing fails.
     fn load_profile<T: Taxonomy + Default, R: Read + Seek>(input: &mut R, columns: Option<Columns>) -> ProfileResult<T>;
 }
 
+/// Provides a printable description of a format.
 pub trait ProfilePrinter {
+    /// Returns the user-facing format description.
     fn print_profile() -> String;
 }
 
 
 
+/// Detected profile format variants.
 pub enum ProfileFormat {
     CAMI,
     Custom(Columns),
@@ -247,10 +358,14 @@ pub enum ProfileFormat {
 
 
 // Implement specific formats
+/// CAMI profile format parser.
 pub struct CAMI;
+/// Auto-detecting profile format parser.
 pub struct Auto;
+/// Minimal parser variant (reserved for future use).
 pub struct Minimal;
 
+/// Custom column mapping parser.
 pub struct Custom;
 
 impl Custom {
@@ -332,6 +447,17 @@ impl Custom {
 
 
 impl Auto {
+    /// Returns true if a tokenized row should be skipped.
+    ///
+    /// # Arguments
+    ///
+    /// * `tokens` - Tokenized row values
+    /// * `exclude_at_start` - Prefixes that mark a row as skippable
+    /// * `exclude_if_field_contains` - Substrings that mark a row as skippable
+    ///
+    /// # Returns
+    ///
+    /// True when the row should be ignored.
     pub fn skip_row<T: AsRef<str>, U: AsRef<str>>(tokens: &[T], exclude_at_start: Option<&[U]>, exclude_if_field_contains: Option<&[U]>) -> bool {
         if exclude_at_start.is_some_and(|val| {
             val.iter().any(|e| {
@@ -353,6 +479,15 @@ impl Auto {
         tokens.iter().all(|token| !token.as_ref().parse::<f64>().is_ok())
     }
 
+    /// Derives column mappings by inspecting the first data row.
+    ///
+    /// # Arguments
+    ///
+    /// * `input` - Reader positioned at the start of the file
+    ///
+    /// # Returns
+    ///
+    /// Column mapping if detection succeeds.
     pub fn derive_columns<R: Read + Seek>(input: &mut R) -> Option<Columns> {
         input.seek(SeekFrom::Start(0)).expect("Failed rewinding reader to beginning of file");
 
@@ -368,6 +503,15 @@ impl Auto {
         Columns::auto(&target?)
     }
 
+    /// Detects the profile format for the provided reader.
+    ///
+    /// # Arguments
+    ///
+    /// * `input` - Reader positioned at the start of the file
+    ///
+    /// # Returns
+    ///
+    /// Detected profile format.
     pub fn detect<R: Read + Seek>(input: &mut R) -> ProfileFormat {
         input.seek(SeekFrom::Start(0)).expect("Failed rewinding reader to beginning of file");
         // Check CAMI

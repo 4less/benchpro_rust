@@ -25,6 +25,11 @@ use log::info;
 use utils::time;
 
 
+/// Return the Benchpro banner string.
+///
+/// # Returns
+///
+/// Static banner shown at startup.
 pub fn logo() -> String {
     let logo = "
 Benchpro statistics
