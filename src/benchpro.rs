@@ -17,7 +17,7 @@ use polars::{
     io::SerWriter,
     prelude::{
         col, cols, lit, when, CsvWriter, DataFrameJoinOps, DataType, IntoLazy, NamedFrom,
-        PlSmallStr, QuoteStyle,
+        PlSmallStr, QuoteStyle, SortMultipleOptions,
     },
     series::Series,
 };
@@ -296,6 +296,13 @@ pub fn meta_based_workflow(args: &Args) {
     }
     
 
+    new_complete_df = new_complete_df
+        .sort(
+            ["ID", "Rank", "Name", "Type", "AllowAlternatives", "Adjusted"],
+            SortMultipleOptions::default(),
+        )
+        .expect("Cannot sort detailed output");
+
     // Specify the path where you want to save the CSV file
 
     let file_name_detailed = format!("{}_detailed.tsv", args.outprefix);
@@ -320,6 +327,13 @@ pub fn meta_based_workflow(args: &Args) {
     let mut newdf = newdf
         .left_join(&handler.meta.raw, ["ID"], ["ID"])
         .expect("Cannot join with meta-data");
+
+    newdf = newdf
+        .sort(
+            ["ID", "Rank", "AllowAlternatives", "Adjusted"],
+            SortMultipleOptions::default(),
+        )
+        .expect("Cannot sort summary output");
 
     // Open the file for writing
     let file_name_bc = format!("{}.tsv", args.outprefix);
