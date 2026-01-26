@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs::File,
     io::{BufReader, Cursor},
     iter::repeat,
@@ -10,7 +10,7 @@ use std::{
 };
 
 use itertools::{izip, Itertools};
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use polars::{
     error::PolarsResult,
     frame::DataFrame,
@@ -24,15 +24,16 @@ use polars::{
 
 use crate::{
     common::{Detectable, TaxonomicRank},
-    meta::{self, MetaColumn},
+    meta::{self, Meta, MetaColumn},
     options::Args,
     profile::{LoadProfile, Profile, ProfileWrapper},
     profile_handler::ProfileHandler,
     tree_adjusted_benchmarks::get_adjusted_benchmarks,
     tree_handler::{TaxaSet, TreeHandler},
     utils::{
-        add_string_columns, f1_score, get_lca, get_subtree, get_subtree_with_leaves, precision,
-        sample_apply, sensitivity, tree_collapse_edges, wrap_names, write_df,
+        add_string_columns, bray_curtis_similarity, f1_score, get_lca, get_subtree,
+        get_subtree_with_leaves, l2_similarity, pearson_correlation, precision, sample_apply,
+        sensitivity, spearman_correlation, tree_collapse_edges, wrap_names, write_df,
     },
 };
 
@@ -42,10 +43,43 @@ use crate::{
 ///
 /// * `args` - Parsed CLI arguments
 pub fn run(args: &Args) {
+    if args.validate_meta {
+        validate_meta_only(args);
+        return;
+    }
+    if args.outprefix.is_none() {
+        error!("--outprefix is required unless --validate-meta is used");
+        exit(2);
+    }
     match &args.meta {
         Some(_) => meta_based_workflow(args),
         None => meta_free_workflow(args),
     }
+}
+
+fn validate_meta_only(args: &Args) {
+    let meta_path = match &args.meta {
+        Some(path) => path,
+        None => {
+            error!("--validate-meta requires --meta");
+            exit(2);
+        }
+    };
+
+    let meta = match Meta::from_path(meta_path) {
+        Ok(meta) => meta,
+        Err(err) => {
+            error!("Meta validation failed: {}", err);
+            exit(1);
+        }
+    };
+
+    if let Err(err) = meta.validate_paths() {
+        error!("Meta validation failed: {}", err);
+        exit(1);
+    }
+
+    info!("Meta validation succeeded");
 }
 
 /// Aggregate TP/FP/FN counts per group and compute summary metrics.
@@ -62,6 +96,7 @@ pub fn run(args: &Args) {
 ///
 /// Returns a Polars error when aggregation fails.
 pub fn add_binary_classification(df: DataFrame) -> PolarsResult<DataFrame> {
+    let abundance_metrics = compute_abundance_metrics(&df)?;
     let mut newdf = df
         .lazy()
         .group_by(["Rank", "ID", "AllowAlternatives", "Adjusted"])
@@ -116,7 +151,121 @@ pub fn add_binary_classification(df: DataFrame) -> PolarsResult<DataFrame> {
     let _ = newdf.with_column(sensitivity_series)?;
     let _ = newdf.with_column(precision_series)?;
 
-    Ok(newdf)
+    newdf.left_join(
+        &abundance_metrics,
+        ["Rank", "ID", "AllowAlternatives", "Adjusted"],
+        ["Rank", "ID", "AllowAlternatives", "Adjusted"],
+    )
+}
+
+struct AbundanceMetrics {
+    prediction: Vec<f64>,
+    gold_std: Vec<f64>,
+    prediction_tp: Vec<f64>,
+    gold_std_tp: Vec<f64>,
+}
+
+fn compute_abundance_metrics(df: &DataFrame) -> PolarsResult<DataFrame> {
+    let rank_col = df.column("Rank")?.str()?;
+    let id_col = df.column("ID")?.str()?;
+    let allow_alternatives_col = df.column("AllowAlternatives")?.bool()?;
+    let adjusted_col = df.column("Adjusted")?.str()?;
+    let type_col = df.column("Type")?.str()?;
+    let pred_abundance_col = df.column("PredictionAbundance")?.f64()?;
+    let gold_abundance_col = df.column("GoldStdAbundance")?.f64()?;
+
+    let mut groups: HashMap<(String, String, bool, String), AbundanceMetrics> = HashMap::new();
+
+    for row_index in 0..df.height() {
+        let rank = rank_col.get(row_index).unwrap_or("");
+        let id = id_col.get(row_index).unwrap_or("");
+        let allow_alternatives = allow_alternatives_col.get(row_index).unwrap_or(false);
+        let adjusted = adjusted_col.get(row_index).unwrap_or("");
+        let bc_type = type_col.get(row_index).unwrap_or("");
+        let pred_abundance = pred_abundance_col.get(row_index).unwrap_or(0.0);
+        let gold_abundance = gold_abundance_col.get(row_index).unwrap_or(0.0);
+
+        let key = (
+            rank.to_string(),
+            id.to_string(),
+            allow_alternatives,
+            adjusted.to_string(),
+        );
+        let entry = groups.entry(key).or_insert_with(|| AbundanceMetrics {
+            prediction: Vec::new(),
+            gold_std: Vec::new(),
+            prediction_tp: Vec::new(),
+            gold_std_tp: Vec::new(),
+        });
+
+        entry.prediction.push(pred_abundance);
+        entry.gold_std.push(gold_abundance);
+        if bc_type == "TP" {
+            entry.prediction_tp.push(pred_abundance);
+            entry.gold_std_tp.push(gold_abundance);
+        }
+    }
+
+    let mut ranks = Vec::with_capacity(groups.len());
+    let mut ids = Vec::with_capacity(groups.len());
+    let mut allow_alternatives = Vec::with_capacity(groups.len());
+    let mut adjusted = Vec::with_capacity(groups.len());
+    let mut bray_curtis = Vec::with_capacity(groups.len());
+    let mut l2_sim = Vec::with_capacity(groups.len());
+    let mut pearson = Vec::with_capacity(groups.len());
+    let mut spearman = Vec::with_capacity(groups.len());
+    let mut l2_sim_tp = Vec::with_capacity(groups.len());
+    let mut pearson_tp = Vec::with_capacity(groups.len());
+    let mut spearman_tp = Vec::with_capacity(groups.len());
+
+    for ((rank, id, allow, adjusted_val), values) in groups.into_iter() {
+        let bc_sim = bray_curtis_similarity(&values.prediction, &values.gold_std);
+        let l2_score = l2_similarity(&values.prediction, &values.gold_std);
+        let pearson_score = pearson_correlation(&values.prediction, &values.gold_std);
+        let spearman_score = spearman_correlation(&values.prediction, &values.gold_std);
+
+        let l2_score_tp = if values.prediction_tp.is_empty() {
+            f64::NAN
+        } else {
+            l2_similarity(&values.prediction_tp, &values.gold_std_tp)
+        };
+        let pearson_score_tp = if values.prediction_tp.len() < 2 {
+            f64::NAN
+        } else {
+            pearson_correlation(&values.prediction_tp, &values.gold_std_tp)
+        };
+        let spearman_score_tp = if values.prediction_tp.len() < 2 {
+            f64::NAN
+        } else {
+            spearman_correlation(&values.prediction_tp, &values.gold_std_tp)
+        };
+
+        ranks.push(rank);
+        ids.push(id);
+        allow_alternatives.push(allow);
+        adjusted.push(adjusted_val);
+        bray_curtis.push(bc_sim);
+        l2_sim.push(l2_score);
+        pearson.push(pearson_score);
+        spearman.push(spearman_score);
+        l2_sim_tp.push(l2_score_tp);
+        pearson_tp.push(pearson_score_tp);
+        spearman_tp.push(spearman_score_tp);
+    }
+
+    DataFrame::new(vec![
+        Series::new("Rank".into(), ranks),
+        Series::new("ID".into(), ids),
+        Series::new("AllowAlternatives".into(), allow_alternatives),
+        Series::new("Adjusted".into(), adjusted),
+        Series::new("BrayCurtisSimilarity".into(), bray_curtis),
+        Series::new("L2Similarity".into(), l2_sim),
+        Series::new("PearsonCorrelation".into(), pearson),
+        Series::new("SpearmanCorrelation".into(), spearman),
+        Series::new("L2SimilarityTP".into(), l2_sim_tp),
+        Series::new("PearsonCorrelationTP".into(), pearson_tp),
+        Series::new("SpearmanCorrelationTP".into(), spearman_tp),
+    ])
 }
 
 /// Build the per-taxon binary classification DataFrame for all meta entries.
@@ -233,6 +382,10 @@ pub fn get_taxon_df(handler: &ProfileHandler, allow_alternatives: bool) -> DataF
 pub fn meta_based_workflow(args: &Args) {
     type C = MetaColumn;
     let path = Path::new(args.meta.as_ref().unwrap());
+    let outprefix = args
+        .outprefix
+        .as_deref()
+        .expect("--outprefix is required unless --validate-meta is used");
 
     let handler = match ProfileHandler::from_meta(path) {
         Ok(handler) => handler,
@@ -323,7 +476,7 @@ pub fn meta_based_workflow(args: &Args) {
 
     // Specify the path where you want to save the CSV file
 
-    let file_name_detailed = format!("{}_detailed.tsv", args.outprefix);
+    let file_name_detailed = format!("{}_detailed.tsv", outprefix);
     let file_path = Path::new(&file_name_detailed);
 
     // Open the file for writing
@@ -354,7 +507,7 @@ pub fn meta_based_workflow(args: &Args) {
         .expect("Cannot sort summary output");
 
     // Open the file for writing
-    let file_name_bc = format!("{}.tsv", args.outprefix);
+    let file_name_bc = format!("{}.tsv", outprefix);
     let file_path: &Path = Path::new(&file_name_bc);
     let mut file = File::create(file_path).expect("Could not create file");
 

@@ -184,6 +184,191 @@ pub fn precision(tp: usize, fp: usize, fn_: usize) -> f64 {
     tp as f64 / (tp + fp) as f64
 }
 
+/// Compute Bray-Curtis similarity for two abundance vectors.
+///
+/// # Arguments
+///
+/// * `prediction` - Predicted abundance vector
+/// * `gold_std` - Gold standard abundance vector
+///
+/// # Returns
+///
+/// Bray-Curtis similarity in [0, 1]. Returns 1.0 when both sums are zero.
+pub fn bray_curtis_similarity(prediction: &[f64], gold_std: &[f64]) -> f64 {
+    if prediction.len() != gold_std.len() {
+        return f64::NAN;
+    }
+
+    let (mut diff_sum, mut total_sum) = (0.0_f64, 0.0_f64);
+    for (pred, gold) in prediction.iter().zip(gold_std.iter()) {
+        diff_sum += (pred - gold).abs();
+        total_sum += pred + gold;
+    }
+
+    if total_sum == 0.0 {
+        1.0
+    } else {
+        1.0 - (diff_sum / total_sum)
+    }
+}
+
+/// Compute 1 - L2 error for two abundance vectors.
+///
+/// # Arguments
+///
+/// * `prediction` - Predicted abundance vector
+/// * `gold_std` - Gold standard abundance vector
+///
+/// # Returns
+///
+/// 1 - L2 distance. Returns NaN when vector lengths differ.
+pub fn l2_similarity(prediction: &[f64], gold_std: &[f64]) -> f64 {
+    if prediction.len() != gold_std.len() {
+        return f64::NAN;
+    }
+
+    let mut sum_sq = 0.0_f64;
+    for (pred, gold) in prediction.iter().zip(gold_std.iter()) {
+        let diff = pred - gold;
+        sum_sq += diff * diff;
+    }
+
+    1.0 - sum_sq.sqrt()
+}
+
+/// Compute Pearson correlation for two vectors.
+///
+/// # Arguments
+///
+/// * `prediction` - Predicted values
+/// * `gold_std` - Gold standard values
+///
+/// # Returns
+///
+/// Pearson correlation, or NaN when undefined.
+pub fn pearson_correlation(prediction: &[f64], gold_std: &[f64]) -> f64 {
+    if prediction.len() != gold_std.len() || prediction.len() < 2 {
+        return f64::NAN;
+    }
+
+    let mean_pred = prediction.iter().sum::<f64>() / prediction.len() as f64;
+    let mean_gold = gold_std.iter().sum::<f64>() / gold_std.len() as f64;
+
+    let mut cov = 0.0_f64;
+    let mut var_pred = 0.0_f64;
+    let mut var_gold = 0.0_f64;
+
+    for (pred, gold) in prediction.iter().zip(gold_std.iter()) {
+        let dp = pred - mean_pred;
+        let dg = gold - mean_gold;
+        cov += dp * dg;
+        var_pred += dp * dp;
+        var_gold += dg * dg;
+    }
+
+    if var_pred == 0.0 || var_gold == 0.0 {
+        return f64::NAN;
+    }
+
+    cov / (var_pred.sqrt() * var_gold.sqrt())
+}
+
+/// Compute Spearman correlation for two vectors using average ranks for ties.
+///
+/// # Arguments
+///
+/// * `prediction` - Predicted values
+/// * `gold_std` - Gold standard values
+///
+/// # Returns
+///
+/// Spearman correlation, or NaN when undefined.
+pub fn spearman_correlation(prediction: &[f64], gold_std: &[f64]) -> f64 {
+    if prediction.len() != gold_std.len() || prediction.len() < 2 {
+        return f64::NAN;
+    }
+
+    let pred_ranks = rank_values(prediction);
+    let gold_ranks = rank_values(gold_std);
+    pearson_correlation(&pred_ranks, &gold_ranks)
+}
+
+fn rank_values(values: &[f64]) -> Vec<f64> {
+    let mut indexed: Vec<(usize, f64)> = values.iter().copied().enumerate().collect();
+    indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut ranks = vec![0.0_f64; values.len()];
+    let mut i = 0;
+    while i < indexed.len() {
+        let mut j = i + 1;
+        while j < indexed.len() && indexed[j].1 == indexed[i].1 {
+            j += 1;
+        }
+
+        let rank_start = i as f64 + 1.0;
+        let rank_end = j as f64;
+        let avg_rank = (rank_start + rank_end) / 2.0;
+
+        for k in i..j {
+            ranks[indexed[k].0] = avg_rank;
+        }
+        i = j;
+    }
+
+    ranks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        bray_curtis_similarity, l2_similarity, pearson_correlation, spearman_correlation,
+    };
+
+    fn approx_eq(left: f64, right: f64, tol: f64) -> bool {
+        (left - right).abs() <= tol
+    }
+
+    #[test]
+    fn test_bray_curtis_similarity() {
+        let pred = vec![1.0, 0.0];
+        let gold = vec![0.0, 1.0];
+        let sim = bray_curtis_similarity(&pred, &gold);
+        assert!(approx_eq(sim, 0.0, 1e-12));
+    }
+
+    #[test]
+    fn test_l2_similarity() {
+        let pred = vec![1.0, 0.0];
+        let gold = vec![0.0, 1.0];
+        let sim = l2_similarity(&pred, &gold);
+        assert!(approx_eq(sim, 1.0 - 2.0_f64.sqrt(), 1e-12));
+    }
+
+    #[test]
+    fn test_pearson_correlation_perfect() {
+        let pred = vec![1.0, 2.0, 3.0];
+        let gold = vec![1.0, 2.0, 3.0];
+        let corr = pearson_correlation(&pred, &gold);
+        assert!(approx_eq(corr, 1.0, 1e-12));
+    }
+
+    #[test]
+    fn test_pearson_correlation_undefined() {
+        let pred = vec![1.0, 1.0, 1.0];
+        let gold = vec![1.0, 2.0, 3.0];
+        let corr = pearson_correlation(&pred, &gold);
+        assert!(corr.is_nan());
+    }
+
+    #[test]
+    fn test_spearman_correlation_inverse() {
+        let pred = vec![1.0, 2.0, 3.0];
+        let gold = vec![3.0, 2.0, 1.0];
+        let corr = spearman_correlation(&pred, &gold);
+        assert!(approx_eq(corr, -1.0, 1e-12));
+    }
+}
+
 /// Reads a file line by line and loads each unique line into a `HashSet`.
 ///
 /// # Arguments

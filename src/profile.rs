@@ -160,6 +160,31 @@ impl BCVectors {
 type TaxonEntryMap<'a, T: Taxonomy> = HashMap<&'a Taxon, EntriesRef<'a, T>>;
 type NamesEntryMap<'a, T: Taxonomy> = HashMap<String, EntriesRef<'a, T>>;
 
+fn is_prefix_only_taxon_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    let Some((_, rest)) = trimmed.split_once("__") else {
+        return false;
+    };
+
+    rest.trim().is_empty()
+}
+
+fn filter_prefix_only_taxa_names<'a, T: Taxonomy>(
+    taxa: NamesEntryMap<'a, T>,
+) -> NamesEntryMap<'a, T> {
+    taxa.into_iter()
+        .filter(|(name, _)| !is_prefix_only_taxon_name(name))
+        .collect()
+}
+
+fn filter_prefix_only_taxa_refs<'a, T: Taxonomy>(
+    taxa: TaxonEntryMap<'a, T>,
+) -> TaxonEntryMap<'a, T> {
+    taxa.into_iter()
+        .filter(|(taxon, _)| !is_prefix_only_taxon_name(&taxon.name))
+        .collect()
+}
+
 /// Computes TP/FP/FN counts based on exact taxon name matches.
 ///
 /// # Arguments
@@ -846,7 +871,9 @@ impl<T: Taxonomy> Profile<T> {
         for rank in ranks {
             debug!("----------{}-----------", rank.to_string());
             let prediction_names = self.get_taxa_string_dict(rank);
-            let gold_std_names = gold_std.get_taxa_string_dict(rank);
+            let gold_std_names = gold_std
+                .get_taxa_string_dict(rank)
+                .map(filter_prefix_only_taxa_names);
 
 
             if let (Some(prediction), Some(gold_std)) = (prediction_names, gold_std_names) {
@@ -864,7 +891,7 @@ impl<T: Taxonomy> Profile<T> {
 
 
             let prediction_taxa = self.get_taxa_dict(rank);
-            let gold_std_taxa = gold_std.get_taxa_dict(rank);
+            let gold_std_taxa = gold_std.get_taxa_dict(rank).map(filter_prefix_only_taxa_refs);
 
             if allow_ambiguity {
                 if let (Some(prediction), Some(gold_std)) = (prediction_taxa, gold_std_taxa) {
@@ -1029,9 +1056,66 @@ impl<T: Taxonomy + Default> LoadProfile<T> for Profile<T> {
 mod tests {
     use std::io::Cursor;
 
-    use crate::{common::{self, Taxonomy, GTDB}, format::{Auto, Columns, CAMI}, profile};
+    use crate::{
+        common::{Taxon, TaxonomicRank, GTDB},
+        format::{Auto, Columns, CAMI},
+    };
 
     use super::*;
+
+    #[test]
+    fn test_prefix_only_taxon_name() {
+        assert!(is_prefix_only_taxon_name("s__"));
+        assert!(is_prefix_only_taxon_name("c__ "));
+        assert!(is_prefix_only_taxon_name("d__\t"));
+        assert!(!is_prefix_only_taxon_name("s__Lactobacillus"));
+        assert!(!is_prefix_only_taxon_name("Bacteria"));
+    }
+
+    #[test]
+    fn test_filter_prefix_only_taxa_refs() {
+        let entry = Entry::<GTDB> {
+            taxon_name: None,
+            lineage: None,
+            alternative_names: None,
+            abundance: 0.0,
+            rank: TaxonomicRank::Species,
+        };
+
+        let prefix_taxon = Taxon::with_name_and_rank("s__", &TaxonomicRank::Species);
+        let named_taxon = Taxon::with_name_and_rank("s__Lactobacillus", &TaxonomicRank::Species);
+
+        let taxa = HashMap::from([
+            (&prefix_taxon, vec![&entry]),
+            (&named_taxon, vec![&entry]),
+        ]);
+
+        let filtered = filter_prefix_only_taxa_refs(taxa);
+
+        assert!(!filtered.contains_key(&prefix_taxon));
+        assert!(filtered.contains_key(&named_taxon));
+    }
+
+    #[test]
+    fn test_filter_prefix_only_taxa_names() {
+        let entry = Entry::<GTDB> {
+            taxon_name: None,
+            lineage: None,
+            alternative_names: None,
+            abundance: 0.0,
+            rank: TaxonomicRank::Species,
+        };
+
+        let taxa = HashMap::from([
+            ("s__".to_string(), vec![&entry]),
+            ("s__Lactobacillus".to_string(), vec![&entry]),
+        ]);
+
+        let filtered = filter_prefix_only_taxa_names(taxa);
+
+        assert!(!filtered.contains_key("s__"));
+        assert!(filtered.contains_key("s__Lactobacillus"));
+    }
 
     #[test]
     fn test_load_profile_cami() {

@@ -13,8 +13,9 @@ pub struct Args {
 
     /// Output prefix for all files. E.g. '--outprefix output_folder/output' will produce
     /// the files output_folder/output_summary_stats.tsv and output_folder/output_sample_stats.tsv.
+    /// Optional when using --validate-meta.
     #[arg(short = 'o', long)]
-    pub outprefix: String,
+    pub outprefix: Option<String>,
 
     /// Enable adjusted benchmarks (tree-based adjustments)
     #[arg(long, default_value_t = false)]
@@ -23,6 +24,10 @@ pub struct Args {
     /// Allow alternative taxon matching
     #[arg(long, default_value_t = false)]
     pub allow_alternatives: bool,
+
+    /// Validate the meta file (columns and file paths) and exit
+    #[arg(long, default_value_t = false)]
+    pub validate_meta: bool,
 
     /// Log level: debug, info, warning, error
     #[arg(long, default_value = "info")]

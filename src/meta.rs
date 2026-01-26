@@ -234,7 +234,10 @@ impl Meta {
                                 meta_entry.goldstd_columns = Some(entry.to_string())
                             }
                             MetaColumn::GoldStdTree => {
-                                meta_entry.goldstd_tree = Some(PathBuf::from(entry.to_string()))
+                                meta_entry.goldstd_tree = match entry {
+                                    entry if entry == "NA" || entry == "" => None,
+                                    _ => Some(PathBuf::from(entry.to_string())),
+                                }
                             }
                             MetaColumn::AvailableTaxa => {
                                 meta_entry.taxa_list = match entry {
@@ -338,7 +341,10 @@ impl Meta {
             .clone()
             .lazy()
             .group_by([C::GoldStd])
-            .agg([col(C::Taxonomy).n_unique().alias("UniqueCount")])
+            .agg([
+                col(C::Taxonomy).n_unique().alias("UniqueCount"),
+                col(C::Taxonomy).unique().alias("Taxonomies"),
+            ])
             .with_column(col("UniqueCount").eq(lit(1)).alias("IsUnique"))
             .collect()
             .expect("no error");
@@ -355,16 +361,141 @@ impl Meta {
                 .filter(col("IsUnique").eq(lit(false)))
                 .collect()
                 .unwrap();
-            let series = error_df
+            let goldstds = error_df
                 .column(C::GoldStd.to_str())
+                .unwrap()
+                .str()
+                .unwrap()
+                .iter()
+                .map(|x| x.unwrap_or("").to_string())
+                .collect::<Vec<_>>();
+            let taxonomies = error_df
+                .column("Taxonomies")
                 .unwrap()
                 .iter()
                 .map(|x| x.to_string())
                 .collect::<Vec<_>>();
-            return Err(MetaError::DataError(format!("GoldStd profiles occurring more than once in meta must always have the same Taxonomy \n{:?}", series)));
+
+            let details = goldstds
+                .into_iter()
+                .zip(taxonomies.into_iter())
+                .map(|(goldstd, taxonomies)| format!("{} -> {}", goldstd, taxonomies))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let offending: HashSet<String> = error_df
+                .column(C::GoldStd.to_str())
+                .unwrap()
+                .str()
+                .unwrap()
+                .iter()
+                .map(|x| x.unwrap_or("").to_string())
+                .collect();
+
+            let goldstd_col = self.raw.column(C::GoldStd.to_str()).ok();
+            let taxonomy_col = self.raw.column(C::Taxonomy.to_str()).ok();
+            let id_col = self.raw.column(C::ID.to_str()).ok();
+            let sample_col = self.raw.column(C::Sample.to_str()).ok();
+
+            let mut row_details = Vec::new();
+            if let (Some(goldstd_col), Some(taxonomy_col)) = (goldstd_col, taxonomy_col) {
+                let goldstd_iter = goldstd_col.str().unwrap().iter();
+                let taxonomy_iter = taxonomy_col.str().unwrap().iter();
+                let id_iter = id_col.and_then(|c| c.str().ok());
+                let sample_iter = sample_col.and_then(|c| c.str().ok());
+
+                for (row_index, (goldstd, taxonomy)) in
+                    goldstd_iter.zip(taxonomy_iter).enumerate()
+                {
+                    let goldstd = goldstd.unwrap_or("");
+                    if !offending.contains(goldstd) {
+                        continue;
+                    }
+
+                    let id = id_iter
+                        .as_ref()
+                        .and_then(|s| s.get(row_index))
+                        .unwrap_or("");
+                    let sample = sample_iter
+                        .as_ref()
+                        .and_then(|s| s.get(row_index))
+                        .unwrap_or("");
+
+                    row_details.push(format!(
+                        "row {}: ID='{}' Sample='{}' GoldStd='{}' Taxonomy='{}'",
+                        row_index + 1,
+                        id,
+                        sample,
+                        goldstd,
+                        taxonomy.unwrap_or("")
+                    ));
+                }
+            }
+
+            return Err(MetaError::DataError(format!(
+                "GoldStd profiles occurring more than once in meta must always have the same \
+Taxonomy\n{}\nConflicting rows:\n{}",
+                details,
+                row_details.join("\n")
+            )));
         }
 
         Ok(self)
+    }
+
+    /// Validates that all referenced files exist on disk.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when all referenced paths exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MetaError::DataError` listing any missing files.
+    pub fn validate_paths(&self) -> Result<(), MetaError> {
+        let mut missing = Vec::new();
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+
+        let mut check_path = |path: &Path| {
+            let resolved = Self::filesystem_path_for_meta_path(path);
+            if seen.insert(resolved.clone()) && !resolved.exists() {
+                missing.push(resolved.display().to_string());
+            }
+        };
+
+        for entry in &self.entries {
+            check_path(&entry.profile);
+            check_path(&entry.goldstd);
+            if let Some(tree) = &entry.goldstd_tree {
+                check_path(tree);
+            }
+            if let Some(taxa_list) = &entry.taxa_list {
+                check_path(taxa_list);
+            }
+        }
+
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(MetaError::DataError(format!(
+                "Missing files:\n{}",
+                missing.join("\n")
+            )))
+        }
+    }
+
+    fn filesystem_path_for_meta_path(path: &Path) -> PathBuf {
+        let raw = path.to_string_lossy();
+        let Some(stripped) = raw.strip_prefix("matrix:") else {
+            return path.to_path_buf();
+        };
+
+        let base = stripped
+            .split_once("::")
+            .map(|(base_path, _)| base_path)
+            .unwrap_or(stripped);
+
+        PathBuf::from(base)
     }
 
     fn is_matrix_format(meta: &DataFrame) -> bool {
@@ -869,5 +1000,108 @@ impl Meta {
             .filter(|&s| !s.is_empty() && s != "NA")
             .map(|path_str| PathBuf::from_str(path_str).unwrap())
             .collect::<HashSet<PathBuf>>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs::File,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use polars::frame::DataFrame;
+
+    use super::{Meta, MetaEntry};
+
+    fn unique_tmp_path(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("System time before UNIX_EPOCH")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{}_{}", prefix, nanos))
+    }
+
+    #[test]
+    fn test_validate_paths_success() {
+        let profile_path = unique_tmp_path("benchpro_profile");
+        let goldstd_path = unique_tmp_path("benchpro_goldstd");
+        let _ = File::create(&profile_path).expect("Failed to create profile path");
+        let _ = File::create(&goldstd_path).expect("Failed to create goldstd path");
+
+        let meta = Meta {
+            raw: DataFrame::new(vec![]).expect("Failed to create empty DataFrame"),
+            entries: vec![MetaEntry {
+                id: "id".to_string(),
+                sample: "sample".to_string(),
+                dataset: None,
+                tool: "tool".to_string(),
+                taxonomy: "taxonomy".to_string(),
+                profile: profile_path,
+                profile_columns: None,
+                goldstd: goldstd_path,
+                goldstd_columns: None,
+                goldstd_tree: None,
+                taxa_list: None,
+            }],
+        };
+
+        assert!(meta.validate_paths().is_ok());
+    }
+
+    #[test]
+    fn test_validate_paths_missing() {
+        let profile_path = unique_tmp_path("benchpro_profile_missing");
+        let goldstd_path = unique_tmp_path("benchpro_goldstd_missing");
+
+        let meta = Meta {
+            raw: DataFrame::new(vec![]).expect("Failed to create empty DataFrame"),
+            entries: vec![MetaEntry {
+                id: "id".to_string(),
+                sample: "sample".to_string(),
+                dataset: None,
+                tool: "tool".to_string(),
+                taxonomy: "taxonomy".to_string(),
+                profile: profile_path,
+                profile_columns: None,
+                goldstd: goldstd_path,
+                goldstd_columns: None,
+                goldstd_tree: None,
+                taxa_list: None,
+            }],
+        };
+
+        assert!(meta.validate_paths().is_err());
+    }
+
+    #[test]
+    fn test_validate_paths_matrix_refs() {
+        let profile_path = unique_tmp_path("benchpro_profile_matrix");
+        let goldstd_path = unique_tmp_path("benchpro_goldstd_matrix");
+        let _ = File::create(&profile_path).expect("Failed to create profile path");
+        let _ = File::create(&goldstd_path).expect("Failed to create goldstd path");
+
+        let profile_ref = format!("matrix:{}::sample1", profile_path.display());
+        let goldstd_ref = format!("matrix:{}::sample1", goldstd_path.display());
+
+        let meta = Meta {
+            raw: DataFrame::new(vec![]).expect("Failed to create empty DataFrame"),
+            entries: vec![MetaEntry {
+                id: "id".to_string(),
+                sample: "sample".to_string(),
+                dataset: None,
+                tool: "tool".to_string(),
+                taxonomy: "taxonomy".to_string(),
+                profile: PathBuf::from(profile_ref),
+                profile_columns: None,
+                goldstd: PathBuf::from(goldstd_ref),
+                goldstd_columns: None,
+                goldstd_tree: None,
+                taxa_list: None,
+            }],
+        };
+
+        assert!(meta.validate_paths().is_ok());
     }
 }
