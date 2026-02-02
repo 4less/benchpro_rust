@@ -26,7 +26,7 @@ use crate::{
     common::{Detectable, TaxonomicRank},
     meta::{self, Meta, MetaColumn},
     options::Args,
-    profile::{LoadProfile, Profile, ProfileWrapper},
+    profile::{ABUNDANCE_SUM_TOLERANCE, LoadProfile, Profile, ProfileWrapper},
     profile_handler::ProfileHandler,
     tree_adjusted_benchmarks::get_adjusted_benchmarks,
     tree_handler::{TaxaSet, TreeHandler},
@@ -158,6 +158,7 @@ pub fn add_binary_classification(df: DataFrame) -> PolarsResult<DataFrame> {
     )
 }
 
+#[derive(Debug)]
 struct AbundanceMetrics {
     prediction: Vec<f64>,
     gold_std: Vec<f64>,
@@ -165,9 +166,63 @@ struct AbundanceMetrics {
     gold_std_tp: Vec<f64>,
 }
 
+fn normalize_profile_or_panic(
+    profile: &mut ProfileWrapper,
+    path: &Path,
+    label: &str,
+    ignore_error: bool,
+) {
+    let report = match profile.normalize_abundances_with_checks(ABUNDANCE_SUM_TOLERANCE) {
+        Ok(report) => report,
+        Err(e) => {
+            if ignore_error {
+                warn!(
+                    "Ignoring abundance normalization error for {} profile {}: {}",
+                    label,
+                    path.display(),
+                    e
+                );
+                return;
+            }
+            panic!(
+                "Abundance normalization failed for {} profile {}: {}",
+                label,
+                path.display(),
+                e
+            )
+        }
+    };
+
+    let any_pre_over = report
+        .pre_sums
+        .values()
+        .any(|sum| *sum > 1.0 + ABUNDANCE_SUM_TOLERANCE);
+
+    if report.applied {
+        warn!(
+            "Normalized abundance scale for {} profile {} pre={:?} post={:?}",
+            label,
+            path.display(),
+            report.pre_sums,
+            report.post_sums
+        );
+    }
+
+    if any_pre_over {
+        warn!(
+            "Rank abundance sums exceed 1.0 for {} profile {} pre={:?} post={:?}",
+            label,
+            path.display(),
+            report.pre_sums,
+            report.post_sums
+        );
+    }
+}
+
 fn compute_abundance_metrics(df: &DataFrame) -> PolarsResult<DataFrame> {
     let rank_col = df.column("Rank")?.str()?;
     let id_col = df.column("ID")?.str()?;
+    let name_col = df.column("Name")?.str()?;
     let allow_alternatives_col = df.column("AllowAlternatives")?.bool()?;
     let adjusted_col = df.column("Adjusted")?.str()?;
     let type_col = df.column("Type")?.str()?;
@@ -179,11 +234,13 @@ fn compute_abundance_metrics(df: &DataFrame) -> PolarsResult<DataFrame> {
     for row_index in 0..df.height() {
         let rank = rank_col.get(row_index).unwrap_or("");
         let id = id_col.get(row_index).unwrap_or("");
+        let name = name_col.get(row_index).unwrap_or("");
         let allow_alternatives = allow_alternatives_col.get(row_index).unwrap_or(false);
         let adjusted = adjusted_col.get(row_index).unwrap_or("");
         let bc_type = type_col.get(row_index).unwrap_or("");
         let pred_abundance = pred_abundance_col.get(row_index).unwrap_or(0.0);
         let gold_abundance = gold_abundance_col.get(row_index).unwrap_or(0.0);
+
 
         let key = (
             rank.to_string(),
@@ -198,6 +255,8 @@ fn compute_abundance_metrics(df: &DataFrame) -> PolarsResult<DataFrame> {
             gold_std_tp: Vec::new(),
         });
 
+        println!("{} Taxon: {}, Gold: {}, Prediction: {}", bc_type, name, gold_abundance, pred_abundance);
+
         entry.prediction.push(pred_abundance);
         entry.gold_std.push(gold_abundance);
         if bc_type == "TP" {
@@ -205,6 +264,8 @@ fn compute_abundance_metrics(df: &DataFrame) -> PolarsResult<DataFrame> {
             entry.gold_std_tp.push(gold_abundance);
         }
     }
+
+
 
     let mut ranks = Vec::with_capacity(groups.len());
     let mut ids = Vec::with_capacity(groups.len());
@@ -224,6 +285,8 @@ fn compute_abundance_metrics(df: &DataFrame) -> PolarsResult<DataFrame> {
         let pearson_score = pearson_correlation(&values.prediction, &values.gold_std);
         let spearman_score = spearman_correlation(&values.prediction, &values.gold_std);
 
+        println!("Rank: {}, ID: {}\n{:?}", rank, id, values);
+
         let l2_score_tp = if values.prediction_tp.is_empty() {
             f64::NAN
         } else {
@@ -239,6 +302,14 @@ fn compute_abundance_metrics(df: &DataFrame) -> PolarsResult<DataFrame> {
         } else {
             spearman_correlation(&values.prediction_tp, &values.gold_std_tp)
         };
+        println!("l2 {}\npc {}\nsc{}\nbc {}\nl2tp {}\npctp {}\nsctp {}", l2_score, pearson_score, spearman_score, bc_sim, l2_score_tp, pearson_score_tp, spearman_score_tp);
+
+        if pearson_score_tp < 0.0 {
+            println!("Pearson score: {}", pearson_score_tp);
+            exit(1);
+        }
+
+
 
         ranks.push(rank);
         ids.push(id);
@@ -278,7 +349,11 @@ fn compute_abundance_metrics(df: &DataFrame) -> PolarsResult<DataFrame> {
 /// # Returns
 ///
 /// DataFrame with per-taxon classification rows.
-pub fn get_taxon_df(handler: &ProfileHandler, allow_alternatives: bool) -> DataFrame {
+pub fn get_taxon_df(
+    handler: &ProfileHandler,
+    allow_alternatives: bool,
+    ignore_abundance_error: bool,
+) -> DataFrame {
     debug!("Number of profiles: {}", handler.prediction_map.len());
     debug!("Number of gold profiles: {}", handler.gold_std_map.len());
 
@@ -301,8 +376,24 @@ pub fn get_taxon_df(handler: &ProfileHandler, allow_alternatives: bool) -> DataF
         }
 
         if let (Some(prediction), Some(goldstd)) = (prediction, goldstd) {
+            let mut prediction = prediction.clone();
+            let mut goldstd = goldstd.clone();
+
+            normalize_profile_or_panic(
+                &mut prediction,
+                &row.profile,
+                "prediction",
+                ignore_abundance_error,
+            );
+            normalize_profile_or_panic(
+                &mut goldstd,
+                &row.goldstd,
+                "gold standard",
+                ignore_abundance_error,
+            );
+
             debug!("Dataset: {} ... {:?}", row.id, row.goldstd);
-            let df = prediction.binary_classification(goldstd, allow_alternatives);
+            let df = prediction.binary_classification(&goldstd, allow_alternatives);
 
             if let Ok(mut df) = df {
                 let _ = df.with_column(Series::new(
@@ -402,7 +493,8 @@ pub fn meta_based_workflow(args: &Args) {
     ///////////////////////////////////////////////////////////////////////
     // Binary classification DF
 
-    let mut complete_df = get_taxon_df(&handler, args.allow_alternatives);
+    let mut complete_df =
+        get_taxon_df(&handler, args.allow_alternatives, args.ignore_abundance_error);
 
     
 
@@ -491,6 +583,8 @@ pub fn meta_based_workflow(args: &Args) {
 
     ///////////////////////////////////////////////////////////////////////
     // Summary Binary classification DF
+
+    debug!("new_complete_df:\n{:#?}", new_complete_df);
 
     let mut newdf =
         add_binary_classification(new_complete_df.clone()).expect("Could not derive binclas");

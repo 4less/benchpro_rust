@@ -587,6 +587,20 @@ pub struct Profile<T: Taxonomy> {
         pub taxa: Entries<T>,
 }
 
+/// Report of abundance normalization decisions and per-rank sums.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NormalizeReport {
+    /// Whether normalization was applied.
+    pub applied: bool,
+    /// Per-rank sums before normalization.
+    pub pre_sums: HashMap<TaxonomicRank, f64>,
+    /// Per-rank sums after normalization.
+    pub post_sums: HashMap<TaxonomicRank, f64>,
+}
+
+/// Allowed relative tolerance when validating abundance sums.
+pub const ABUNDANCE_SUM_TOLERANCE: f64 = 0.20;
+
 impl Profile<GTDB> {
     /// Wraps a GTDB profile for type-erased handling.
     ///
@@ -638,6 +652,119 @@ impl<T: Taxonomy> Profile<T> {
         Some(self.taxa.iter().map(|e| e.rank.clone()).collect::<HashSet<_>>())
     }
 
+    fn rank_sums(&self) -> HashMap<TaxonomicRank, f64> {
+        let mut rank_sums: HashMap<TaxonomicRank, f64> = HashMap::new();
+        for entry in &self.taxa {
+            let sum = rank_sums.entry(entry.rank.clone()).or_insert(0.0);
+            *sum += entry.abundance;
+        }
+        rank_sums
+    }
+
+    /// Returns rank abundance sums that exceed a maximum threshold.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_sum` - Maximum allowed total abundance per rank
+    ///
+    /// # Returns
+    ///
+    /// List of `(rank, sum)` pairs that exceed `max_sum`.
+    pub fn rank_sum_violations(&self, max_sum: f64) -> Vec<(TaxonomicRank, f64)> {
+        self.rank_sums()
+            .into_iter()
+            .filter(|(_, sum)| *sum > max_sum)
+            .collect()
+    }
+
+    /// Normalizes abundances to fractions when sums indicate percent-scale data.
+    ///
+    /// Normalization is decided per sample, not per rank. When multiple ranks are
+    /// explicitly present, either all ranks must be within tolerance of 1.0 or
+    /// all ranks must be within tolerance of 100.0, otherwise an error is raised.
+    ///
+    /// # Arguments
+    ///
+    /// * `tolerance` - Relative tolerance for deciding whether sums are near 1.0 or 100.0
+    ///
+    /// # Returns
+    ///
+    /// Report containing pre/post rank sums and whether normalization was applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProfileError::NormalizationError` when sums are inconsistent or
+    /// remain out of tolerance after normalization.
+    pub fn normalize_abundances_with_checks(
+        &mut self,
+        tolerance: f64,
+    ) -> Result<NormalizeReport, ProfileError> {
+        let pre_sums = self.rank_sums();
+        if pre_sums.is_empty() {
+            return Ok(NormalizeReport {
+                applied: false,
+                pre_sums,
+                post_sums: HashMap::new(),
+            });
+        }
+
+        let within = |value: f64, target: f64| (value - target).abs() <= target * tolerance;
+        let active_threshold = tolerance * 1.0;
+        let active_pre_sums = pre_sums
+            .iter()
+            .filter(|(_, sum)| **sum >= active_threshold)
+            .map(|(rank, sum)| (rank.clone(), *sum))
+            .collect::<HashMap<_, _>>();
+
+        if active_pre_sums.is_empty() {
+            return Err(ProfileError::NormalizationError(
+                "No active rank sums above threshold; cannot normalize".to_owned(),
+            ));
+        }
+
+        let all_within_one = active_pre_sums.values().all(|sum| within(*sum, 1.0));
+        let all_within_hundred = active_pre_sums.values().all(|sum| within(*sum, 100.0));
+
+        if all_within_one {
+            return Ok(NormalizeReport {
+                applied: false,
+                pre_sums: pre_sums.clone(),
+                post_sums: pre_sums,
+            });
+        }
+
+        if all_within_hundred {
+            for entry in &mut self.taxa {
+                entry.abundance /= 100.0;
+            }
+
+            let post_sums = self.rank_sums();
+            let active_post_sums = post_sums
+                .iter()
+                .filter(|(_, sum)| **sum >= active_threshold)
+                .map(|(rank, sum)| (rank.clone(), *sum))
+                .collect::<HashMap<_, _>>();
+            let all_post_within_one = active_post_sums.values().all(|sum| within(*sum, 1.0));
+            if !all_post_within_one {
+                return Err(ProfileError::NormalizationError(format!(
+                    "Abundance normalization failed; rank sums not within tolerance of 1.0 after normalization: {:?}",
+                    post_sums
+                )));
+            }
+
+            return Ok(NormalizeReport {
+                applied: true,
+                pre_sums,
+                post_sums,
+            });
+        }
+
+        Err(ProfileError::NormalizationError(format!(
+            "Abundance sums are not within tolerance of 1.0 or 100.0; pre-normalization sums: {:?}",
+            pre_sums
+        )))
+    }
+
     /// If ranks are defined and there is more than one rank, 
     /// I deduce that ranks are defined separately on purpose.
     /// If ranks are undefined, see if the lineage contains the target ranks. 
@@ -664,6 +791,11 @@ impl<T: Taxonomy> Profile<T> {
                         .map(|taxon| taxon.unwrap())
                         .map(|taxon| taxon.name.clone())
                         .collect::<HashSet<_>>();
+                    if set.is_empty() {
+                        return None
+                    } else {
+                        return Some(set)
+                    }
                 }
 
                 let set = self.taxa.iter()
@@ -727,7 +859,7 @@ impl<T: Taxonomy> Profile<T> {
                     if set.is_empty() {
                         return None
                     } else {
-                        return Some(set).clone()
+                        return Some(set)
                     }
                 }
                 debug!(
@@ -923,7 +1055,7 @@ impl<T: Taxonomy> Profile<T> {
 }
 
 /// Type-erased wrapper around profiles of different taxonomies.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ProfileWrapper {
     GTDBProfile(Profile<GTDB>),
     NCBIProfile(Profile<NCBI>),
@@ -1008,6 +1140,45 @@ impl ProfileWrapper {
     }
 }
 
+impl ProfileWrapper {
+    /// Normalizes abundances with sample-wide consistency checks.
+    ///
+    /// # Arguments
+    ///
+    /// * `tolerance` - Relative tolerance for deciding scale
+    ///
+    /// # Returns
+    ///
+    /// Report containing pre/post rank sums and whether normalization was applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProfileError::NormalizationError` when sums are inconsistent or invalid.
+    pub fn normalize_abundances_with_checks(
+        &mut self,
+        tolerance: f64,
+    ) -> Result<NormalizeReport, ProfileError> {
+        match self {
+            ProfileWrapper::GTDBProfile(profile) => profile.normalize_abundances_with_checks(tolerance),
+            ProfileWrapper::NCBIProfile(profile) => profile.normalize_abundances_with_checks(tolerance),
+            ProfileWrapper::CustomProfile(profile) => profile.normalize_abundances_with_checks(tolerance),
+        }
+    }
+
+    /// Returns the number of unique ranks present in the profile.
+    ///
+    /// # Returns
+    ///
+    /// Number of ranks or 0 when ranks are unknown.
+    pub fn unique_rank_count(&self) -> usize {
+        match self {
+            ProfileWrapper::GTDBProfile(profile) => profile.unique_ranks().map(|r| r.len()).unwrap_or(0),
+            ProfileWrapper::NCBIProfile(profile) => profile.unique_ranks().map(|r| r.len()).unwrap_or(0),
+            ProfileWrapper::CustomProfile(profile) => profile.unique_ranks().map(|r| r.len()).unwrap_or(0),
+        }
+    }
+}
+
 /// Errors returned while loading or validating profiles.
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum ProfileError {
@@ -1019,6 +1190,8 @@ pub enum ProfileError {
     FormatError(String),
     #[error("{0}")]
     TaxonomyError(String),
+    #[error("{0}")]
+    NormalizationError(String),
 }
 
 pub type ProfileResult<T: Taxonomy> = Result<Profile<T>, ProfileError>;
@@ -1054,10 +1227,10 @@ impl<T: Taxonomy + Default> LoadProfile<T> for Profile<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::{collections::HashMap, io::Cursor};
 
     use crate::{
-        common::{Taxon, TaxonomicRank, GTDB},
+        common::{LineageFromString, Taxon, TaxonomicRank, GTDB},
         format::{Auto, Columns, CAMI},
     };
 
@@ -1115,6 +1288,227 @@ mod tests {
 
         assert!(!filtered.contains_key("s__"));
         assert!(filtered.contains_key("s__Lactobacillus"));
+    }
+
+    #[test]
+    fn test_normalize_abundances_if_percent_single_rank() {
+        let mut profile = Profile::<GTDB>::default();
+        profile.taxa = vec![
+            Entry {
+                abundance: 50.0,
+                rank: TaxonomicRank::Species,
+                ..Entry::default()
+            },
+            Entry {
+                abundance: 50.0,
+                rank: TaxonomicRank::Species,
+                ..Entry::default()
+            },
+        ];
+
+        let report = profile
+            .normalize_abundances_with_checks(ABUNDANCE_SUM_TOLERANCE)
+            .expect("Normalization should succeed");
+
+        assert!(report.applied);
+        assert!((profile.taxa[0].abundance - 0.5).abs() < 1e-6);
+        assert!((profile.taxa[1].abundance - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_normalize_abundances_if_percent_multi_rank_total_over_100() {
+        let mut profile = Profile::<GTDB>::default();
+        profile.taxa = vec![
+            Entry {
+                abundance: 100.0,
+                rank: TaxonomicRank::Domain,
+                ..Entry::default()
+            },
+            Entry {
+                abundance: 60.0,
+                rank: TaxonomicRank::Species,
+                ..Entry::default()
+            },
+            Entry {
+                abundance: 40.0,
+                rank: TaxonomicRank::Species,
+                ..Entry::default()
+            },
+        ];
+
+        let report = profile
+            .normalize_abundances_with_checks(ABUNDANCE_SUM_TOLERANCE)
+            .expect("Normalization should succeed");
+
+        assert!(report.applied);
+        assert!((profile.taxa[0].abundance - 1.0).abs() < 1e-6);
+        assert!((profile.taxa[1].abundance - 0.6).abs() < 1e-6);
+        assert!((profile.taxa[2].abundance - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_normalize_abundances_if_percent_no_change_for_fractional() {
+        let mut profile = Profile::<GTDB>::default();
+        profile.taxa = vec![
+            Entry {
+                abundance: 0.5,
+                rank: TaxonomicRank::Species,
+                ..Entry::default()
+            },
+            Entry {
+                abundance: 0.5,
+                rank: TaxonomicRank::Species,
+                ..Entry::default()
+            },
+        ];
+
+        let report = profile
+            .normalize_abundances_with_checks(ABUNDANCE_SUM_TOLERANCE)
+            .expect("Normalization should succeed");
+
+        assert!(!report.applied);
+        assert!((profile.taxa[0].abundance - 0.5).abs() < 1e-6);
+        assert!((profile.taxa[1].abundance - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_normalize_abundances_with_checks_mixed_scales_error() {
+        let mut profile = Profile::<GTDB>::default();
+        profile.taxa = vec![
+            Entry {
+                abundance: 100.0,
+                rank: TaxonomicRank::Domain,
+                ..Entry::default()
+            },
+            Entry {
+                abundance: 0.9,
+                rank: TaxonomicRank::Species,
+                ..Entry::default()
+            },
+        ];
+
+        let result = profile.normalize_abundances_with_checks(ABUNDANCE_SUM_TOLERANCE);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_normalize_abundances_ignores_small_rank_sums() {
+        let mut profile = Profile::<GTDB>::default();
+        profile.taxa = vec![
+            Entry {
+                abundance: 0.99,
+                rank: TaxonomicRank::Species,
+                ..Entry::default()
+            },
+            Entry {
+                abundance: 0.01,
+                rank: TaxonomicRank::Order,
+                ..Entry::default()
+            },
+        ];
+
+        let report = profile
+            .normalize_abundances_with_checks(ABUNDANCE_SUM_TOLERANCE)
+            .expect("Normalization should succeed");
+
+        assert!(!report.applied);
+    }
+
+    #[test]
+    fn test_rank_sum_violations_detects_excess() {
+        let mut profile = Profile::<GTDB>::default();
+        profile.taxa = vec![
+            Entry {
+                abundance: 0.6,
+                rank: TaxonomicRank::Species,
+                ..Entry::default()
+            },
+            Entry {
+                abundance: 0.6,
+                rank: TaxonomicRank::Species,
+                ..Entry::default()
+            },
+        ];
+
+        let violations = profile.rank_sum_violations(1.0001);
+
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].0, TaxonomicRank::Species);
+        assert!((violations[0].1 - 1.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_rank_sum_violations_allows_within_threshold() {
+        let mut profile = Profile::<GTDB>::default();
+        profile.taxa = vec![
+            Entry {
+                abundance: 0.4,
+                rank: TaxonomicRank::Species,
+                ..Entry::default()
+            },
+            Entry {
+                abundance: 0.6,
+                rank: TaxonomicRank::Species,
+                ..Entry::default()
+            },
+        ];
+
+        let violations = profile.rank_sum_violations(1.0001);
+
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn test_get_taxa_with_rank_from_species_only_profile() {
+        let lineage_str = "d__Bacteria;p__Verrucomicrobiota;c__Verrucomicrobiae;\
+o__Verrucomicrobiales;f__Akkermansiaceae;g__Akkermansia;\
+s__Akkermansia muciniphila_A";
+        let lineage = GTDB::lineage_from_string(lineage_str, None);
+
+        let entry = Entry::<GTDB> {
+            taxon_name: None,
+            lineage: Some(lineage),
+            alternative_names: None,
+            abundance: 0.1,
+            rank: TaxonomicRank::Species,
+        };
+
+        let profile = Profile::<GTDB> {
+            unstructured_meta: Vec::new(),
+            meta: HashMap::new(),
+            taxa: vec![entry],
+        };
+
+        let genus = profile.get_taxa_with_rank(&TaxonomicRank::Genus);
+        assert!(genus.is_some());
+        assert!(genus.unwrap().contains("g__Akkermansia"));
+    }
+
+    #[test]
+    fn test_get_taxa_string_dict_from_species_only_profile() {
+        let lineage_str = "d__Bacteria;p__Verrucomicrobiota;c__Verrucomicrobiae;\
+o__Verrucomicrobiales;f__Akkermansiaceae;g__Akkermansia;\
+s__Akkermansia muciniphila_A";
+        let lineage = GTDB::lineage_from_string(lineage_str, None);
+
+        let entry = Entry::<GTDB> {
+            taxon_name: None,
+            lineage: Some(lineage),
+            alternative_names: None,
+            abundance: 0.1,
+            rank: TaxonomicRank::Species,
+        };
+
+        let profile = Profile::<GTDB> {
+            unstructured_meta: Vec::new(),
+            meta: HashMap::new(),
+            taxa: vec![entry],
+        };
+
+        let genus_map = profile.get_taxa_string_dict(&TaxonomicRank::Genus);
+        assert!(genus_map.is_some());
+        assert!(genus_map.unwrap().contains_key("g__Akkermansia"));
     }
 
     #[test]

@@ -7,9 +7,9 @@ use std::{
 };
 
 use itertools::izip;
-use log::{debug, warn};
+use log::{debug, warn, error};
 
-use crate::{common::{Custom, TaxonomicRank, GTDB, NCBI}, format::{Auto, Columns, CAMI}, meta::Meta, profile::{LoadProfile, Profile, ProfileWrapper}, utils::{load_file_lineages_to_hashset, load_file_to_hashset}};
+use crate::{common::{Custom, TaxonomicRank, GTDB, NCBI}, format::{Auto, Columns, CAMI, Custom as CustomFormat}, meta::Meta, profile::{LoadProfile, Profile, ProfileWrapper}, utils::{load_file_lineages_to_hashset, load_file_to_hashset}};
 
 
 /// Errors raised while loading profiles from meta or files.
@@ -257,39 +257,84 @@ impl ProfileHandler {
         let mut file = File::open(&path).unwrap();
         let columns = column_format.map_or(None, |str| Columns::from_format_str(str.as_ref()).ok());
 
-        let profile = match taxonomy {
-            Some(s) if s.as_ref().starts_with("GTDB") => {
-                match Profile::<GTDB>::load::<Auto, _>(&mut file, columns) {
-                    Ok(profile) => Some(profile.wrap()),
-                    Err(e) => {
-                        warn!(
-                            "GTDB Autodetect Error: {}\nFile: {}",
-                            e,
-                            path.as_ref().display()
-                        );
-                        None
-                    },
+        let profile = if columns.is_some() {
+            match taxonomy {
+                Some(s) if s.as_ref().starts_with("GTDB") => {
+                    match Profile::<GTDB>::load::<CustomFormat, _>(&mut file, columns) {
+                        Ok(profile) => Some(profile.wrap()),
+                        Err(e) => {
+                            warn!(
+                                "GTDB Custom Error: {}\nFile: {}",
+                                e,
+                                path.as_ref().display()
+                            );
+                            None
+                        },
+                    }
+                },
+                Some(s) if s.as_ref().starts_with("NCBI") => {
+                    match Profile::<NCBI>::load::<CustomFormat, _>(&mut file, columns) {
+                        Ok(profile) => Some(profile.wrap()),
+                        Err(e) => {
+                            warn!(
+                                "NCBI Custom Error: {}\nFile: {}",
+                                e,
+                                path.as_ref().display()
+                            );
+                            None
+                        },
+                    }
+                },
+                Some(_) => {
+                    match Profile::<Custom>::load::<CustomFormat, _>(&mut file, columns) {
+                        Ok(profile) => Some(profile.wrap()),
+                        Err(e) => {
+                            warn!(
+                                "Custom Error: {}\nFile: {}",
+                                e,
+                                path.as_ref().display()
+                            );
+                            None
+                        },
+                    }
                 }
-            },
-            Some(s) if s.as_ref().starts_with("NCBI") => {
-                match Profile::<NCBI>::load::<CAMI, _>(&mut file, None) {
-                    Ok(profile) => Some(profile.wrap()),
-                    Err(e) => {
-                        warn!("NCBI CAMI Error: {}", e);
-                        None
-                    },
-                }
-            },
-            Some(_) => {
-                match Profile::<Custom>::load::<Auto, _>(&mut file, columns) {
-                    Ok(profile) => Some(profile.wrap()),
-                    Err(e) => {
-                        warn!("CAMI Error: {}", e);
-                        None
-                    },
-                }
+                None => panic!("This should not happen"),
             }
-            None => panic!("This should not happen"),
+        } else {
+            match taxonomy {
+                Some(s) if s.as_ref().starts_with("GTDB") => {
+                    match Profile::<GTDB>::load::<Auto, _>(&mut file, columns) {
+                        Ok(profile) => Some(profile.wrap()),
+                        Err(e) => {
+                            warn!(
+                                "GTDB Autodetect Error: {}\nFile: {}",
+                                e,
+                                path.as_ref().display()
+                            );
+                            None
+                        },
+                    }
+                },
+                Some(s) if s.as_ref().starts_with("NCBI") => {
+                    match Profile::<NCBI>::load::<CAMI, _>(&mut file, None) {
+                        Ok(profile) => Some(profile.wrap()),
+                        Err(e) => {
+                            warn!("NCBI CAMI Error: {}", e);
+                            None
+                        },
+                    }
+                },
+                Some(_) => {
+                    match Profile::<Custom>::load::<Auto, _>(&mut file, columns) {
+                        Ok(profile) => Some(profile.wrap()),
+                        Err(e) => {
+                            warn!("CAMI Error: {}", e);
+                            None
+                        },
+                    }
+                }
+                None => panic!("This should not happen"),
+            }
         };
 
         profile

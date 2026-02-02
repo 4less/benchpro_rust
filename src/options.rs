@@ -33,4 +33,8 @@ pub struct Args {
     #[arg(long, default_value = "info")]
     pub log_level: String,
 
+    /// Ignore abundance normalization errors (log warnings instead of crashing)
+    #[arg(long, default_value_t = false)]
+    pub ignore_abundance_error: bool,
+
 }

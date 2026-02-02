@@ -528,6 +528,7 @@ impl Auto {
     }
 }
 
+
 impl Format for Auto {
     fn load_profile<T: Taxonomy + Default, R: Read + Seek>(input: &mut R, columns: Option<Columns>) -> ProfileResult<T> {
         input.seek(SeekFrom::Start(0)).expect("Failed rewinding reader to beginning of file");
@@ -562,6 +563,18 @@ impl Format for Auto {
                 Custom::load_profile(input, &columns)
             },
         }
+    }
+}
+
+impl Format for Custom {
+    fn load_profile<T: Taxonomy + Default, R: Read + Seek>(
+        input: &mut R,
+        columns: Option<Columns>,
+    ) -> ProfileResult<T> {
+        let columns = columns.ok_or_else(|| {
+            ProfileError::FormatError("Custom format requires column definitions".to_owned())
+        })?;
+        Custom::load_profile(input, &columns)
     }
 }
 

@@ -194,10 +194,16 @@ pub fn precision(tp: usize, fp: usize, fn_: usize) -> f64 {
 /// # Returns
 ///
 /// Bray-Curtis similarity in [0, 1]. Returns 1.0 when both sums are zero.
+///
+/// # Panics
+///
+/// Panics when `prediction` and `gold_std` have different lengths.
 pub fn bray_curtis_similarity(prediction: &[f64], gold_std: &[f64]) -> f64 {
-    if prediction.len() != gold_std.len() {
-        return f64::NAN;
-    }
+    assert!(
+        prediction.len() == gold_std.len(),
+        "Prediction and gold standard vectors must have equal length"
+    );
+
 
     let (mut diff_sum, mut total_sum) = (0.0_f64, 0.0_f64);
     for (pred, gold) in prediction.iter().zip(gold_std.iter()) {
@@ -212,7 +218,7 @@ pub fn bray_curtis_similarity(prediction: &[f64], gold_std: &[f64]) -> f64 {
     }
 }
 
-/// Compute 1 - L2 error for two abundance vectors.
+/// Compute normalized 1 - L2 error for two abundance vectors.
 ///
 /// # Arguments
 ///
@@ -221,19 +227,31 @@ pub fn bray_curtis_similarity(prediction: &[f64], gold_std: &[f64]) -> f64 {
 ///
 /// # Returns
 ///
-/// 1 - L2 distance. Returns NaN when vector lengths differ.
+/// 1 - normalized L2 distance in [0, 1].
+///
+/// # Panics
+///
+/// Panics when `prediction` and `gold_std` have different lengths.
 pub fn l2_similarity(prediction: &[f64], gold_std: &[f64]) -> f64 {
-    if prediction.len() != gold_std.len() {
-        return f64::NAN;
-    }
+    assert!(
+        prediction.len() == gold_std.len(),
+        "Prediction and gold standard vectors must have equal length"
+    );
 
-    let mut sum_sq = 0.0_f64;
+    let (mut sum_sq, mut pred_sq, mut gold_sq) = (0.0_f64, 0.0_f64, 0.0_f64);
     for (pred, gold) in prediction.iter().zip(gold_std.iter()) {
         let diff = pred - gold;
         sum_sq += diff * diff;
+        pred_sq += pred * pred;
+        gold_sq += gold * gold;
     }
 
-    1.0 - sum_sq.sqrt()
+    let denom = pred_sq.sqrt() + gold_sq.sqrt();
+    if denom == 0.0 {
+        return 1.0;
+    }
+
+    1.0 - (sum_sq.sqrt() / denom)
 }
 
 /// Compute Pearson correlation for two vectors.
@@ -246,8 +264,16 @@ pub fn l2_similarity(prediction: &[f64], gold_std: &[f64]) -> f64 {
 /// # Returns
 ///
 /// Pearson correlation, or NaN when undefined.
+///
+/// # Panics
+///
+/// Panics when `prediction` and `gold_std` have different lengths.
 pub fn pearson_correlation(prediction: &[f64], gold_std: &[f64]) -> f64 {
-    if prediction.len() != gold_std.len() || prediction.len() < 2 {
+    assert!(
+        prediction.len() == gold_std.len(),
+        "Prediction and gold standard vectors must have equal length"
+    );
+    if prediction.len() < 2 {
         return f64::NAN;
     }
 
@@ -283,8 +309,16 @@ pub fn pearson_correlation(prediction: &[f64], gold_std: &[f64]) -> f64 {
 /// # Returns
 ///
 /// Spearman correlation, or NaN when undefined.
+///
+/// # Panics
+///
+/// Panics when `prediction` and `gold_std` have different lengths.
 pub fn spearman_correlation(prediction: &[f64], gold_std: &[f64]) -> f64 {
-    if prediction.len() != gold_std.len() || prediction.len() < 2 {
+    assert!(
+        prediction.len() == gold_std.len(),
+        "Prediction and gold standard vectors must have equal length"
+    );
+    if prediction.len() < 2 {
         return f64::NAN;
     }
 
@@ -341,7 +375,16 @@ mod tests {
         let pred = vec![1.0, 0.0];
         let gold = vec![0.0, 1.0];
         let sim = l2_similarity(&pred, &gold);
-        assert!(approx_eq(sim, 1.0 - 2.0_f64.sqrt(), 1e-12));
+        let expected = 1.0 - (2.0_f64.sqrt() / 2.0);
+        assert!(approx_eq(sim, expected, 1e-12));
+    }
+
+    #[test]
+    fn test_l2_similarity_zero_vectors() {
+        let pred = vec![0.0, 0.0];
+        let gold = vec![0.0, 0.0];
+        let sim = l2_similarity(&pred, &gold);
+        assert!(approx_eq(sim, 1.0, 1e-12));
     }
 
     #[test]

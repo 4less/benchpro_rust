@@ -23,8 +23,8 @@ pub enum TaxonomicRank {
     Superkingdom,
     Domain,
     Phylum,
-    Order,
     Class,
+    Order,
     Family,
     Genus,
     Species,
@@ -95,6 +95,21 @@ impl TaxonomicRank {
             &"strain" => Some(Self::Strain),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TaxonomicRank, Taxonomy, GTDB};
+
+    #[test]
+    fn test_lowest_rank_prefers_order_over_class() {
+        let lineage = GTDB::lineage_from_string(
+            "d__Bacteria;p__Firmicutes;c__Bacilli;o__Lactobacillales",
+            None,
+        );
+        let lowest = lineage.lowest().expect("Expected lowest rank");
+        assert_eq!(lowest.rank.as_ref(), Some(&TaxonomicRank::Order));
     }
 }
 
@@ -243,13 +258,13 @@ pub trait Taxonomy {
     fn get_enum() -> TaxonomyEnum;
 }
 /// NCBI taxonomy marker type.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct NCBI;
 /// GTDB taxonomy marker type.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct GTDB;
 /// Custom taxonomy marker type.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Custom;
 
 
@@ -264,14 +279,23 @@ impl Taxonomy for GTDB {
             data: TaxonMap::default(),
             marker: PhantomData::<_>,
         };
+        let mut last_rank: Option<TaxonomicRank> = None;
 
         for token in tokens {
             // println!("Token: {}", token);
             let rank = TaxonomicRank::from_gtdb_prefix(token);
-            if rank.is_some() {
-                res.data.insert(rank.clone().unwrap(), Taxon {
+            if let Some(rank) = rank {
+                res.data.insert(rank.clone(), Taxon {
                     name: token.to_string(),
-                    rank: rank,
+                    rank: Some(rank.clone()),
+                    id: None,
+                    alternative_names: None
+                });
+                last_rank = Some(rank);
+            } else if should_insert_species_from_unprefixed(&last_rank, &res) {
+                res.data.insert(TaxonomicRank::Species, Taxon {
+                    name: format!("s__{}", token.trim()),
+                    rank: Some(TaxonomicRank::Species),
                     id: None,
                     alternative_names: None
                 });
@@ -296,13 +320,22 @@ impl Taxonomy for Custom {
             data: TaxonMap::default(),
             marker: PhantomData::<_>,
         };
+        let mut last_rank: Option<TaxonomicRank> = None;
 
         for token in tokens {
             let rank = TaxonomicRank::from_gtdb_prefix(token);
-            if rank.is_some() {
-                res.data.insert(rank.clone().unwrap(), Taxon {
+            if let Some(rank) = rank {
+                res.data.insert(rank.clone(), Taxon {
                     name: token.to_string(),
-                    rank: rank,
+                    rank: Some(rank.clone()),
+                    id: None,
+                    alternative_names: None
+                });
+                last_rank = Some(rank);
+            } else if should_insert_species_from_unprefixed(&last_rank, &res) {
+                res.data.insert(TaxonomicRank::Species, Taxon {
+                    name: format!("s__{}", token.trim()),
+                    rank: Some(TaxonomicRank::Species),
                     id: None,
                     alternative_names: None
                 });
@@ -369,6 +402,14 @@ impl Taxonomy for NCBI {
     fn get_enum() -> TaxonomyEnum {
         TaxonomyEnum::NCBI
     }
+}
+
+fn should_insert_species_from_unprefixed(
+    last_rank: &Option<TaxonomicRank>,
+    lineage: &Lineage<impl Taxonomy>,
+) -> bool {
+    matches!(last_rank, Some(TaxonomicRank::Genus))
+        && !lineage.data.contains_key(&TaxonomicRank::Species)
 }
 
 /// Taxon with optional rank, id, and alternative names.
@@ -597,5 +638,46 @@ mod tests {
         assert_eq!(lineage.get(&R::Phylum).unwrap().name, phylum);
         assert_eq!(lineage.get(&R::Domain).unwrap().name, domain);
         assert!(matches!(lineage.get(&R::Strain), None));
+    }
+
+    #[test]
+    fn test_unprefixed_after_genus_sets_species() {
+        type R = TaxonomicRank;
+        let test = "d__Bacteria;p__Firmicutes;c__Bacilli;o__Lactobacillales;f__Streptococcaceae;\
+g__Streptococcus;Incongruent [g__Streptococcus]";
+        let lineage = GTDB::lineage_from_string(test, None);
+
+        assert_eq!(
+            lineage.get(&R::Species).unwrap().name,
+            "s__Incongruent [g__Streptococcus]"
+        );
+        assert_eq!(lineage.get(&R::Genus).unwrap().name, "g__Streptococcus");
+    }
+
+    #[test]
+    fn test_unprefixed_not_annotated_after_genus_sets_species() {
+        type R = TaxonomicRank;
+        let test = "d__Bacteria;p__Proteobacteria;c__Gammaproteobacteria;o__Alteromonadales;\
+f__Alteromonadaceae;g__Alteromonas;Not_annotated [g__Alteromonas]";
+        let lineage = GTDB::lineage_from_string(test, None);
+
+        assert_eq!(
+            lineage.get(&R::Species).unwrap().name,
+            "s__Not_annotated [g__Alteromonas]"
+        );
+        assert_eq!(lineage.get(&R::Genus).unwrap().name, "g__Alteromonas");
+    }
+
+    #[test]
+    fn test_prefixed_species_takes_precedence() {
+        type R = TaxonomicRank;
+        let test = "d__Bacteria;p__Firmicutes;c__Bacilli;o__Lactobacillales;f__Lactobacillaceae;\
+g__Lactobacillus;s__Lactobacillus acidophilus";
+        let lineage = GTDB::lineage_from_string(test, None);
+
+        assert_eq!(
+            lineage.get(&R::Species).unwrap().name,
+            "s__Lactobacillus acidophilus"
+        );
     }
 }
