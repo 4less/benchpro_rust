@@ -1,5 +1,10 @@
 use core::f64;
-use std::{collections::{HashMap, HashSet}, process::exit, str::FromStr, sync::{Arc, Mutex}};
+use std::{
+    collections::{HashMap, HashSet},
+    process::exit,
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
 
 use itertools::Itertools;
 use log::debug;
@@ -41,7 +46,7 @@ pub fn get_adjusted_benchmarks(
     tree_handler: &Mutex<TreeHandler>,
     profile_handler: &ProfileHandler,
 ) -> PolarsResult<DataFrame> {
-    let threshold =  0.04_f64;
+    let threshold = 0.04_f64;
 
     debug!("--FIND--");
     debug!("{:?}", data);
@@ -50,9 +55,12 @@ pub fn get_adjusted_benchmarks(
     let mut_species_df: DataFrame = data
         .clone()
         .lazy()
-        .filter(col("Rank").eq(lit("Species")).and(col("AllowAlternatives").eq(lit(false))))
+        .filter(
+            col("Rank")
+                .eq(lit("Species"))
+                .and(col("AllowAlternatives").eq(lit(false))),
+        )
         .collect()?;
-
 
     // TREEEEEE
     let mut bc_tree_df = mut_species_df
@@ -70,13 +78,10 @@ pub fn get_adjusted_benchmarks(
     let mut taxon_to_type: HashMap<String, BC> = HashMap::new();
     let mut taxon_to_detectable: HashMap<String, bool> = HashMap::new();
 
-
     // TODO: With tree and dataset, now relabel FP and FN
     // Distance between nodes, sort by distance, resolve pairings..
     let mut all_dfs = sample_apply(&bc_tree_df, |df| {
-
         let mut rows = DetailedData::from_polars_df(&df).unwrap();
-
 
         let tree_path = df
             .column(MetaColumn::GoldStdTree.to_str())
@@ -97,7 +102,6 @@ pub fn get_adjusted_benchmarks(
 
         let th_locked = tree_handler.lock().unwrap();
 
-        
         let (duration, result) = time(|| th_locked.get_subtree(tree_path, &names));
 
         debug!("Get Subtree took {:?}", duration);
@@ -132,20 +136,22 @@ pub fn get_adjusted_benchmarks(
                 .map(|(a, b)| (a.unwrap().to_owned(), b.unwrap() == "True"))
                 .collect_into(&mut taxon_to_detectable);
 
-
-            let taxon_to_abundance: HashMap<String, f64> = rows.data().iter().map(|r| {
-                let abundance: f64 = match (r.goldstd_abundance, r.prediction_abundance) {
-                    (None, None) => 0f64,
-                    (None, Some(p)) => p,
-                    (Some(g), None) => g,
-                    (Some(g), Some(_)) => g,
-                };
-                (r.name.clone(), abundance)
-            }).collect::<HashMap<_, _>>();
+            let taxon_to_abundance: HashMap<String, f64> = rows
+                .data()
+                .iter()
+                .map(|r| {
+                    let abundance: f64 = match (r.goldstd_abundance, r.prediction_abundance) {
+                        (None, None) => 0f64,
+                        (None, Some(p)) => p,
+                        (Some(g), None) => g,
+                        (Some(g), Some(_)) => g,
+                    };
+                    (r.name.clone(), abundance)
+                })
+                .collect::<HashMap<_, _>>();
 
             for row in rows.data_mut().iter_mut() {
                 let node = tree.get_by_name(&row.name);
-
 
                 if let Some(node) = node {
                     let dist = closest_neighbor(&tree, &node.id).unwrap();
@@ -154,19 +160,23 @@ pub fn get_adjusted_benchmarks(
                     row.closest_neighbor_type = taxon_to_type.get(&dist.name).map(|x| x.to_owned());
                     row.closest_neighbor_detectable =
                         taxon_to_detectable.get(&dist.name).map(|x| x.to_owned());
-                    row.closest_neighbor_abundance = taxon_to_abundance.get(dist.name.as_str()).map(|x| x.to_owned());
+                    row.closest_neighbor_abundance = taxon_to_abundance
+                        .get(dist.name.as_str())
+                        .map(|x| x.to_owned());
                 }
             }
 
-            rows.sort_by(|a, b| {
-                match (a.closest_neighbor_distance, b.closest_neighbor_distance) {
-                    (Some(a_val), Some(b_val)) => a_val.partial_cmp(&b_val).unwrap_or(std::cmp::Ordering::Equal),
+            rows.sort_by(
+                |a, b| match (a.closest_neighbor_distance, b.closest_neighbor_distance) {
+                    (Some(a_val), Some(b_val)) => a_val
+                        .partial_cmp(&b_val)
+                        .unwrap_or(std::cmp::Ordering::Equal),
                     (None, None) => std::cmp::Ordering::Equal,
                     (None, Some(_)) => std::cmp::Ordering::Greater,
                     (Some(_), None) => std::cmp::Ordering::Less,
-                }
-            });
-            
+                },
+            );
+
             let mut used_fns = HashSet::new();
             let mut fn_to_fp = Vec::new();
 
@@ -178,7 +188,8 @@ pub fn get_adjusted_benchmarks(
                     &row.closest_neighbor_type,
                     row.closest_neighbor_detectable,
                 ) {
-                    if row.bc_type == BC::FP && dist <= threshold && type_ == &BC::FN && !detectable {
+                    if row.bc_type == BC::FP && dist <= threshold && type_ == &BC::FN && !detectable
+                    {
                         row.bc_type = BC::FFP;
                         if !used_fns.contains(name) {
                             fn_to_fp.push((name.clone(), row.name.clone())); // Clone values for later use
@@ -187,7 +198,7 @@ pub fn get_adjusted_benchmarks(
                     }
                 }
             });
-            
+
             // Apply the collected changes
             for (fn_, fp) in fn_to_fp {
                 if let Some(row) = rows.get_mut(&fn_) {

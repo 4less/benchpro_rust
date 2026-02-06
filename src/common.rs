@@ -1,7 +1,10 @@
-use std::{marker::{ConstParamTy, PhantomData}, str::FromStr};
-use lazy_static::lazy_static;
 use itertools::Itertools;
+use lazy_static::lazy_static;
 use regex::Regex;
+use std::{
+    marker::{ConstParamTy, PhantomData},
+    str::FromStr,
+};
 use strum::{Display, EnumCount, EnumIter, IntoEnumIterator};
 use thiserror::Error;
 
@@ -16,7 +19,6 @@ type Abundance = f64;
 type TaxonAbundancePair = (Taxon, Abundance);
 type TaxonMap = micromap::Map<TaxonomicRank, Taxon, { TaxonomicRank::COUNT }>;
 
-
 /// Supported taxonomic ranks.
 #[derive(Debug, EnumIter, EnumCount, PartialEq, PartialOrd, Eq, Ord, Clone, Hash, Display)]
 pub enum TaxonomicRank {
@@ -29,7 +31,7 @@ pub enum TaxonomicRank {
     Genus,
     Species,
     Strain,
-    Unknown
+    Unknown,
 }
 
 impl Default for TaxonomicRank {
@@ -44,7 +46,7 @@ impl TaxonomicRank {
     /// # Returns
     ///
     /// Vector of all `TaxonomicRank` variants.
-    pub fn all() -> Vec::<TaxonomicRank> {
+    pub fn all() -> Vec<TaxonomicRank> {
         TaxonomicRank::iter().collect_vec()
     }
 
@@ -58,7 +60,9 @@ impl TaxonomicRank {
     ///
     /// Matching rank or `None` if the prefix is not recognized.
     pub fn from_gtdb_prefix(str: &str) -> Option<Self> {
-        if str.len() < 3 { return None };
+        if str.len() < 3 {
+            return None;
+        };
         match &str[..3] {
             "d__" => Some(Self::Domain),
             "k__" => Some(Self::Superkingdom),
@@ -127,19 +131,22 @@ impl FromStr for TaxonomicRank {
             &"genus" => Self::Genus,
             &"species" => Self::Species,
             &"strain" => Self::Strain,
-            _ => return Err(format!("`{}` cannot be converted to a valid taxonomic rank", s)),
+            _ => {
+                return Err(format!(
+                    "`{}` cannot be converted to a valid taxonomic rank",
+                    s
+                ))
+            }
         })
     }
 }
-
 
 /// Taxonomic lineage keyed by rank.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Lineage<T: Taxonomy> {
     data: TaxonMap,
-    marker: PhantomData::<T>,
+    marker: PhantomData<T>,
 }
-
 
 /// Parses a lineage from a string representation.
 pub trait LineageFromString<T: Taxonomy> {
@@ -186,9 +193,7 @@ impl<T: Taxonomy> Lineage<T> {
     ///
     /// Lowest taxon, or `None` if empty.
     pub fn lowest(&self) -> Option<&Taxon> {
-        self.data.iter().max_by_key(|x| {
-            x.0
-        }).map(|(_, taxon)| taxon)
+        self.data.iter().max_by_key(|x| x.0).map(|(_, taxon)| taxon)
     }
 
     /// Normalizes taxon names in-place for matching.
@@ -197,9 +202,7 @@ impl<T: Taxonomy> Lineage<T> {
     ///
     /// `()` after mutation.
     pub fn normalize(&mut self) {
-        self.data.iter_mut().for_each(|(r, t)| {
-            t.normalize_name()
-        });
+        self.data.iter_mut().for_each(|(r, t)| t.normalize_name());
     }
 
     /// Returns a debug-friendly string representation.
@@ -208,10 +211,12 @@ impl<T: Taxonomy> Lineage<T> {
     ///
     /// String with rank/name tuples.
     pub fn to_string(&self) -> String {
-        self.data.iter().map(|(k,v)| format!("({},{:?})", k.to_string(), v)).join(";")
+        self.data
+            .iter()
+            .map(|(k, v)| format!("({},{:?})", k.to_string(), v))
+            .join(";")
     }
 }
-
 
 /// Errors produced while parsing taxonomy lineages.
 #[derive(Error, Debug)]
@@ -229,17 +234,13 @@ pub enum TaxonomyLineageError {
     Unknown,
 }
 
-
-
 /// Enumeration of supported taxonomy systems.
 #[derive(Debug, Clone, PartialEq, Eq, ConstParamTy, Display)]
 pub enum TaxonomyEnum {
     NCBI,
     GTDB,
-    Custom
+    Custom,
 }
-
-
 
 /// Trait implemented by taxonomy systems with lineage parsing.
 pub trait Taxonomy {
@@ -253,7 +254,9 @@ pub trait Taxonomy {
     /// # Returns
     ///
     /// Parsed lineage.
-    fn lineage_from_string(str: &str, ranks: Option<&Vec<TaxonomicRank>>) -> Lineage<Self> where Self: Sized;
+    fn lineage_from_string(str: &str, ranks: Option<&Vec<TaxonomicRank>>) -> Lineage<Self>
+    where
+        Self: Sized;
     /// Returns the enum identifier for this taxonomy.
     fn get_enum() -> TaxonomyEnum;
 }
@@ -266,7 +269,6 @@ pub struct GTDB;
 /// Custom taxonomy marker type.
 #[derive(Default, Debug, Clone)]
 pub struct Custom;
-
 
 pub const LINEAGE_DELIMITERS: &[char] = &[';', '|'];
 
@@ -285,34 +287,39 @@ impl Taxonomy for GTDB {
             // println!("Token: {}", token);
             let rank = TaxonomicRank::from_gtdb_prefix(token);
             if let Some(rank) = rank {
-                res.data.insert(rank.clone(), Taxon {
-                    name: token.to_string(),
-                    rank: Some(rank.clone()),
-                    id: None,
-                    alternative_names: None
-                });
+                res.data.insert(
+                    rank.clone(),
+                    Taxon {
+                        name: token.to_string(),
+                        rank: Some(rank.clone()),
+                        id: None,
+                        alternative_names: None,
+                    },
+                );
                 last_rank = Some(rank);
             } else if should_insert_species_from_unprefixed(&last_rank, &res) {
-                res.data.insert(TaxonomicRank::Species, Taxon {
-                    name: format!("s__{}", token.trim()),
-                    rank: Some(TaxonomicRank::Species),
-                    id: None,
-                    alternative_names: None
-                });
+                res.data.insert(
+                    TaxonomicRank::Species,
+                    Taxon {
+                        name: format!("s__{}", token.trim()),
+                        rank: Some(TaxonomicRank::Species),
+                        id: None,
+                        alternative_names: None,
+                    },
+                );
             }
         }
 
         res
     }
-    
+
     fn get_enum() -> TaxonomyEnum {
-        return TaxonomyEnum::GTDB
+        return TaxonomyEnum::GTDB;
     }
 }
 
-
 impl Taxonomy for Custom {
-// impl LineageFromString<Custom> for  Lineage<Custom> {
+    // impl LineageFromString<Custom> for  Lineage<Custom> {
     fn lineage_from_string(str: &str, ranks: Option<&Vec<TaxonomicRank>>) -> Lineage<Self> {
         let tokens = str.split(";");
 
@@ -325,31 +332,36 @@ impl Taxonomy for Custom {
         for token in tokens {
             let rank = TaxonomicRank::from_gtdb_prefix(token);
             if let Some(rank) = rank {
-                res.data.insert(rank.clone(), Taxon {
-                    name: token.to_string(),
-                    rank: Some(rank.clone()),
-                    id: None,
-                    alternative_names: None
-                });
+                res.data.insert(
+                    rank.clone(),
+                    Taxon {
+                        name: token.to_string(),
+                        rank: Some(rank.clone()),
+                        id: None,
+                        alternative_names: None,
+                    },
+                );
                 last_rank = Some(rank);
             } else if should_insert_species_from_unprefixed(&last_rank, &res) {
-                res.data.insert(TaxonomicRank::Species, Taxon {
-                    name: format!("s__{}", token.trim()),
-                    rank: Some(TaxonomicRank::Species),
-                    id: None,
-                    alternative_names: None
-                });
+                res.data.insert(
+                    TaxonomicRank::Species,
+                    Taxon {
+                        name: format!("s__{}", token.trim()),
+                        rank: Some(TaxonomicRank::Species),
+                        id: None,
+                        alternative_names: None,
+                    },
+                );
             }
         }
 
         res
     }
-    
+
     fn get_enum() -> TaxonomyEnum {
         TaxonomyEnum::Custom
     }
 }
-
 
 impl Taxonomy for NCBI {
     // impl LineageFromString<NCBI> for Lineage<NCBI> {
@@ -365,31 +377,42 @@ impl Taxonomy for NCBI {
         let mut ambiguous_tokens = None;
         for (index, mut token) in tokens.enumerate() {
             if AMBIGUOUS_TAXA_REGEX.is_match(token) {
-                let mut ambiguous_tokens_tmp = token[1..token.len()-1].split("/").map(|s| s.to_string()).collect_vec();
+                let mut ambiguous_tokens_tmp = token[1..token.len() - 1]
+                    .split("/")
+                    .map(|s| s.to_string())
+                    .collect_vec();
                 representative = ambiguous_tokens_tmp.remove(0);
                 token = &representative;
                 ambiguous_tokens = Some(ambiguous_tokens_tmp);
             }
             let rank = TaxonomicRank::from_gtdb_prefix(token);
             if let Some(rank) = rank {
-                res.data.insert(rank.clone(), Taxon {
-                    name: token.to_string(),
-                    rank: Some(rank),
-                    id: None,
-                    alternative_names: ambiguous_tokens.clone(),
-                });
+                res.data.insert(
+                    rank.clone(),
+                    Taxon {
+                        name: token.to_string(),
+                        rank: Some(rank),
+                        id: None,
+                        alternative_names: ambiguous_tokens.clone(),
+                    },
+                );
             }
             if let Some(ranks) = ranks.as_ref() {
                 match ranks.get(index) {
                     Some(rank) => {
-                        if res.data.contains_key(rank) { panic!("Rank has already been defined.") }
-                        res.data.insert(rank.clone(), Taxon {
-                            name: token.to_string(),
-                            rank: Some(rank.clone()),
-                            id: None,
-                            alternative_names: ambiguous_tokens.clone(),
-                        });
-                    },
+                        if res.data.contains_key(rank) {
+                            panic!("Rank has already been defined.")
+                        }
+                        res.data.insert(
+                            rank.clone(),
+                            Taxon {
+                                name: token.to_string(),
+                                rank: Some(rank.clone()),
+                                id: None,
+                                alternative_names: ambiguous_tokens.clone(),
+                            },
+                        );
+                    }
                     None => todo!(),
                 }
             }
@@ -398,7 +421,7 @@ impl Taxonomy for NCBI {
 
         res
     }
-    
+
     fn get_enum() -> TaxonomyEnum {
         TaxonomyEnum::NCBI
     }
@@ -465,14 +488,16 @@ impl Taxon {
     /// True when names and ranks are compatible.
     pub fn match_any(&self, other: &Self) -> bool {
         // Early condition to throw
-        if self.rank != other.rank { return false }
-        if self.name == other.name { return true }
-        
-        return self.names_iter().any(|self_name| {
-            other.names_iter().any(|other_name| {
-                self_name == other_name
-            })
-        })
+        if self.rank != other.rank {
+            return false;
+        }
+        if self.name == other.name {
+            return true;
+        }
+
+        return self
+            .names_iter()
+            .any(|self_name| other.names_iter().any(|other_name| self_name == other_name));
     }
 
     /// Returns true if both taxa match exactly with no alternatives.
@@ -485,10 +510,10 @@ impl Taxon {
     ///
     /// True when ranks and names match and no alternatives exist.
     pub fn match_exact(&self, other: &Self) -> bool {
-        other.alternative_names.is_none() && 
-            self.alternative_names.is_none() && 
-            self.rank == other.rank && 
-            self.name == other.name
+        other.alternative_names.is_none()
+            && self.alternative_names.is_none()
+            && self.rank == other.rank
+            && self.name == other.name
     }
 
     /// Iterates over the primary name and any alternative names.
@@ -513,22 +538,23 @@ impl Taxon {
         self.name = self.name.replace("-", "_");
         self.name = self.name.replace(" ", "_");
         self.name = self.name.replace(".", "");
-        
+
         if let Some(alt) = &mut self.alternative_names {
             alt.iter_mut().for_each(|name: &mut String| {
                 let new_name = name.replace("-", "_");
                 let new_name = new_name.replace(" ", "_");
                 name.clear();
-                name.push_str(&new_name); 
+                name.push_str(&new_name);
             });
         }
     }
 }
 
-
 /// Marker for whether a taxon is detectable.
 pub enum Detectable {
-    Unknown, True, False
+    Unknown,
+    True,
+    False,
 }
 
 impl Detectable {
@@ -538,7 +564,7 @@ impl Detectable {
     ///
     /// String representation of the enum.
     pub fn to_string(&self) -> String {
-        match(self) {
+        match (self) {
             Detectable::Unknown => "Unknown".to_string(),
             Detectable::True => "True".to_string(),
             Detectable::False => "False".to_string(),
@@ -555,15 +581,14 @@ impl Detectable {
     ///
     /// `Some(Detectable)` when the value is recognized.
     pub fn from_string(var: &str) -> Option<Self> {
-        match(var) {
+        match (var) {
             "Unknown" => Some(Self::Unknown),
             "True" => Some(Self::True),
             "False" => Some(Self::False),
-            _ => None
+            _ => None,
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -575,7 +600,7 @@ mod tests {
         type R = TaxonomicRank;
         let a = Taxon::with_name_and_rank("Bert", &R::Species);
         let b = Taxon::with_name_and_rank("Bert", &R::Species);
-        
+
         assert!(a.match_any(&b));
         assert!(b.match_any(&a));
         assert!(a.match_exact(&b));
@@ -583,7 +608,7 @@ mod tests {
 
         let a = Taxon::with_name_and_rank("Brian", &R::Species);
         let b = Taxon::with_name_and_rank("Bert", &R::Species);
-        
+
         assert!(!a.match_any(&b));
         assert!(!b.match_any(&a));
         assert!(!a.match_exact(&b));
@@ -591,7 +616,7 @@ mod tests {
 
         let a = Taxon::with_name_and_rank("Bert", &R::Class);
         let b = Taxon::with_name_and_rank("Bert", &R::Species);
-        
+
         assert!(!a.match_any(&b));
         assert!(!b.match_any(&a));
         assert!(!a.match_exact(&b));
@@ -601,13 +626,13 @@ mod tests {
         let mut b = Taxon::with_name_and_rank("Bert", &R::Species);
         a.alternative_names = Some(vec!["Olaf".to_owned()]);
         b.alternative_names = Some(vec!["Brian".to_owned()]);
-        
+
         assert!(!a.match_exact(&b));
         assert!(!b.match_exact(&a));
 
         assert!(a.match_any(&b));
         assert!(b.match_any(&a));
-        
+
         assert!(a.match_any(&b));
         assert!(b.match_any(&a));
 

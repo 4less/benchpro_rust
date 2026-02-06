@@ -1,6 +1,12 @@
 use itertools::Itertools;
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    fs, io,
+    path::Path,
+    process::exit,
+};
 use thiserror::Error;
-use std::{cell::RefCell, collections::{HashMap, HashSet}, fs, io, path::Path, process::exit};
 
 use phylotree::tree::{NewickParseError, NodeId, Tree};
 
@@ -9,9 +15,6 @@ use crate::{
     utils::{get_subtree_with_leaves, time},
 };
 use log::{debug, error};
-
-
-
 
 pub type TaxaSet = HashSet<String>;
 pub type Name2Id = HashMap<String, NodeId>;
@@ -38,7 +41,7 @@ impl TreeHandler {
     fn clean_newick_str(newick_str: &str) -> String {
         let single_quotes = newick_str.chars().filter(|c| *c == '\'').count();
         let double_quotes = newick_str.chars().filter(|c| *c == '"').count();
-    
+
         let mut result_newick_str = newick_str.to_owned();
         if single_quotes > 0 && double_quotes == 0 {
             result_newick_str = newick_str.replace("'", "\"");
@@ -48,13 +51,15 @@ impl TreeHandler {
     }
 
     fn remove_escape_quotes(tree: &mut Tree) {
-        tree.search_nodes(|_| true).iter().chain(tree.get_leaves().iter()).for_each(|id| {
-            let node = tree.get_mut(id).unwrap();
-            if let Some(name) = &mut node.name {
-                *name = name.replace("\"", "");
-            }
-        });
-
+        tree.search_nodes(|_| true)
+            .iter()
+            .chain(tree.get_leaves().iter())
+            .for_each(|id| {
+                let node = tree.get_mut(id).unwrap();
+                if let Some(name) = &mut node.name {
+                    *name = name.replace("\"", "");
+                }
+            });
     }
 
     fn tree_from_file_with_cleanup(path: impl AsRef<Path>) -> TreeHandlerResult<Tree> {
@@ -82,7 +87,6 @@ impl TreeHandler {
         let mut res = TreeMap::default();
 
         let paths = meta.get_tree_path_set();
-    
 
         for ele in paths.iter() {
             let key: String = ele.to_str().unwrap().to_owned();
@@ -90,16 +94,17 @@ impl TreeHandler {
             let mut tree = Self::tree_from_file_with_cleanup(ele)?;
             Self::remove_escape_quotes(&mut tree);
 
-            let name2id = tree.get_leaves().iter().map(|x| (*x, tree.get(x).unwrap().name.as_ref()))
-                .filter(|(id, name)| name.is_some()) 
+            let name2id = tree
+                .get_leaves()
+                .iter()
+                .map(|x| (*x, tree.get(x).unwrap().name.as_ref()))
+                .filter(|(id, name)| name.is_some())
                 .map(|(id, name)| (name.unwrap().to_owned(), id))
                 .collect::<Name2Id>();
 
             res.insert(key, (name2id, tree));
         }
-        Ok(Self {
-            tree_map: res
-        })
+        Ok(Self { tree_map: res })
     }
 
     /// Builds a subtree containing the requested taxa from a cached tree.
@@ -115,8 +120,9 @@ impl TreeHandler {
     pub fn get_subtree(&self, tree_path: &str, taxa: &TaxaSet) -> Option<Tree> {
         let is_valid_path = |path: &str| std::path::Path::new(path).exists();
 
-        if !is_valid_path(tree_path) { return None };
-
+        if !is_valid_path(tree_path) {
+            return None;
+        };
 
         let (duration, (name2id, tree)) = time(|| self.tree_map.get(tree_path).unwrap());
         debug!(
@@ -125,14 +131,15 @@ impl TreeHandler {
             name2id.len()
         );
 
-        let (duration, ids) = time(|| taxa.iter()
-            .filter(|&name| name2id.contains_key(name))
-            .map(|name| { tree.get(name2id.get(name).unwrap()).unwrap().id })
-            .collect_vec());
+        let (duration, ids) = time(|| {
+            taxa.iter()
+                .filter(|&name| name2id.contains_key(name))
+                .map(|name| tree.get(name2id.get(name).unwrap()).unwrap().id)
+                .collect_vec()
+        });
 
         debug!("\tGetting ids took {:?} ... {}", duration, ids.len());
 
-        
         let (duration, result) = time(|| get_subtree_with_leaves(tree, &ids, true));
 
         debug!("\tGet Subtree with leaves took {:?}", duration);
@@ -141,7 +148,7 @@ impl TreeHandler {
             Err(e) => {
                 error!("Error: {}\n{:?}\n{:?}", e, ids, taxa);
                 None
-            },
+            }
         };
         result
     }

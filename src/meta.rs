@@ -1,5 +1,6 @@
 use calamine::{Reader, Xlsx};
 use itertools::{izip, Itertools};
+use log::debug;
 use polars::{
     error::{PolarsError, PolarsResult},
     frame::DataFrame,
@@ -10,6 +11,7 @@ use polars::{
     },
     series::{Series, SeriesIter},
 };
+use regex::Regex;
 use std::{
     collections::HashSet,
     fs::File,
@@ -18,8 +20,6 @@ use std::{
     str::FromStr,
 };
 use strum::{EnumIter, IntoEnumIterator};
-use log::debug;
-use regex::Regex;
 
 use crate::utils::workbook_to_dataframe;
 
@@ -404,8 +404,7 @@ impl Meta {
                 let id_iter = id_col.and_then(|c| c.str().ok());
                 let sample_iter = sample_col.and_then(|c| c.str().ok());
 
-                for (row_index, (goldstd, taxonomy)) in
-                    goldstd_iter.zip(taxonomy_iter).enumerate()
+                for (row_index, (goldstd, taxonomy)) in goldstd_iter.zip(taxonomy_iter).enumerate()
                 {
                     let goldstd = goldstd.unwrap_or("");
                     if !offending.contains(goldstd) {
@@ -510,7 +509,11 @@ Taxonomy\n{}\nConflicting rows:\n{}",
 
     fn read_matrix_headers(path: &Path) -> Result<Vec<String>, MetaError> {
         let file = File::open(path).map_err(|e| {
-            MetaError::DataError(format!("Cannot open abundance matrix '{}': {}", path.display(), e))
+            MetaError::DataError(format!(
+                "Cannot open abundance matrix '{}': {}",
+                path.display(),
+                e
+            ))
         })?;
         let mut reader = BufReader::new(file);
         let mut header = String::new();
@@ -552,10 +555,7 @@ Taxonomy\n{}\nConflicting rows:\n{}",
 
         for candidate in candidates {
             let regex = Regex::new(&candidate).map_err(|e| {
-                MetaError::DataError(format!(
-                    "Invalid {} regex '{}': {}",
-                    label, candidate, e
-                ))
+                MetaError::DataError(format!("Invalid {} regex '{}': {}", label, candidate, e))
             })?;
             let mut matches = std::collections::HashMap::new();
 
@@ -671,25 +671,27 @@ Taxonomy\n{}\nConflicting rows:\n{}",
             let taxonomy = taxonomy_series.get(row_index).ok_or_else(|| {
                 MetaError::DataError("Missing Taxonomy value in matrix meta".to_string())
             })?;
-            let profile_path = profile_series.get(row_index).ok_or_else(|| {
-                MetaError::DataError("Missing Profile path in matrix meta".to_string())
-            })?.trim();
+            let profile_path = profile_series
+                .get(row_index)
+                .ok_or_else(|| {
+                    MetaError::DataError("Missing Profile path in matrix meta".to_string())
+                })?
+                .trim();
             let profile_regex = profile_regex_series.get(row_index).ok_or_else(|| {
                 MetaError::DataError("Missing ProfileRegex in matrix meta".to_string())
             })?;
-            let goldstd_path = goldstd_series.get(row_index).ok_or_else(|| {
-                MetaError::DataError("Missing GoldStd path in matrix meta".to_string())
-            })?.trim();
+            let goldstd_path = goldstd_series
+                .get(row_index)
+                .ok_or_else(|| {
+                    MetaError::DataError("Missing GoldStd path in matrix meta".to_string())
+                })?
+                .trim();
             let goldstd_regex = goldstd_regex_series.get(row_index).ok_or_else(|| {
                 MetaError::DataError("Missing GoldStdRegex in matrix meta".to_string())
             })?;
 
-            let dataset = dataset_series
-                .as_ref()
-                .and_then(|s| s.get(row_index));
-            let goldstd_tree = goldstd_tree_series
-                .as_ref()
-                .and_then(|s| s.get(row_index));
+            let dataset = dataset_series.as_ref().and_then(|s| s.get(row_index));
+            let goldstd_tree = goldstd_tree_series.as_ref().and_then(|s| s.get(row_index));
             let taxa_list = taxa_series.as_ref().and_then(|s| s.get(row_index));
 
             let profile_headers = if let Some(headers) = header_cache.get(profile_path) {
@@ -777,10 +779,8 @@ Taxonomy\n{}\nConflicting rows:\n{}",
                 );
 
                 let id = format!("{}_{}", base_id, key);
-                let profile_ref =
-                    format!("matrix:{}::{}", profile_path, profile_sample);
-                let goldstd_ref =
-                    format!("matrix:{}::{}", goldstd_path, goldstd_sample);
+                let profile_ref = format!("matrix:{}::{}", profile_path, profile_sample);
+                let goldstd_ref = format!("matrix:{}::{}", goldstd_path, goldstd_sample);
 
                 let entry = MetaEntry {
                     id: id.clone(),
@@ -792,8 +792,7 @@ Taxonomy\n{}\nConflicting rows:\n{}",
                     profile_columns: None,
                     goldstd: PathBuf::from(goldstd_ref.clone()),
                     goldstd_columns: None,
-                    goldstd_tree: Self::normalize_optional_str(goldstd_tree)
-                        .map(PathBuf::from),
+                    goldstd_tree: Self::normalize_optional_str(goldstd_tree).map(PathBuf::from),
                     taxa_list: Self::normalize_optional_str(taxa_list).map(PathBuf::from),
                 };
 

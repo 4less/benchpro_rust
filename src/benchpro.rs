@@ -25,8 +25,8 @@ use polars::{
 use crate::{
     common::{Detectable, TaxonomicRank},
     meta::{self, Meta, MetaColumn},
-    options::Args,
-    profile::{ABUNDANCE_SUM_TOLERANCE, LoadProfile, Profile, ProfileWrapper},
+    options::CommonArgs,
+    profile::{LoadProfile, Profile, ProfileWrapper, ABUNDANCE_SUM_TOLERANCE},
     profile_handler::ProfileHandler,
     tree_adjusted_benchmarks::get_adjusted_benchmarks,
     tree_handler::{TaxaSet, TreeHandler},
@@ -41,8 +41,8 @@ use crate::{
 ///
 /// # Arguments
 ///
-/// * `args` - Parsed CLI arguments
-pub fn run(args: &Args) {
+/// * `args` - Parsed CLI arguments shared by subcommands
+pub fn run(args: &CommonArgs) {
     if args.validate_meta {
         validate_meta_only(args);
         return;
@@ -57,7 +57,7 @@ pub fn run(args: &Args) {
     }
 }
 
-fn validate_meta_only(args: &Args) {
+fn validate_meta_only(args: &CommonArgs) {
     let meta_path = match &args.meta {
         Some(path) => path,
         None => {
@@ -241,7 +241,6 @@ fn compute_abundance_metrics(df: &DataFrame) -> PolarsResult<DataFrame> {
         let pred_abundance = pred_abundance_col.get(row_index).unwrap_or(0.0);
         let gold_abundance = gold_abundance_col.get(row_index).unwrap_or(0.0);
 
-
         let key = (
             rank.to_string(),
             id.to_string(),
@@ -255,7 +254,10 @@ fn compute_abundance_metrics(df: &DataFrame) -> PolarsResult<DataFrame> {
             gold_std_tp: Vec::new(),
         });
 
-        println!("{} Taxon: {}, Gold: {}, Prediction: {}", bc_type, name, gold_abundance, pred_abundance);
+        println!(
+            "{} Taxon: {}, Gold: {}, Prediction: {}",
+            bc_type, name, gold_abundance, pred_abundance
+        );
 
         entry.prediction.push(pred_abundance);
         entry.gold_std.push(gold_abundance);
@@ -264,8 +266,6 @@ fn compute_abundance_metrics(df: &DataFrame) -> PolarsResult<DataFrame> {
             entry.gold_std_tp.push(gold_abundance);
         }
     }
-
-
 
     let mut ranks = Vec::with_capacity(groups.len());
     let mut ids = Vec::with_capacity(groups.len());
@@ -302,14 +302,21 @@ fn compute_abundance_metrics(df: &DataFrame) -> PolarsResult<DataFrame> {
         } else {
             spearman_correlation(&values.prediction_tp, &values.gold_std_tp)
         };
-        println!("l2 {}\npc {}\nsc{}\nbc {}\nl2tp {}\npctp {}\nsctp {}", l2_score, pearson_score, spearman_score, bc_sim, l2_score_tp, pearson_score_tp, spearman_score_tp);
+        println!(
+            "l2 {}\npc {}\nsc{}\nbc {}\nl2tp {}\npctp {}\nsctp {}",
+            l2_score,
+            pearson_score,
+            spearman_score,
+            bc_sim,
+            l2_score_tp,
+            pearson_score_tp,
+            spearman_score_tp
+        );
 
         if pearson_score_tp < 0.0 {
             println!("Pearson score: {}", pearson_score_tp);
             exit(1);
         }
-
-
 
         ranks.push(rank);
         ids.push(id);
@@ -469,8 +476,8 @@ pub fn get_taxon_df(
 ///
 /// # Arguments
 ///
-/// * `args` - Parsed CLI arguments
-pub fn meta_based_workflow(args: &Args) {
+/// * `args` - Parsed CLI arguments shared by subcommands
+pub fn meta_based_workflow(args: &CommonArgs) {
     type C = MetaColumn;
     let path = Path::new(args.meta.as_ref().unwrap());
     let outprefix = args
@@ -493,10 +500,11 @@ pub fn meta_based_workflow(args: &Args) {
     ///////////////////////////////////////////////////////////////////////
     // Binary classification DF
 
-    let mut complete_df =
-        get_taxon_df(&handler, args.allow_alternatives, args.ignore_abundance_error);
-
-    
+    let mut complete_df = get_taxon_df(
+        &handler,
+        args.allow_alternatives,
+        args.ignore_abundance_error,
+    );
 
     let mut new_complete_df = complete_df
         .left_join(
@@ -526,7 +534,11 @@ pub fn meta_based_workflow(args: &Args) {
                 debug!("Height DFA {}", dfa.height());
                 dfa = handler
                     .meta
-                    .left_join_to(&dfa, &[MetaColumn::Dataset, MetaColumn::Taxonomy, MetaColumn::Tool], true)
+                    .left_join_to(
+                        &dfa,
+                        &[MetaColumn::Dataset, MetaColumn::Taxonomy, MetaColumn::Tool],
+                        true,
+                    )
                     .expect("Cannot join dfs?");
 
                 debug!("Height DFA {}", dfa.height());
@@ -536,32 +548,50 @@ pub fn meta_based_workflow(args: &Args) {
                 debug!("Height DFA {}", dfa.height());
                 let _ = add_string_columns(
                     &mut new_complete_df,
-                    &[
-                        ("ClosestNeighbor", ""),
-                        ("ClosestNeighborType", ""),
-                    ]
-                    .map(|(a, b)| (a.to_string(), b.to_string())),
+                    &[("ClosestNeighbor", ""), ("ClosestNeighborType", "")]
+                        .map(|(a, b)| (a.to_string(), b.to_string())),
                 );
-                new_complete_df.with_column(Series::new("ClosestNeighborDistance".into(), std::iter::repeat(0f64).take(new_complete_df.height()).collect_vec())).unwrap();
-                new_complete_df.with_column(Series::new("ClosestNeighborAbundance".into(), std::iter::repeat(0f64).take(new_complete_df.height()).collect_vec())).unwrap();
+                new_complete_df
+                    .with_column(Series::new(
+                        "ClosestNeighborDistance".into(),
+                        std::iter::repeat(0f64)
+                            .take(new_complete_df.height())
+                            .collect_vec(),
+                    ))
+                    .unwrap();
+                new_complete_df
+                    .with_column(Series::new(
+                        "ClosestNeighborAbundance".into(),
+                        std::iter::repeat(0f64)
+                            .take(new_complete_df.height())
+                            .collect_vec(),
+                    ))
+                    .unwrap();
 
-
-                let reorder = new_complete_df.get_column_names().into_iter().map(|x| x.to_owned());
+                let reorder = new_complete_df
+                    .get_column_names()
+                    .into_iter()
+                    .map(|x| x.to_owned());
                 let dfa = dfa.select(reorder).unwrap();
 
                 new_complete_df = new_complete_df.vstack(&dfa).unwrap();
-
-        }
+            }
             Err(e) => {
                 warn!("Adjusted benchmarks failed: {:?}", e);
-            },
+            }
         }
     }
-    
 
     new_complete_df = new_complete_df
         .sort(
-            ["ID", "Rank", "Name", "Type", "AllowAlternatives", "Adjusted"],
+            [
+                "ID",
+                "Rank",
+                "Name",
+                "Type",
+                "AllowAlternatives",
+                "Adjusted",
+            ],
             SortMultipleOptions::default(),
         )
         .expect("Cannot sort detailed output");
@@ -623,4 +653,4 @@ pub fn meta_based_workflow(args: &Args) {
 /// # Arguments
 ///
 /// * `args` - Parsed CLI arguments
-pub fn meta_free_workflow(args: &Args) {}
+pub fn meta_free_workflow(_args: &CommonArgs) {}

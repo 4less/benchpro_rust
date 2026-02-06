@@ -1,7 +1,12 @@
 use std::{cmp::Ordering, collections::HashMap, str::FromStr};
 
 use itertools::Itertools;
-use polars::{error::{PolarsError, PolarsResult}, frame::DataFrame, prelude::{DataType, NamedFrom}, series::Series};
+use polars::{
+    error::{PolarsError, PolarsResult},
+    frame::DataFrame,
+    prelude::{DataType, NamedFrom},
+    series::Series,
+};
 use strum::{EnumIter, IntoEnumIterator};
 use thiserror::Error;
 
@@ -126,7 +131,6 @@ pub struct DetailedDataRow {
 }
 
 impl DetailedDataRow {
-
     /// Parses an optional field value or returns a typed parse error.
     ///
     /// # Arguments
@@ -263,7 +267,8 @@ impl DetailedDataRow {
                 }
             }
             DetailedColumn::ClosestNeighborAbundance => {
-                self.closest_neighbor_abundance = Self::empty_none_or_parse_err::<f64>(field, value)?
+                self.closest_neighbor_abundance =
+                    Self::empty_none_or_parse_err::<f64>(field, value)?
             }
         }
         Ok(())
@@ -332,42 +337,127 @@ impl DetailedData {
     /// Returns a Polars error when DataFrame creation fails.
     pub fn to_polars_df(&self) -> PolarsResult<DataFrame> {
         let bool_to_str = |b: bool| -> &str {
-            if b { "true" } else { "false" }
+            if b {
+                "true"
+            } else {
+                "false"
+            }
         };
 
-        let name_series = Series::new(DetailedColumn::Name.to_string().into(), self.data().iter().map(|r| r.name.as_str()).collect_vec());
-        let id_series = Series::new(DetailedColumn::ID.to_string().into(), self.data().iter().map(|r| r.id.as_str()).collect_vec());
-        let type_series = Series::new(DetailedColumn::Type.to_string().into(), self.data().iter().map(|r| r.bc_type.to_string()).collect_vec());
-        let rank_series = Series::new(DetailedColumn::Rank.to_string().into(), self.data().iter().map(|r| r.rank.to_string()).collect_vec());
-        let goldstd_abundance_series = Series::new(DetailedColumn::GoldStdAbundance.to_string().into(), self.data().iter().map(|r| r.goldstd_abundance.unwrap_or(0f64)).collect_vec());
-        let prediction_abundance_series = Series::new(DetailedColumn::PredictionAbundance.to_string().into(), self.data().iter().map(|r| r.prediction_abundance.unwrap_or(0f64)).collect_vec());
-        let goldstd_count_series = Series::new(DetailedColumn::GoldStdCount.to_string().into(), self.data().iter().map(|r| r.goldstd_count.unwrap_or(0usize) as i64).collect_vec());
-        let prediction_count_series = Series::new(DetailedColumn::PredictionCount.to_string().into(), self.data().iter().map(|r| r.prediction_count.unwrap_or(0usize) as i64).collect_vec());
-        let valid_taxon_series = Series::new(DetailedColumn::ValidTaxon.to_string().into(), self.data().iter().map(|r| r.valid_taxon.map_or("", bool_to_str)).collect_vec());
-        let detectable_taxon_series = Series::new(DetailedColumn::DetectableTaxon.to_string().into(), self.data().iter().map(|r| r.detectable_taxon.map_or("", bool_to_str)).collect_vec());
-        let closest_neighbor_series = Series::new(DetailedColumn::ClosestNeighbor.to_string().into(), self.data().iter().map(|r| r.closest_neigbor.as_ref().map(|x| x.as_str()).unwrap_or("")).collect_vec());
-        let closest_neighbor_type_series = Series::new(DetailedColumn::ClosestNeighborType.to_string().into(), self.data().iter().map(|r| r.closest_neighbor_type.as_ref().map_or("".to_owned(),  |x| x.to_string())).collect_vec());
-        let closest_neighbor_dist_series = Series::new(DetailedColumn::ClosestNeighborDistance.to_string().into(), self.data().iter().map(|r| r.closest_neighbor_distance.unwrap_or(0f64)).collect_vec());
-        let closest_neighbor_abundance_series = Series::new(DetailedColumn::ClosestNeighborAbundance.to_string().into(), self.data().iter().map(|r| r.closest_neighbor_abundance.unwrap_or(0f64)).collect_vec());
-        
-        
-        DataFrame::new([
-            name_series,
-            id_series,
-            type_series,
-            rank_series,
-            goldstd_abundance_series,
-            goldstd_count_series,
-            prediction_abundance_series,
-            prediction_count_series,
-            valid_taxon_series,
-            detectable_taxon_series,
-            closest_neighbor_series,
-            closest_neighbor_type_series,
-            closest_neighbor_dist_series,
-            closest_neighbor_abundance_series].to_vec())
+        let name_series = Series::new(
+            DetailedColumn::Name.to_string().into(),
+            self.data().iter().map(|r| r.name.as_str()).collect_vec(),
+        );
+        let id_series = Series::new(
+            DetailedColumn::ID.to_string().into(),
+            self.data().iter().map(|r| r.id.as_str()).collect_vec(),
+        );
+        let type_series = Series::new(
+            DetailedColumn::Type.to_string().into(),
+            self.data()
+                .iter()
+                .map(|r| r.bc_type.to_string())
+                .collect_vec(),
+        );
+        let rank_series = Series::new(
+            DetailedColumn::Rank.to_string().into(),
+            self.data().iter().map(|r| r.rank.to_string()).collect_vec(),
+        );
+        let goldstd_abundance_series = Series::new(
+            DetailedColumn::GoldStdAbundance.to_string().into(),
+            self.data()
+                .iter()
+                .map(|r| r.goldstd_abundance.unwrap_or(0f64))
+                .collect_vec(),
+        );
+        let prediction_abundance_series = Series::new(
+            DetailedColumn::PredictionAbundance.to_string().into(),
+            self.data()
+                .iter()
+                .map(|r| r.prediction_abundance.unwrap_or(0f64))
+                .collect_vec(),
+        );
+        let goldstd_count_series = Series::new(
+            DetailedColumn::GoldStdCount.to_string().into(),
+            self.data()
+                .iter()
+                .map(|r| r.goldstd_count.unwrap_or(0usize) as i64)
+                .collect_vec(),
+        );
+        let prediction_count_series = Series::new(
+            DetailedColumn::PredictionCount.to_string().into(),
+            self.data()
+                .iter()
+                .map(|r| r.prediction_count.unwrap_or(0usize) as i64)
+                .collect_vec(),
+        );
+        let valid_taxon_series = Series::new(
+            DetailedColumn::ValidTaxon.to_string().into(),
+            self.data()
+                .iter()
+                .map(|r| r.valid_taxon.map_or("", bool_to_str))
+                .collect_vec(),
+        );
+        let detectable_taxon_series = Series::new(
+            DetailedColumn::DetectableTaxon.to_string().into(),
+            self.data()
+                .iter()
+                .map(|r| r.detectable_taxon.map_or("", bool_to_str))
+                .collect_vec(),
+        );
+        let closest_neighbor_series = Series::new(
+            DetailedColumn::ClosestNeighbor.to_string().into(),
+            self.data()
+                .iter()
+                .map(|r| r.closest_neigbor.as_ref().map(|x| x.as_str()).unwrap_or(""))
+                .collect_vec(),
+        );
+        let closest_neighbor_type_series = Series::new(
+            DetailedColumn::ClosestNeighborType.to_string().into(),
+            self.data()
+                .iter()
+                .map(|r| {
+                    r.closest_neighbor_type
+                        .as_ref()
+                        .map_or("".to_owned(), |x| x.to_string())
+                })
+                .collect_vec(),
+        );
+        let closest_neighbor_dist_series = Series::new(
+            DetailedColumn::ClosestNeighborDistance.to_string().into(),
+            self.data()
+                .iter()
+                .map(|r| r.closest_neighbor_distance.unwrap_or(0f64))
+                .collect_vec(),
+        );
+        let closest_neighbor_abundance_series = Series::new(
+            DetailedColumn::ClosestNeighborAbundance.to_string().into(),
+            self.data()
+                .iter()
+                .map(|r| r.closest_neighbor_abundance.unwrap_or(0f64))
+                .collect_vec(),
+        );
+
+        DataFrame::new(
+            [
+                name_series,
+                id_series,
+                type_series,
+                rank_series,
+                goldstd_abundance_series,
+                goldstd_count_series,
+                prediction_abundance_series,
+                prediction_count_series,
+                valid_taxon_series,
+                detectable_taxon_series,
+                closest_neighbor_series,
+                closest_neighbor_type_series,
+                closest_neighbor_dist_series,
+                closest_neighbor_abundance_series,
+            ]
+            .to_vec(),
+        )
     }
-    
 
     /// Returns a mutable row by taxon name.
     ///
@@ -422,7 +512,8 @@ impl DetailedData {
     /// * `compare` - Comparator function
     pub fn sort_by<F>(&mut self, compare: F)
     where
-    F: FnMut(&DetailedDataRow, &DetailedDataRow) -> Ordering, {
+        F: FnMut(&DetailedDataRow, &DetailedDataRow) -> Ordering,
+    {
         self.data.sort_by(compare);
         self.init_map();
     }

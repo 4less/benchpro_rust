@@ -7,10 +7,15 @@ use std::{
 };
 
 use itertools::izip;
-use log::{debug, warn, error};
+use log::{debug, error, warn};
 
-use crate::{common::{Custom, TaxonomicRank, GTDB, NCBI}, format::{Auto, Columns, CAMI, Custom as CustomFormat}, meta::Meta, profile::{LoadProfile, Profile, ProfileWrapper}, utils::{load_file_lineages_to_hashset, load_file_to_hashset}};
-
+use crate::{
+    common::{Custom, TaxonomicRank, GTDB, NCBI},
+    format::{Auto, Columns, Custom as CustomFormat, CAMI},
+    meta::Meta,
+    profile::{LoadProfile, Profile, ProfileWrapper},
+    utils::{load_file_lineages_to_hashset, load_file_to_hashset},
+};
 
 /// Errors raised while loading profiles from meta or files.
 #[derive(thiserror::Error, Debug, Clone)]
@@ -92,12 +97,10 @@ impl ProfileHandler {
 
         let profile = match taxonomy {
             Some(s) if s.as_ref().starts_with("GTDB") => {
-                Profile::<GTDB>::load::<Auto, _>(&mut cursor, columns)
-                    .map(|profile| profile.wrap())
+                Profile::<GTDB>::load::<Auto, _>(&mut cursor, columns).map(|profile| profile.wrap())
             }
             Some(s) if s.as_ref().starts_with("NCBI") => {
-                Profile::<NCBI>::load::<Auto, _>(&mut cursor, columns)
-                    .map(|profile| profile.wrap())
+                Profile::<NCBI>::load::<Auto, _>(&mut cursor, columns).map(|profile| profile.wrap())
             }
             Some(_) => Profile::<Custom>::load::<Auto, _>(&mut cursor, columns)
                 .map(|profile| profile.wrap()),
@@ -133,31 +136,51 @@ impl ProfileHandler {
     /// # Errors
     ///
     /// Returns `ProfileHandlerError` on duplicate entries or parsing failures.
-    pub fn load_prediction_profiles(&mut self, meta: &Meta, prediction_column: &str, taxonomy_column: &str, column_format_column: &str) -> Result<(), ProfileHandlerError> {
-
-        let profiles = meta.raw.column(prediction_column).unwrap().str().unwrap().iter();
-        let taxonomy = meta.raw.column(taxonomy_column).unwrap().str().unwrap().iter();
+    pub fn load_prediction_profiles(
+        &mut self,
+        meta: &Meta,
+        prediction_column: &str,
+        taxonomy_column: &str,
+        column_format_column: &str,
+    ) -> Result<(), ProfileHandlerError> {
+        let profiles = meta
+            .raw
+            .column(prediction_column)
+            .unwrap()
+            .str()
+            .unwrap()
+            .iter();
+        let taxonomy = meta
+            .raw
+            .column(taxonomy_column)
+            .unwrap()
+            .str()
+            .unwrap()
+            .iter();
         let column_format_series = meta.raw.column(column_format_column);
 
-        let column_format_iter: Box<dyn Iterator<Item = Option<&str>>> = match column_format_series {
+        let column_format_iter: Box<dyn Iterator<Item = Option<&str>>> = match column_format_series
+        {
             Ok(series) => Box::new(series.str().unwrap().iter()),
             Err(_) => Box::new(std::iter::repeat(None)),
         };
-        
+
         for (path, taxonomy, column_format) in izip!(profiles, taxonomy, column_format_iter) {
             let path = path.expect("No path");
             let profile = Self::load_profile(path, taxonomy, column_format);
 
             match profile {
                 Some(profile) => {
-                    self.prediction_map.contains_key(path)
-                        .then(|| return Err::<(), ProfileHandlerError>(ProfileHandlerError::GenericError("Duplicate profile".to_owned())));
-                    
+                    self.prediction_map.contains_key(path).then(|| {
+                        return Err::<(), ProfileHandlerError>(ProfileHandlerError::GenericError(
+                            "Duplicate profile".to_owned(),
+                        ));
+                    });
+
                     self.prediction_map.insert(path.to_owned(), profile);
-                },
+                }
                 _ => (),
             }
-            
         }
 
         Ok(())
@@ -179,35 +202,47 @@ impl ProfileHandler {
     /// # Errors
     ///
     /// Returns `ProfileHandlerError` on parsing failures.
-    pub fn load_gold_profiles(&mut self, meta: &Meta, gold_column: &str, taxonomy_column: &str, column_format_column: &str) -> Result<(), ProfileHandlerError> {
-
+    pub fn load_gold_profiles(
+        &mut self,
+        meta: &Meta,
+        gold_column: &str,
+        taxonomy_column: &str,
+        column_format_column: &str,
+    ) -> Result<(), ProfileHandlerError> {
         let profiles = meta.raw.column(gold_column).unwrap().str().unwrap().iter();
-        let taxonomy = meta.raw.column(taxonomy_column).unwrap().str().unwrap().iter();
+        let taxonomy = meta
+            .raw
+            .column(taxonomy_column)
+            .unwrap()
+            .str()
+            .unwrap()
+            .iter();
         let column_format_series = meta.raw.column(column_format_column);
 
-        let column_format_iter: Box<dyn Iterator<Item = Option<&str>>> = match column_format_series {
+        let column_format_iter: Box<dyn Iterator<Item = Option<&str>>> = match column_format_series
+        {
             Ok(series) => Box::new(series.str().unwrap().iter()),
             Err(_) => Box::new(std::iter::repeat(None)),
         };
-        
-        
+
         let mut data: Vec<ProfileWrapper> = Vec::default();
-        
+
         for (path, taxonomy, column_format) in izip!(profiles, taxonomy, column_format_iter) {
             let path = path.expect("No path");
-            if self.gold_std_map.contains_key(path) { continue }
+            if self.gold_std_map.contains_key(path) {
+                continue;
+            }
 
             let profile = Self::load_profile(path, taxonomy, column_format);
-            
+
             match profile {
                 Some(profile) => {
                     if !self.gold_std_map.contains_key(path) {
                         self.gold_std_map.insert(path.to_owned(), profile);
                     }
-                },
+                }
                 _ => (),
             }
-            
         }
 
         Ok(())
@@ -229,8 +264,13 @@ impl ProfileHandler {
     pub fn load_available_taxa(&mut self, meta: &Meta) -> std::io::Result<()> {
         for row in meta.entries.iter() {
             if let Some(taxa) = &row.taxa_list {
-                if self.available_taxa.contains_key(taxa.to_str().unwrap()) { continue };
-                self.available_taxa.insert(taxa.to_str().unwrap().to_owned(), load_file_lineages_to_hashset(taxa)?);
+                if self.available_taxa.contains_key(taxa.to_str().unwrap()) {
+                    continue;
+                };
+                self.available_taxa.insert(
+                    taxa.to_str().unwrap().to_owned(),
+                    load_file_lineages_to_hashset(taxa)?,
+                );
             }
         }
         Ok(())
@@ -247,8 +287,11 @@ impl ProfileHandler {
     /// # Returns
     ///
     /// Parsed `ProfileWrapper` if loading succeeds.
-    pub fn load_profile(path: impl AsRef<Path>, taxonomy: Option<impl AsRef<str>>, column_format: Option<impl AsRef<str>>) -> Option<ProfileWrapper> {
-
+    pub fn load_profile(
+        path: impl AsRef<Path>,
+        taxonomy: Option<impl AsRef<str>>,
+        column_format: Option<impl AsRef<str>>,
+    ) -> Option<ProfileWrapper> {
         debug!("File: {:?}", path.as_ref());
         if let Some((matrix_path, column)) = Self::split_matrix_reference(path.as_ref()) {
             return Self::load_matrix_profile(&matrix_path, &column, taxonomy);
@@ -269,9 +312,9 @@ impl ProfileHandler {
                                 path.as_ref().display()
                             );
                             None
-                        },
+                        }
                     }
-                },
+                }
                 Some(s) if s.as_ref().starts_with("NCBI") => {
                     match Profile::<NCBI>::load::<CustomFormat, _>(&mut file, columns) {
                         Ok(profile) => Some(profile.wrap()),
@@ -282,22 +325,16 @@ impl ProfileHandler {
                                 path.as_ref().display()
                             );
                             None
-                        },
-                    }
-                },
-                Some(_) => {
-                    match Profile::<Custom>::load::<CustomFormat, _>(&mut file, columns) {
-                        Ok(profile) => Some(profile.wrap()),
-                        Err(e) => {
-                            warn!(
-                                "Custom Error: {}\nFile: {}",
-                                e,
-                                path.as_ref().display()
-                            );
-                            None
-                        },
+                        }
                     }
                 }
+                Some(_) => match Profile::<Custom>::load::<CustomFormat, _>(&mut file, columns) {
+                    Ok(profile) => Some(profile.wrap()),
+                    Err(e) => {
+                        warn!("Custom Error: {}\nFile: {}", e, path.as_ref().display());
+                        None
+                    }
+                },
                 None => panic!("This should not happen"),
             }
         } else {
@@ -312,27 +349,25 @@ impl ProfileHandler {
                                 path.as_ref().display()
                             );
                             None
-                        },
+                        }
                     }
-                },
+                }
                 Some(s) if s.as_ref().starts_with("NCBI") => {
                     match Profile::<NCBI>::load::<CAMI, _>(&mut file, None) {
                         Ok(profile) => Some(profile.wrap()),
                         Err(e) => {
                             warn!("NCBI CAMI Error: {}", e);
                             None
-                        },
-                    }
-                },
-                Some(_) => {
-                    match Profile::<Custom>::load::<Auto, _>(&mut file, columns) {
-                        Ok(profile) => Some(profile.wrap()),
-                        Err(e) => {
-                            warn!("CAMI Error: {}", e);
-                            None
-                        },
+                        }
                     }
                 }
+                Some(_) => match Profile::<Custom>::load::<Auto, _>(&mut file, columns) {
+                    Ok(profile) => Some(profile.wrap()),
+                    Err(e) => {
+                        warn!("CAMI Error: {}", e);
+                        None
+                    }
+                },
                 None => panic!("This should not happen"),
             }
         };
@@ -363,7 +398,7 @@ impl ProfileHandler {
         let _ = res.load_gold_profiles(&meta, "GoldStd", "Taxonomy", "GoldStdColumns");
         let _ = res.load_available_taxa(&meta);
 
-        for (path, profile) in  &res.prediction_map {
+        for (path, profile) in &res.prediction_map {
             let uranks = profile.unique_ranks();
             let species = profile.taxa(&TaxonomicRank::Species);
             if species.is_none() {
@@ -376,9 +411,8 @@ impl ProfileHandler {
                 );
             }
         }
-    
-        res.meta = meta;
 
+        res.meta = meta;
 
         Ok(res)
     }

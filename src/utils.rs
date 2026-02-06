@@ -104,7 +104,6 @@ pub fn workbook_to_dataframe(workbook: &mut Xlsx<impl Read + Seek>) -> PolarsRes
     Ok(df)
 }
 
-
 /// Measure the duration of a closure and return both the duration and result.
 ///
 /// # Arguments
@@ -203,7 +202,6 @@ pub fn bray_curtis_similarity(prediction: &[f64], gold_std: &[f64]) -> f64 {
         prediction.len() == gold_std.len(),
         "Prediction and gold standard vectors must have equal length"
     );
-
 
     let (mut diff_sum, mut total_sum) = (0.0_f64, 0.0_f64);
     for (pred, gold) in prediction.iter().zip(gold_std.iter()) {
@@ -354,9 +352,7 @@ fn rank_values(values: &[f64]) -> Vec<f64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        bray_curtis_similarity, l2_similarity, pearson_correlation, spearman_correlation,
-    };
+    use super::{bray_curtis_similarity, l2_similarity, pearson_correlation, spearman_correlation};
 
     fn approx_eq(left: f64, right: f64, tol: f64) -> bool {
         (left - right).abs() <= tol
@@ -545,7 +541,6 @@ pub fn add_string_columns(df: &mut DataFrame, columns: &[NameValuePair]) -> Pola
     }
     Ok(())
 }
-
 
 /// Apply a DataFrame transform per sample grouping.
 ///

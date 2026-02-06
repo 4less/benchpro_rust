@@ -1,4 +1,3 @@
-
 use indoc::indoc;
 
 const TEST_MINIMAL: &str = indoc! {"
