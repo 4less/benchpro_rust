@@ -1,12 +1,9 @@
 use itertools::Itertools;
 use std::{
-    cell::RefCell,
     collections::{HashMap, HashSet},
     fs, io,
     path::Path,
-    process::exit,
 };
-use thiserror::Error;
 
 use phylotree::tree::{NewickParseError, NodeId, Tree};
 
@@ -98,7 +95,7 @@ impl TreeHandler {
                 .get_leaves()
                 .iter()
                 .map(|x| (*x, tree.get(x).unwrap().name.as_ref()))
-                .filter(|(id, name)| name.is_some())
+                .filter(|(_id, name)| name.is_some())
                 .map(|(id, name)| (name.unwrap().to_owned(), id))
                 .collect::<Name2Id>();
 

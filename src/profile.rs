@@ -1,10 +1,6 @@
 use std::{
-    cmp::max,
     collections::{HashMap, HashSet},
-    default,
-    fmt::Display,
-    io::{BufRead, BufReader, Read, Seek},
-    process::exit,
+    io::{Read, Seek},
     str::FromStr,
 };
 
@@ -14,8 +10,7 @@ use polars::{error::PolarsResult, frame::DataFrame, prelude::NamedFrom, series::
 
 use crate::{
     common::{
-        Custom, Lineage, LineageFromString, Taxon, TaxonomicRank, Taxonomy, TaxonomyEnum, GTDB,
-        NCBI,
+        ChocoPhlAn, Custom, Lineage, Taxon, TaxonomicRank, Taxonomy, TaxonomyEnum, GTDB, NCBI,
     },
     format::{Columns, Format},
     utils::add_string_columns,
@@ -23,8 +18,8 @@ use crate::{
 
 pub type StringList = Vec<String>;
 pub type StringStringMap = HashMap<String, String>;
-pub type Entries<T: Taxonomy> = Vec<Entry<T>>;
-pub type EntriesRef<'a, T: Taxonomy> = Vec<&'a Entry<T>>;
+pub type Entries<T> = Vec<Entry<T>>;
+pub type EntriesRef<'a, T> = Vec<&'a Entry<T>>;
 
 /// Single taxon abundance entry parsed from a profile.
 ///
@@ -171,39 +166,10 @@ impl BCVectors {
         ]);
         df
     }
-
-    pub fn polars_df(&self) -> PolarsResult<DataFrame> {
-        let df = DataFrame::new(vec![
-            Series::new("Name".into(), self.taxon_names.clone()),
-            Series::new("Type".into(), self.pred_type.clone()),
-            Series::new(
-                "PredictionAbundance".into(),
-                self.prediction_abundances.clone(),
-            ),
-            Series::new("GoldStdAbundance".into(), self.gold_std_abundances.clone()),
-            Series::new(
-                "PredictionCount".into(),
-                self.prediction_count
-                    .clone()
-                    .iter()
-                    .map(|&x| x as i64)
-                    .collect::<Vec<_>>(),
-            ),
-            Series::new(
-                "GoldStdCount".into(),
-                self.gold_std_count
-                    .clone()
-                    .iter()
-                    .map(|&x| x as i64)
-                    .collect::<Vec<_>>(),
-            ),
-        ]);
-        df
-    }
 }
 
-type TaxonEntryMap<'a, T: Taxonomy> = HashMap<&'a Taxon, EntriesRef<'a, T>>;
-type NamesEntryMap<'a, T: Taxonomy> = HashMap<String, EntriesRef<'a, T>>;
+type TaxonEntryMap<'a, T> = HashMap<&'a Taxon, EntriesRef<'a, T>>;
+type NamesEntryMap<'a, T> = HashMap<String, EntriesRef<'a, T>>;
 
 fn is_prefix_only_taxon_name(name: &str) -> bool {
     let trimmed = name.trim();
@@ -358,7 +324,7 @@ pub fn binary_classification_alternatives_df<T: Taxonomy>(
             // if secondary is set, only secondary entries count that only match ONE gold std entry
             // Ambiguous matches with more than one gold_std are not counted.
 
-            let primary_abundance_list = predictions.primary.as_ref().map_or(vec![], |x| {
+            let primary_abundance_list = predictions.primary.as_ref().map_or(vec![], |_x| {
                 prediction
                     .get(taxon)
                     .unwrap()
@@ -453,7 +419,7 @@ pub fn binary_classification_alternatives_df<T: Taxonomy>(
 
         let (prediction_abundance, prediction_entry_count) = if matches!(bp_type, BC::TP) || matches!(bp_type, BC::FP) {
 
-            let entries = match prediction.get(taxon) {
+            let _entries = match prediction.get(taxon) {
                 Some(entries) => entries,
                 None => {
                     debug!("--------------------------------");
@@ -518,7 +484,7 @@ struct TPMapValue<'a> {
     secondary: Option<Vec<&'a Taxon>>,
 }
 
-pub type TPMap<'a> = HashMap<&'a Taxon, TPMapValue<'a>>;
+type TPMap<'a> = HashMap<&'a Taxon, TPMapValue<'a>>;
 pub type OtherSet<'a> = HashSet<&'a Taxon>;
 pub type MatchCountMap<'a> = HashMap<&'a Taxon, usize>;
 /// Aggregated TP/FP/FN sets and match counts for alternative matching.
@@ -678,6 +644,17 @@ impl Profile<NCBI> {
     /// `ProfileWrapper::NCBIProfile`.
     pub fn wrap(self) -> ProfileWrapper {
         ProfileWrapper::NCBIProfile(self)
+    }
+}
+
+impl Profile<ChocoPhlAn> {
+    /// Wraps a ChocoPhlAn profile for type-erased handling.
+    ///
+    /// # Returns
+    ///
+    /// `ProfileWrapper::ChocoPhlAnProfile`.
+    pub fn wrap(self) -> ProfileWrapper {
+        ProfileWrapper::ChocoPhlAnProfile(self)
     }
 }
 
@@ -872,7 +849,7 @@ impl<T: Taxonomy> Profile<T> {
                 let set = self
                     .taxa
                     .iter()
-                    .filter(|entry| matches!(&entry.rank, rank))
+                    .filter(|entry| matches!(&entry.rank, _rank))
                     .map(|entry| entry.lineage().unwrap().get(rank))
                     .filter(|name| name.is_some())
                     .map(|taxon| taxon.unwrap())
@@ -930,7 +907,7 @@ impl<T: Taxonomy> Profile<T> {
                         .taxa
                         .iter()
                         .map(|entry| (entry.lineage().unwrap().get(rank), entry))
-                        .filter(|(name, entry)| name.is_some())
+                        .filter(|(name, _entry)| name.is_some())
                         .map(|(taxon, entry)| (taxon.unwrap(), entry))
                         .map(|(taxon, entry)| (taxon.name.clone(), entry))
                         .fold(HashMap::new(), |mut acc, (key, value)| {
@@ -973,7 +950,7 @@ impl<T: Taxonomy> Profile<T> {
                     .taxa
                     .iter()
                     .map(|entry| (entry.lineage().unwrap().get(rank), entry))
-                    .filter(|(name, entry)| name.is_some())
+                    .filter(|(name, _entry)| name.is_some())
                     .map(|(taxon, entry)| (taxon.unwrap(), entry))
                     .map(|(taxon, entry)| (taxon.name.clone(), entry))
                     .fold(HashMap::new(), |mut acc, (key, value)| {
@@ -1002,7 +979,7 @@ impl<T: Taxonomy> Profile<T> {
     pub fn get_taxa_dict<'a>(
         &'a self,
         rank: &TaxonomicRank,
-    ) -> Option<HashMap<&'a Taxon, Vec<&Entry<T>>>> {
+    ) -> Option<HashMap<&'a Taxon, Vec<&'a Entry<T>>>> {
         match self.unique_ranks() {
             Some(ranks) => {
                 if (ranks.len() > 1 && !ranks.contains(rank))
@@ -1172,6 +1149,7 @@ impl<T: Taxonomy> Profile<T> {
 pub enum ProfileWrapper {
     GTDBProfile(Profile<GTDB>),
     NCBIProfile(Profile<NCBI>),
+    ChocoPhlAnProfile(Profile<ChocoPhlAn>),
     CustomProfile(Profile<Custom>),
 }
 
@@ -1185,6 +1163,7 @@ impl ProfileWrapper {
         match self {
             ProfileWrapper::GTDBProfile(_) => TaxonomyEnum::GTDB,
             ProfileWrapper::NCBIProfile(_) => TaxonomyEnum::NCBI,
+            ProfileWrapper::ChocoPhlAnProfile(_) => TaxonomyEnum::ChocoPhlAn,
             ProfileWrapper::CustomProfile(_) => TaxonomyEnum::Custom,
         }
     }
@@ -1202,6 +1181,7 @@ impl ProfileWrapper {
         match self {
             ProfileWrapper::GTDBProfile(profile) => profile.get_taxa_with_rank(rank),
             ProfileWrapper::NCBIProfile(profile) => profile.get_taxa_with_rank(rank),
+            ProfileWrapper::ChocoPhlAnProfile(profile) => profile.get_taxa_with_rank(rank),
             ProfileWrapper::CustomProfile(profile) => profile.get_taxa_with_rank(rank),
         }
     }
@@ -1215,6 +1195,7 @@ impl ProfileWrapper {
         match self {
             ProfileWrapper::GTDBProfile(profile) => profile.unique_ranks(),
             ProfileWrapper::NCBIProfile(profile) => profile.unique_ranks(),
+            ProfileWrapper::ChocoPhlAnProfile(profile) => profile.unique_ranks(),
             ProfileWrapper::CustomProfile(profile) => profile.unique_ranks(),
         }
     }
@@ -1243,6 +1224,9 @@ impl ProfileWrapper {
                 pred.binary_classification(gold, &TaxonomicRank::all(), allow_alternatives)
             }
             (ProfileWrapper::NCBIProfile(pred), ProfileWrapper::NCBIProfile(gold)) => {
+                pred.binary_classification(gold, &TaxonomicRank::all(), allow_alternatives)
+            }
+            (ProfileWrapper::ChocoPhlAnProfile(pred), ProfileWrapper::ChocoPhlAnProfile(gold)) => {
                 pred.binary_classification(gold, &TaxonomicRank::all(), allow_alternatives)
             }
             (ProfileWrapper::CustomProfile(pred), ProfileWrapper::CustomProfile(gold)) => {
@@ -1278,6 +1262,9 @@ impl ProfileWrapper {
             ProfileWrapper::NCBIProfile(profile) => {
                 profile.normalize_abundances_with_checks(tolerance)
             }
+            ProfileWrapper::ChocoPhlAnProfile(profile) => {
+                profile.normalize_abundances_with_checks(tolerance)
+            }
             ProfileWrapper::CustomProfile(profile) => {
                 profile.normalize_abundances_with_checks(tolerance)
             }
@@ -1295,6 +1282,9 @@ impl ProfileWrapper {
                 profile.unique_ranks().map(|r| r.len()).unwrap_or(0)
             }
             ProfileWrapper::NCBIProfile(profile) => {
+                profile.unique_ranks().map(|r| r.len()).unwrap_or(0)
+            }
+            ProfileWrapper::ChocoPhlAnProfile(profile) => {
                 profile.unique_ranks().map(|r| r.len()).unwrap_or(0)
             }
             ProfileWrapper::CustomProfile(profile) => {
@@ -1319,7 +1309,7 @@ pub enum ProfileError {
     NormalizationError(String),
 }
 
-pub type ProfileResult<T: Taxonomy> = Result<Profile<T>, ProfileError>;
+pub type ProfileResult<T> = Result<Profile<T>, ProfileError>;
 
 /// Loads a profile from a reader using a format-specific parser.
 pub trait LoadProfile<T: Taxonomy + Default> {
@@ -1356,7 +1346,7 @@ mod tests {
     use std::{collections::HashMap, io::Cursor};
 
     use crate::{
-        common::{LineageFromString, Taxon, TaxonomicRank, GTDB},
+        common::{Taxon, TaxonomicRank, GTDB},
         format::{Auto, Columns, CAMI},
     };
 
@@ -1638,7 +1628,6 @@ s__Akkermansia muciniphila_A";
     fn test_load_profile_cami() {
         let mut test_data = Cursor::new("@@TAXID\tRANK\tTAXPATH\tTAXPATHSN\tPERCENTAGE\n");
 
-        let profile = Profile::<GTDB>::default();
         let result = Profile::<GTDB>::load::<CAMI, _>(&mut test_data, None);
 
         assert!(result.is_ok());

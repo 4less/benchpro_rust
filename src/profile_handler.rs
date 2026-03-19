@@ -1,20 +1,19 @@
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
-    io::{BufRead, BufReader, Cursor},
+    io::{BufRead, BufReader, Cursor, Seek},
     path::{Path, PathBuf},
-    process::exit,
 };
 
 use itertools::izip;
-use log::{debug, error, warn};
+use log::{debug, info, warn};
 
 use crate::{
-    common::{Custom, TaxonomicRank, GTDB, NCBI},
-    format::{Auto, Columns, Custom as CustomFormat, CAMI},
+    common::{ChocoPhlAn, Custom, TaxonomicRank, GTDB, NCBI},
+    format::{Auto, Columns, Custom as CustomFormat, ProfileFormat, CAMI},
     meta::Meta,
     profile::{LoadProfile, Profile, ProfileWrapper},
-    utils::{load_file_lineages_to_hashset, load_file_to_hashset},
+    utils::load_file_lineages_to_hashset,
 };
 
 /// Errors raised while loading profiles from meta or files.
@@ -225,7 +224,7 @@ impl ProfileHandler {
             Err(_) => Box::new(std::iter::repeat(None)),
         };
 
-        let mut data: Vec<ProfileWrapper> = Vec::default();
+        let _data: Vec<ProfileWrapper> = Vec::default();
 
         for (path, taxonomy, column_format) in izip!(profiles, taxonomy, column_format_iter) {
             let path = path.expect("No path");
@@ -299,8 +298,17 @@ impl ProfileHandler {
 
         let mut file = File::open(&path).unwrap();
         let columns = column_format.map_or(None, |str| Columns::from_format_str(str.as_ref()).ok());
+        let taxonomy_label = taxonomy
+            .as_ref()
+            .map(|value| value.as_ref())
+            .unwrap_or("Unknown");
 
         let profile = if columns.is_some() {
+            info!(
+                "Profile format detected: Custom (columns provided); taxonomy: {}; path: {}",
+                taxonomy_label,
+                path.as_ref().display()
+            );
             match taxonomy {
                 Some(s) if s.as_ref().starts_with("GTDB") => {
                     match Profile::<GTDB>::load::<CustomFormat, _>(&mut file, columns) {
@@ -328,6 +336,19 @@ impl ProfileHandler {
                         }
                     }
                 }
+                Some(s) if s.as_ref().starts_with("ChocoPhlAn") => {
+                    match Profile::<ChocoPhlAn>::load::<CustomFormat, _>(&mut file, columns) {
+                        Ok(profile) => Some(profile.wrap()),
+                        Err(e) => {
+                            warn!(
+                                "ChocoPhlAn Custom Error: {}\nFile: {}",
+                                e,
+                                path.as_ref().display()
+                            );
+                            None
+                        }
+                    }
+                }
                 Some(_) => match Profile::<Custom>::load::<CustomFormat, _>(&mut file, columns) {
                     Ok(profile) => Some(profile.wrap()),
                     Err(e) => {
@@ -338,6 +359,14 @@ impl ProfileHandler {
                 None => panic!("This should not happen"),
             }
         } else {
+            let detected = Auto::detect(&mut file);
+            let _ = file.rewind();
+            info!(
+                "Profile format detected: {}; taxonomy: {}; path: {}",
+                profile_format_label(&detected),
+                taxonomy_label,
+                path.as_ref().display()
+            );
             match taxonomy {
                 Some(s) if s.as_ref().starts_with("GTDB") => {
                     match Profile::<GTDB>::load::<Auto, _>(&mut file, columns) {
@@ -357,6 +386,15 @@ impl ProfileHandler {
                         Ok(profile) => Some(profile.wrap()),
                         Err(e) => {
                             warn!("NCBI CAMI Error: {}", e);
+                            None
+                        }
+                    }
+                }
+                Some(s) if s.as_ref().starts_with("ChocoPhlAn") => {
+                    match Profile::<ChocoPhlAn>::load::<Auto, _>(&mut file, columns) {
+                        Ok(profile) => Some(profile.wrap()),
+                        Err(e) => {
+                            warn!("ChocoPhlAn Auto Error: {}", e);
                             None
                         }
                     }
@@ -415,5 +453,14 @@ impl ProfileHandler {
         res.meta = meta;
 
         Ok(res)
+    }
+}
+
+fn profile_format_label(format: &ProfileFormat) -> &'static str {
+    match format {
+        ProfileFormat::CAMI => "CAMI",
+        ProfileFormat::Custom(_) => "Custom",
+        ProfileFormat::MetaPhlAn(_) => "MetaPhlAn",
+        ProfileFormat::Unknown => "Unknown",
     }
 }

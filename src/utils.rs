@@ -7,13 +7,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use calamine::{Data, DataType, Reader, Xlsx};
+use calamine::{Data, Reader, Xlsx};
 use itertools::Itertools;
 use log::debug;
-use phylotree::tree::{Node, NodeError, NodeId, Tree, TreeError};
+use phylotree::tree::{Node, NodeId, Tree, TreeError};
 use polars::prelude::*;
 
-use crate::{common::LINEAGE_DELIMITERS, meta::MetaColumn};
+use crate::common::LINEAGE_DELIMITERS;
 
 /// Convert the first sheet of an XLSX workbook into a Polars DataFrame.
 ///
@@ -70,36 +70,17 @@ pub fn workbook_to_dataframe(workbook: &mut Xlsx<impl Read + Seek>) -> PolarsRes
 
     let mut df = DataFrame::default();
     for (i, column) in columns.iter().enumerate() {
-        match column.first().as_ref().unwrap() {
-            Data::Int(_) => {
-                let v = column
-                    .iter()
-                    .map(|x| x.as_i64().expect(&format!("Cannot convert to i64 ({})", x)))
-                    .collect::<Vec<i64>>();
+        let v = column
+            .iter()
+            .map(|x| match x {
+                Data::String(value) => value.clone(),
+                Data::Empty => String::new(),
+                _ => x.to_string(),
+            })
+            .collect::<Vec<String>>();
 
-                let s = Series::new(column_names[i].clone().into(), v);
-                df.with_column(s).expect("Cannot append column");
-            }
-            Data::Float(_) => {
-                let v = column
-                    .iter()
-                    .map(|x| x.as_f64().expect(&format!("Cannot convert to f64 ({})", x)))
-                    .collect::<Vec<f64>>();
-
-                let s = Series::new(column_names[i].clone().into(), v);
-                df.with_column(s).expect("Cannot append column");
-            }
-            Data::String(_) => {
-                let v = column
-                    .iter()
-                    .map(|x| x.as_string().unwrap_or(x.to_string()))
-                    .collect::<Vec<String>>();
-
-                let s = Series::new(column_names[i].clone().into(), v);
-                df.with_column(s).expect("Cannot append column");
-            }
-            _ => panic!("Not yet implemented"),
-        }
+        let s = Series::new(column_names[i].clone().into(), v);
+        df.with_column(s).expect("Cannot append column");
     }
     Ok(df)
 }
@@ -164,7 +145,7 @@ pub fn f1_score(tp: usize, fp: usize, fn_: usize) -> f64 {
 /// # Returns
 ///
 /// Sensitivity (recall).
-pub fn sensitivity(tp: usize, fp: usize, fn_: usize) -> f64 {
+pub fn sensitivity(tp: usize, _fp: usize, fn_: usize) -> f64 {
     tp as f64 / (tp + fn_) as f64
 }
 
@@ -179,7 +160,7 @@ pub fn sensitivity(tp: usize, fp: usize, fn_: usize) -> f64 {
 /// # Returns
 ///
 /// Precision.
-pub fn precision(tp: usize, fp: usize, fn_: usize) -> f64 {
+pub fn precision(tp: usize, fp: usize, _fn_: usize) -> f64 {
     tp as f64 / (tp + fp) as f64
 }
 
@@ -556,7 +537,7 @@ pub fn add_string_columns(df: &mut DataFrame, columns: &[NameValuePair]) -> Pola
 /// # Errors
 ///
 /// Returns a Polars error if concatenation fails.
-pub fn sample_apply<F>(df: &DataFrame, mut f: F) -> PolarsResult<DataFrame>
+pub fn sample_apply<F>(df: &DataFrame, f: F) -> PolarsResult<DataFrame>
 where
     F: FnMut(DataFrame) -> PolarsResult<DataFrame> + Send + Sync,
 {
@@ -974,7 +955,7 @@ pub fn closest_neighbor<'a>(tree: &Tree, id: &NodeId) -> Result<NeighborDist, Tr
 
     let dm = tree.distance_matrix()?;
 
-    let node = tree.get_root()?;
+    let _node = tree.get_root()?;
 
     let name = tree
         .get(id)?

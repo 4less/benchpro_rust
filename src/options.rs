@@ -1,4 +1,5 @@
 use clap::{Args as ClapArgs, Parser, Subcommand};
+use std::path::PathBuf;
 
 /// ASCII logo shown at startup and in help output.
 pub const LOGO: &str = "
@@ -30,6 +31,10 @@ pub enum Command {
     Profile(ProfileArgs),
     /// Benchmark at the strain level.
     Strain(StrainArgs),
+    /// Merge profiles into an abundance matrix.
+    Merge(MergeArgs),
+    /// Compute MSA summary statistics.
+    Msa(MsaArgs),
 }
 
 /// CLI arguments for the `profile` subcommand.
@@ -76,6 +81,50 @@ pub struct CommonArgs {
     /// Ignore abundance normalization errors (log warnings instead of crashing)
     #[arg(long, default_value_t = false)]
     pub ignore_abundance_error: bool,
+
+    /// Ignore CAMI lineage length mismatches (use last lineage token as name)
+    #[arg(long, default_value_t = false)]
+    pub cami_ignore_lineage_error: bool,
+}
+
+/// CLI arguments for the `merge` subcommand.
+#[derive(ClapArgs, Debug, Clone)]
+pub struct MergeArgs {
+    /// Input profile files (supports shell globs).
+    #[arg(long, num_args = 1.., required = true, value_name = "PROFILE")]
+    pub input: Vec<PathBuf>,
+
+    /// Output TSV file.
+    #[arg(long, required = true, value_name = "PATH")]
+    pub output: PathBuf,
+
+    /// Target rank to include (e.g., species, genus).
+    #[arg(long, default_value = "species", value_name = "RANK")]
+    pub rank: String,
+
+    /// Ignore CAMI lineage length mismatches (use last lineage token as name)
+    #[arg(long, default_value_t = false)]
+    pub cami_ignore_lineage_error: bool,
+
+    /// Regex to derive sample names from input paths using capture groups.
+    #[arg(long, num_args = 1.., value_name = "REGEX")]
+    pub sample_regex: Vec<String>,
+
+    /// Print inferred sample name and path for each input and exit.
+    #[arg(long, default_value_t = false)]
+    pub test_sample_regex: bool,
+}
+
+/// CLI arguments for the `msa` subcommand.
+#[derive(ClapArgs, Debug, Clone)]
+pub struct MsaArgs {
+    /// Meta file with columns: ID, MSA, Meta.
+    #[arg(long, required = true, value_name = "PATH")]
+    pub meta: PathBuf,
+
+    /// Output prefix for MSA statistics files.
+    #[arg(long, required = true, value_name = "PATH")]
+    pub output: PathBuf,
 }
 
 #[cfg(test)]
@@ -100,6 +149,8 @@ mod tests {
                 assert_eq!(profile_args.common.outprefix.as_deref(), Some("out"));
             }
             Command::Strain(_) => panic!("Expected profile subcommand"),
+            Command::Merge(_) => panic!("Expected profile subcommand"),
+            Command::Msa(_) => panic!("Expected profile subcommand"),
         }
     }
 
@@ -126,6 +177,61 @@ mod tests {
                 assert!(strain_args.common.ignore_abundance_error);
             }
             Command::Profile(_) => panic!("Expected strain subcommand"),
+            Command::Merge(_) => panic!("Expected strain subcommand"),
+            Command::Msa(_) => panic!("Expected strain subcommand"),
+        }
+    }
+
+    #[test]
+    fn parses_merge_subcommand() {
+        let args = Args::parse_from([
+            "benchpro",
+            "merge",
+            "--input",
+            "a.profile",
+            "b.profile",
+            "--output",
+            "abundance.tsv",
+            "--rank",
+            "genus",
+            "--cami-ignore-lineage-error",
+            "--sample-regex",
+            "example1",
+            "example2",
+        ]);
+
+        match args.command {
+            Command::Merge(merge_args) => {
+                assert_eq!(merge_args.input.len(), 2);
+                assert_eq!(merge_args.output.to_string_lossy(), "abundance.tsv");
+                assert_eq!(merge_args.rank, "genus");
+                assert!(merge_args.cami_ignore_lineage_error);
+                assert_eq!(
+                    merge_args.sample_regex,
+                    vec!["example1".to_string(), "example2".to_string()]
+                );
+            }
+            _ => panic!("Expected merge subcommand"),
+        }
+    }
+
+    #[test]
+    fn parses_msa_subcommand() {
+        let args = Args::parse_from([
+            "benchpro",
+            "msa",
+            "--meta",
+            "msa_meta.tsv",
+            "--output",
+            "stats.tsv",
+        ]);
+
+        match args.command {
+            Command::Msa(msa_args) => {
+                assert_eq!(msa_args.meta.to_string_lossy(), "msa_meta.tsv");
+                assert_eq!(msa_args.output.to_string_lossy(), "stats.tsv");
+            }
+            _ => panic!("Expected msa subcommand"),
         }
     }
 }

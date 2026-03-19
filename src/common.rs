@@ -2,6 +2,7 @@ use itertools::Itertools;
 use lazy_static::lazy_static;
 use regex::Regex;
 use std::{
+    borrow::Cow,
     marker::{ConstParamTy, PhantomData},
     str::FromStr,
 };
@@ -15,8 +16,6 @@ lazy_static! {
 }
 
 type TaxID = u64;
-type Abundance = f64;
-type TaxonAbundancePair = (Taxon, Abundance);
 type TaxonMap = micromap::Map<TaxonomicRank, Taxon, { TaxonomicRank::COUNT }>;
 
 /// Supported taxonomic ranks.
@@ -103,7 +102,7 @@ impl TaxonomicRank {
 }
 
 #[cfg(test)]
-mod tests {
+mod tests_lineage {
     use super::{TaxonomicRank, Taxonomy, GTDB};
 
     #[test]
@@ -202,7 +201,7 @@ impl<T: Taxonomy> Lineage<T> {
     ///
     /// `()` after mutation.
     pub fn normalize(&mut self) {
-        self.data.iter_mut().for_each(|(r, t)| t.normalize_name());
+        self.data.iter_mut().for_each(|(_r, t)| t.normalize_name());
     }
 
     /// Returns a debug-friendly string representation.
@@ -239,6 +238,7 @@ pub enum TaxonomyLineageError {
 pub enum TaxonomyEnum {
     NCBI,
     GTDB,
+    ChocoPhlAn,
     Custom,
 }
 
@@ -266,6 +266,9 @@ pub struct NCBI;
 /// GTDB taxonomy marker type.
 #[derive(Default, Debug, Clone)]
 pub struct GTDB;
+/// ChocoPhlAn taxonomy marker type.
+#[derive(Default, Debug, Clone)]
+pub struct ChocoPhlAn;
 /// Custom taxonomy marker type.
 #[derive(Default, Debug, Clone)]
 pub struct Custom;
@@ -274,7 +277,7 @@ pub const LINEAGE_DELIMITERS: &[char] = &[';', '|'];
 
 impl Taxonomy for GTDB {
     // impl LineageFromString<GTDB> for Lineage<GTDB> {
-    fn lineage_from_string(str: &str, ranks: Option<&Vec<TaxonomicRank>>) -> Lineage<GTDB> {
+    fn lineage_from_string(str: &str, _ranks: Option<&Vec<TaxonomicRank>>) -> Lineage<GTDB> {
         let tokens = str.split(|c| LINEAGE_DELIMITERS.iter().any(|&del| del == c));
 
         let mut res = Lineage {
@@ -318,9 +321,53 @@ impl Taxonomy for GTDB {
     }
 }
 
+impl Taxonomy for ChocoPhlAn {
+    fn lineage_from_string(str: &str, _ranks: Option<&Vec<TaxonomicRank>>) -> Lineage<ChocoPhlAn> {
+        let tokens = str.split(|c| LINEAGE_DELIMITERS.iter().any(|&del| del == c));
+
+        let mut res = Lineage {
+            data: TaxonMap::default(),
+            marker: PhantomData::<_>,
+        };
+        let mut last_rank: Option<TaxonomicRank> = None;
+
+        for token in tokens {
+            let rank = TaxonomicRank::from_gtdb_prefix(token);
+            if let Some(rank) = rank {
+                res.data.insert(
+                    rank.clone(),
+                    Taxon {
+                        name: token.to_string(),
+                        rank: Some(rank.clone()),
+                        id: None,
+                        alternative_names: None,
+                    },
+                );
+                last_rank = Some(rank);
+            } else if should_insert_species_from_unprefixed(&last_rank, &res) {
+                res.data.insert(
+                    TaxonomicRank::Species,
+                    Taxon {
+                        name: format!("s__{}", token.trim()),
+                        rank: Some(TaxonomicRank::Species),
+                        id: None,
+                        alternative_names: None,
+                    },
+                );
+            }
+        }
+
+        res
+    }
+
+    fn get_enum() -> TaxonomyEnum {
+        TaxonomyEnum::ChocoPhlAn
+    }
+}
+
 impl Taxonomy for Custom {
     // impl LineageFromString<Custom> for  Lineage<Custom> {
-    fn lineage_from_string(str: &str, ranks: Option<&Vec<TaxonomicRank>>) -> Lineage<Self> {
+    fn lineage_from_string(str: &str, _ranks: Option<&Vec<TaxonomicRank>>) -> Lineage<Self> {
         let tokens = str.split(";");
 
         let mut res = Lineage {
@@ -373,24 +420,25 @@ impl Taxonomy for NCBI {
             marker: PhantomData::<_>,
         };
 
-        let mut representative: String = String::default();
         let mut ambiguous_tokens = None;
-        for (index, mut token) in tokens.enumerate() {
-            if AMBIGUOUS_TAXA_REGEX.is_match(token) {
+        for (index, token) in tokens.enumerate() {
+            let token_value: Cow<'_, str> = if AMBIGUOUS_TAXA_REGEX.is_match(token) {
                 let mut ambiguous_tokens_tmp = token[1..token.len() - 1]
                     .split("/")
                     .map(|s| s.to_string())
                     .collect_vec();
-                representative = ambiguous_tokens_tmp.remove(0);
-                token = &representative;
+                let representative = ambiguous_tokens_tmp.remove(0);
                 ambiguous_tokens = Some(ambiguous_tokens_tmp);
-            }
-            let rank = TaxonomicRank::from_gtdb_prefix(token);
+                Cow::Owned(representative)
+            } else {
+                Cow::Borrowed(token)
+            };
+            let rank = TaxonomicRank::from_gtdb_prefix(token_value.as_ref());
             if let Some(rank) = rank {
                 res.data.insert(
                     rank.clone(),
                     Taxon {
-                        name: token.to_string(),
+                        name: token_value.to_string(),
                         rank: Some(rank),
                         id: None,
                         alternative_names: ambiguous_tokens.clone(),
@@ -564,7 +612,7 @@ impl Detectable {
     ///
     /// String representation of the enum.
     pub fn to_string(&self) -> String {
-        match (self) {
+        match self {
             Detectable::Unknown => "Unknown".to_string(),
             Detectable::True => "True".to_string(),
             Detectable::False => "False".to_string(),
@@ -581,7 +629,7 @@ impl Detectable {
     ///
     /// `Some(Detectable)` when the value is recognized.
     pub fn from_string(var: &str) -> Option<Self> {
-        match (var) {
+        match var {
             "Unknown" => Some(Self::Unknown),
             "True" => Some(Self::True),
             "False" => Some(Self::False),

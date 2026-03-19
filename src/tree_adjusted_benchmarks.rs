@@ -1,9 +1,8 @@
 use core::f64;
 use std::{
     collections::{HashMap, HashSet},
-    process::exit,
     str::FromStr,
-    sync::{Arc, Mutex},
+    sync::Mutex,
 };
 
 use itertools::Itertools;
@@ -11,7 +10,7 @@ use log::debug;
 use polars::{
     error::PolarsResult,
     frame::DataFrame,
-    prelude::{all, col, lit, DataFrameJoinOps, IntoLazy, NamedFrom as _, NamedFromOwned},
+    prelude::{col, lit, DataFrameJoinOps, IntoLazy, NamedFrom as _},
     series::Series,
 };
 
@@ -21,7 +20,7 @@ use crate::{
     profile_handler::ProfileHandler,
     taxonomic_profiling::detailed_data::DetailedData,
     tree_handler::{TaxaSet, TreeHandler},
-    utils::{closest_neighbor, sample_apply, time, wrap_names, NeighborDist},
+    utils::{closest_neighbor, sample_apply, time, wrap_names},
 };
 
 /// Reclassifies TP/FP/FN using phylogenetic proximity.
@@ -42,7 +41,7 @@ use crate::{
 /// Returns a Polars error when DataFrame operations fail.
 pub fn get_adjusted_benchmarks(
     data: &DataFrame,
-    meta: &Meta,
+    _meta: &Meta,
     tree_handler: &Mutex<TreeHandler>,
     profile_handler: &ProfileHandler,
 ) -> PolarsResult<DataFrame> {
@@ -63,7 +62,7 @@ pub fn get_adjusted_benchmarks(
         .collect()?;
 
     // TREEEEEE
-    let mut bc_tree_df = mut_species_df
+    let bc_tree_df = mut_species_df
         .left_join(
             &profile_handler
                 .meta

@@ -1,15 +1,14 @@
-use calamine::{Reader, Xlsx};
-use itertools::{izip, Itertools};
+use calamine::Xlsx;
 use log::debug;
 use polars::{
-    error::{PolarsError, PolarsResult},
+    error::PolarsResult,
     frame::DataFrame,
     io::SerReader,
     prelude::{
-        col, lit, AnyValue, AsString, CsvReadOptions, DataFrameJoinOps, Expr, IntoLazy, NamedFrom,
-        PlSmallStr, SortOptions,
+        col, lit, CsvParseOptions, CsvReadOptions, DataFrameJoinOps, Expr, IntoLazy, NamedFrom,
+        PlSmallStr,
     },
-    series::{Series, SeriesIter},
+    series::Series,
 };
 use regex::Regex;
 use std::{
@@ -122,7 +121,6 @@ impl MetaColumn {
             MetaColumnStrings::GOLDSTD_COLUMNS => Some(Self::GoldStdColumns),
             MetaColumnStrings::GOLDSTD_TREE => Some(Self::GoldStdTree),
             MetaColumnStrings::AVAILABLE_TAXA => Some(Self::AvailableTaxa),
-            "AvailableSpecies" => Some(Self::AvailableTaxa),
             _ => None,
         }
     }
@@ -164,17 +162,6 @@ pub struct MetaEntry {
 
 impl Meta {
     const REQUIRED_FIELDS: &[&str] = &["ID", "Sample", "Tool", "Profile", "GoldStd"];
-    const TOTAL_FIELDS: &[&str] = &[
-        "ID",
-        "Sample",
-        "Dataset",
-        "Tool",
-        "Taxonomy",
-        "Profile",
-        "GoldStd",
-        "GoldStdColumns",
-        "ProfileFormat",
-    ];
 
     /// Builds a `Meta` from an in-memory DataFrame.
     ///
@@ -287,7 +274,12 @@ impl Meta {
     }
 
     fn df_from_text(path: impl AsRef<Path>) -> DataFrame {
+        let separator = match path.as_ref().extension().and_then(|ext| ext.to_str()) {
+            Some("tsv") => b'\t',
+            _ => b',',
+        };
         let df = CsvReadOptions::default()
+            .with_parse_options(CsvParseOptions::default().with_separator(separator))
             .try_into_reader_with_file_path(Some(path.as_ref().to_path_buf()))
             .expect("Cannot read file")
             .finish()

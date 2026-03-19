@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+atty = "0.2.14"
 calamine = "0.26.1"
 clap = { version = "4.5.3", features = ["derive", "wrap_help"] }
 clap_derive = "4.5.3"
@@ -14,8 +15,11 @@ micromap = "0.0.15"
 phylotree = "0.1.2"
 #phylotree = { path = "/usr/users/QIB_fr017/fritsche/ProjectsExternal/phylotree-rs" }
 polars = { version="0.43.1", features = ["lazy", "is_in"] }
+plotly = "0.10.0"
 regex = "1.11.1"
 log = "0.4.22"
 env_logger = "0.11.5"
 strum = { version = "0.26.3", features = ["strum_macros", "derive"] }
 thiserror = "1.0.64"
+indicatif = "0.18.3"
+rayon = "1.11.0"

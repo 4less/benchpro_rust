@@ -1,12 +1,13 @@
 use std::{
     fmt::Display,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
-use itertools::{all, Itertools};
+use itertools::Itertools;
 
 use crate::{
-    common::{Taxon, TaxonomicRank, Taxonomy, NCBI},
+    common::{TaxonomicRank, Taxonomy},
     profile::{Entry, Profile, ProfileError, ProfileResult},
 };
 
@@ -21,8 +22,19 @@ pub const LINEAGE_ID_KEYWORDS: &[&str] = &["TAXPATH"];
 /// Header keywords used to identify abundance columns.
 pub const ABUNDANCE_KEYWORDS: &[&str] = &["PERCENTAGE", "abundance", "relative_abundance"];
 
+static CAMI_IGNORE_LINEAGE_ERROR: AtomicBool = AtomicBool::new(false);
+
+/// Enable or disable ignoring CAMI lineage length mismatches.
+///
+/// # Arguments
+///
+/// * `value` - When true, lineage length mismatches use the last token as name.
+pub fn set_cami_ignore_lineage_error(value: bool) {
+    CAMI_IGNORE_LINEAGE_ERROR.store(value, Ordering::Relaxed);
+}
+
 /// Column index mapping for a taxonomic profile file.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Columns {
     pub taxon_name: Option<usize>,
     pub taxon_id: Option<usize>,
@@ -128,10 +140,13 @@ impl Columns {
         let gtdb_delimiter = ";";
         // conditions:
         // 1: splittable by ';'
-        // 2: is __ after first char
+        // 2: each token contains a GTDB-style rank prefix (e.g., "g__")
         let subtokens = str.split(gtdb_delimiter).collect::<Vec<_>>();
 
-        subtokens.iter().all(|&t| t.len() >= 3 && &t[1..3] == "__")
+        let prefixes = ["d__", "k__", "p__", "c__", "o__", "f__", "g__", "s__", "t__"];
+        subtokens
+            .iter()
+            .all(|token| prefixes.iter().any(|prefix| token.contains(prefix)))
     }
 
     /// Attempts to infer columns from a tokenized row.
@@ -161,10 +176,43 @@ impl Columns {
             .iter()
             .position(|token| Self::is_gtdb_lineage(token.as_ref()));
 
-        if gtdb_lineage_column.is_some() && abundance_column.len() == 1 {
+        if let Some(lineage_index) = gtdb_lineage_column {
+            if abundance_column.is_empty() {
+                return None;
+            }
+
+            let numeric_indices = abundance_column.iter().map(|(index, _)| *index);
+            let float_candidates = numeric_indices.clone().filter(|index| {
+                let token = tokens[*index].as_ref();
+                let is_numeric = token.parse::<f64>().is_ok();
+                let has_decimal = token.contains('.');
+                let has_exponent = token.contains('e') || token.contains('E');
+                is_numeric && (has_decimal || has_exponent)
+            });
+
+            let abundance_index = float_candidates
+                .filter(|index| *index != lineage_index)
+                .last();
+
+            let abundance_index = match abundance_index {
+                Some(index) => index,
+                None => return None,
+            };
+
+            let taxon_id_index = numeric_indices
+                .filter(|index| *index != abundance_index && *index != lineage_index)
+                .find(|index| {
+                    let token = tokens[*index].as_ref();
+                    token.parse::<i64>().is_ok()
+                        && !token.contains('.')
+                        && !token.contains('e')
+                        && !token.contains('E')
+                });
+
             let mut res = Columns::default();
-            res.abundance = Some(abundance_column[0].0);
-            res.lineage = Some(gtdb_lineage_column.unwrap());
+            res.abundance = Some(abundance_index);
+            res.lineage = Some(lineage_index);
+            res.taxon_id = taxon_id_index;
             return Some(res);
         }
 
@@ -221,6 +269,41 @@ impl Columns {
         }
     }
 
+    /// Finds a MetaPhlAn header in the provided lines.
+    ///
+    /// # Arguments
+    ///
+    /// * `lines` - Candidate header lines
+    ///
+    /// # Returns
+    ///
+    /// Column mapping derived from a MetaPhlAn header.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProfileError::FormatError` if no MetaPhlAn header is found.
+    pub fn find_metaphlan_header<T: AsRef<str>>(lines: &[T]) -> ColumnResult {
+        let mut has_mpa_version = false;
+        let mut header_line: Option<&str> = None;
+
+        for line in lines.iter().map(|line| line.as_ref()) {
+            if line.starts_with("#mpa_") {
+                has_mpa_version = true;
+            }
+            if line.starts_with("#clade_name") {
+                header_line = Some(line);
+            }
+        }
+
+        if !has_mpa_version || header_line.is_none() {
+            return Err(ProfileError::FormatError(
+                "Unable to find MetaPhlAn header".to_owned(),
+            ));
+        }
+
+        Columns::from_generic_header(header_line.expect("Header line missing"))
+    }
+
     /// Parses a CAMI header line into column indices.
     ///
     /// # Arguments
@@ -241,7 +324,7 @@ impl Columns {
             ));
         }
 
-        let tokens: Vec<_> = str[2..].split("\t").collect();
+        let tokens: Vec<_> = str[2..].split_whitespace().collect();
         let mut columns = Columns::default();
 
         tokens
@@ -405,9 +488,11 @@ pub trait ProfilePrinter {
 }
 
 /// Detected profile format variants.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProfileFormat {
     CAMI,
     Custom(Columns),
+    MetaPhlAn(Columns),
     Unknown,
 }
 
@@ -626,11 +711,19 @@ impl Auto {
         input
             .seek(SeekFrom::Start(0))
             .expect("Failed rewinding reader to beginning of file");
-        // Check CAMI
+        let lines = BufReader::new(&mut *input)
+            .lines()
+            .map(|line| line.expect("Error while reading file line by line"))
+            .collect::<Vec<_>>();
+        input
+            .seek(SeekFrom::Start(0))
+            .expect("Failed rewinding reader to beginning of file");
 
-        let cami = CAMI::load_profile::<NCBI, _>(input, None);
-        if cami.is_ok() {
+        if Columns::find_cami_header(&lines).is_ok() {
             return ProfileFormat::CAMI;
+        }
+        if let Ok(columns) = Columns::find_metaphlan_header(&lines) {
+            return ProfileFormat::MetaPhlAn(columns);
         }
         let columns = Self::derive_columns(input);
         match columns {
@@ -656,6 +749,7 @@ impl Format for Auto {
         match Self::detect(input) {
             ProfileFormat::CAMI => CAMI::load_profile(input, None),
             ProfileFormat::Custom(columns) => Custom::load_profile(input, &columns),
+            ProfileFormat::MetaPhlAn(columns) => MetaPhlAn::load_profile(input, Some(columns)),
             ProfileFormat::Unknown => {
                 input
                     .seek(SeekFrom::Start(0))
@@ -685,6 +779,21 @@ impl Format for Auto {
                 Custom::load_profile(input, &columns)
             }
         }
+    }
+}
+
+/// MetaPhlAn profile format parser.
+pub struct MetaPhlAn;
+
+impl Format for MetaPhlAn {
+    fn load_profile<T: Taxonomy + Default, R: Read + Seek>(
+        input: &mut R,
+        columns: Option<Columns>,
+    ) -> ProfileResult<T> {
+        let columns = columns.ok_or_else(|| {
+            ProfileError::FormatError("MetaPhlAn format requires column definitions".to_owned())
+        })?;
+        Custom::load_profile(input, &columns)
     }
 }
 
@@ -772,10 +881,13 @@ impl Format for CAMI {
                 let max_col = c.max_col().expect("No column defined");
 
                 if tokens.len() <= max_col {
-                    return Err(ProfileError::CamiFormatError(format!(
-                        "Not enough columns in line. Expected {}, found {}",
-                        max_col,
-                        tokens.len()
+                    return Err(ProfileError::CamiFormatError(cami_row_error(
+                        format!(
+                            "Not enough columns in line. Expected {}, found {}",
+                            max_col,
+                            tokens.len()
+                        ),
+                        &line,
                     )));
                 }
 
@@ -795,9 +907,12 @@ impl Format for CAMI {
                         val
                     }
                     Err(_) => {
-                        return Err(ProfileError::CamiFormatError(format!(
-                            "Expected abundance value. Field cannot be parsed to f64: {}",
-                            tokens[abundance_column]
+                        return Err(ProfileError::CamiFormatError(cami_row_error(
+                            format!(
+                                "Expected abundance value. Field cannot be parsed to f64: {}",
+                                tokens[abundance_column]
+                            ),
+                            &line,
                         )))
                     }
                 };
@@ -805,18 +920,278 @@ impl Format for CAMI {
                 entry.rank = match TaxonomicRank::from_string(tokens[rank_column]) {
                     Some(rank) => rank,
                     None => {
-                        return Err(ProfileError::CamiFormatError(format!(
-                            "'{}' is not a valid taxonomic rank",
-                            tokens[rank_column]
+                        return Err(ProfileError::CamiFormatError(cami_row_error(
+                            format!("'{}' is not a valid taxonomic rank", tokens[rank_column]),
+                            &line,
                         )))
                     }
                 };
                 entry.lineage = Some(lineage);
+                entry.taxon_name = cami_taxon_name(tokens[lineage_column], &entry.rank, &ranks)
+                    .map_err(|e| ProfileError::CamiFormatError(cami_row_error(e, &line)))?;
 
                 result.taxa.push(entry);
             }
         }
 
         Ok(result)
+    }
+}
+
+fn cami_taxon_name(
+    lineage_str: &str,
+    rank: &TaxonomicRank,
+    ranks: &Option<Vec<TaxonomicRank>>,
+) -> Result<Option<String>, String> {
+    let tokens = lineage_str.split("|").collect_vec();
+    if let Some(ranks) = ranks.as_ref() {
+        if let Some(rank_index) = ranks.iter().position(|r| r == rank) {
+            let expected_len = rank_index + 1;
+            if tokens.len() != expected_len {
+                if CAMI_IGNORE_LINEAGE_ERROR.load(Ordering::Relaxed) {
+                    log::warn!(
+                        "CAMI lineage length mismatch ignored: expected {}, got {}; rank {:?}",
+                        expected_len,
+                        tokens.len(),
+                        rank
+                    );
+                    return Ok(tokens.last().map(|token| token.to_string()));
+                }
+                return Err(format!(
+                    "Lineage token count ({}) does not match expected length ({}) for rank {:?}",
+                    tokens.len(),
+                    expected_len,
+                    rank
+                ));
+            }
+            return Ok(tokens.get(rank_index).map(|token| token.to_string()));
+        }
+    }
+    Ok(tokens.last().map(|token| token.to_string()))
+}
+
+fn cami_row_error(message: String, row: &str) -> String {
+    format!("{}; row='{}'", message, row)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
+
+    use crate::common::{TaxonomicRank, NCBI};
+    use crate::format::{set_cami_ignore_lineage_error, Auto, Columns, ProfileFormat};
+    use crate::profile::{LoadProfile, Profile};
+
+    const NCBI_TEST_DIR: &str =
+        "/home/fritscher/git/4less/benchpro_rust/data/test_data/profiles/gold_standard/NCBI";
+    const NCBI_MOTUS_MOUSE_DIR: &str =
+        "/home/fritscher/git/4less/benchpro_rust/data/test_data/profiles/predictions/mOTUs3/mouse";
+    static CAMI_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    #[test]
+    fn cami_profiles_detect_cami() {
+        let _guard = cami_test_lock();
+        let files =
+            list_profile_files(&[Path::new(NCBI_TEST_DIR), Path::new(NCBI_MOTUS_MOUSE_DIR)]);
+        assert!(
+            !files.is_empty(),
+            "No .txt files found in {}",
+            NCBI_TEST_DIR
+        );
+
+        for path in files {
+            let mut file = fs::File::open(&path).expect("Failed to open profile");
+            let format = Auto::detect(&mut file);
+            assert_eq!(
+                format,
+                ProfileFormat::CAMI,
+                "Expected CAMI format for {}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn cami_lineage_length_strict_errors_when_mismatched() {
+        let _guard = cami_test_lock();
+        let files =
+            list_profile_files(&[Path::new(NCBI_TEST_DIR), Path::new(NCBI_MOTUS_MOUSE_DIR)]);
+        assert!(
+            !files.is_empty(),
+            "No .txt files found in {}",
+            NCBI_TEST_DIR
+        );
+
+        set_cami_ignore_lineage_error(false);
+
+        for path in files {
+            let mismatch = has_lineage_length_mismatch(&path);
+            let mut file = fs::File::open(&path).expect("Failed to open profile");
+            let result = Profile::<NCBI>::load::<Auto, _>(&mut file, None);
+
+            if mismatch {
+                assert!(
+                    result.is_err(),
+                    "Expected lineage length mismatch error for {}",
+                    path.display()
+                );
+            } else {
+                assert!(
+                    result.is_ok(),
+                    "Unexpected error for {}: {:?}",
+                    path.display(),
+                    result.err()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cami_lineage_length_ignore_allows_load() {
+        let _guard = cami_test_lock();
+        let files =
+            list_profile_files(&[Path::new(NCBI_TEST_DIR), Path::new(NCBI_MOTUS_MOUSE_DIR)]);
+        assert!(
+            !files.is_empty(),
+            "No .txt files found in {}",
+            NCBI_TEST_DIR
+        );
+
+        with_cami_ignore(true, || {
+            for path in files {
+                let mut file = fs::File::open(&path).expect("Failed to open profile");
+                let result = Profile::<NCBI>::load::<Auto, _>(&mut file, None);
+                assert!(
+                    result.is_ok(),
+                    "Expected CAMI ignore lineage error to allow load for {}: {:?}",
+                    path.display(),
+                    result.err()
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn auto_detects_gtdb_with_taxid_and_abundance() {
+        let tokens = [
+            "74426",
+            "d__Bacteria;p__Actinomycetota;c__Coriobacteriia",
+            "0.608810",
+        ];
+
+        let columns = Columns::auto(&tokens).expect("Expected GTDB auto detection");
+
+        assert_eq!(columns.lineage, Some(1));
+        assert_eq!(columns.abundance, Some(2));
+        assert_eq!(columns.taxon_id, Some(0));
+    }
+
+    fn list_profile_files(dirs: &[&Path]) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        for dir in dirs {
+            collect_files_recursive(dir, &mut files);
+        }
+        files
+    }
+
+    fn collect_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_files_recursive(&path, out);
+            } else if path.is_file() {
+                out.push(path);
+            }
+        }
+    }
+
+    fn has_lineage_length_mismatch(path: &Path) -> bool {
+        let content = fs::read_to_string(path).expect("Failed to read profile");
+        let mut ranks: Option<Vec<TaxonomicRank>> = None;
+        let mut columns: Option<Columns> = None;
+
+        for line in content.lines() {
+            if line.starts_with("@Ranks:") {
+                let line = line.strip_prefix("@Ranks:").unwrap().trim();
+                let tokens = line.split('|').collect::<Vec<_>>();
+                let mut parsed = Vec::with_capacity(tokens.len());
+                for token in tokens {
+                    let rank = TaxonomicRank::from_string(token).unwrap_or_else(|| {
+                        panic!("Invalid rank token '{}' in {}", token, path.display())
+                    });
+                    parsed.push(rank);
+                }
+                ranks = Some(parsed);
+            }
+            if line.starts_with("@@") {
+                columns =
+                    Some(Columns::from_cami(line).unwrap_or_else(|e| {
+                        panic!("Invalid CAMI header {}: {}", path.display(), e)
+                    }));
+            }
+            if ranks.is_some() && columns.is_some() {
+                break;
+            }
+        }
+
+        let ranks = ranks.unwrap_or_else(|| panic!("Missing @Ranks header in {}", path.display()));
+        let columns = columns.unwrap_or_else(|| panic!("Missing @@ header in {}", path.display()));
+
+        let rank_col = columns.rank.expect("Missing rank column");
+        let lineage_col = columns.lineage.expect("Missing lineage column");
+        let abundance_col = columns.abundance.expect("Missing abundance column");
+
+        for line in content.lines() {
+            if line.starts_with('#') || line.starts_with('@') || line.trim().is_empty() {
+                continue;
+            }
+            let tokens: Vec<_> = line.split('\t').collect();
+            if tokens.len() <= abundance_col
+                || tokens.len() <= rank_col
+                || tokens.len() <= lineage_col
+            {
+                return true;
+            }
+
+            let abundance = tokens[abundance_col].parse::<f64>().unwrap_or(0.0);
+            if abundance == 0.0 {
+                continue;
+            }
+
+            let rank = match TaxonomicRank::from_string(tokens[rank_col]) {
+                Some(rank) => rank,
+                None => return true,
+            };
+            let lineage_tokens = tokens[lineage_col].split('|').collect::<Vec<_>>();
+            let rank_index = match ranks.iter().position(|r| r == &rank) {
+                Some(index) => index,
+                None => return true,
+            };
+            let expected_len = rank_index + 1;
+            if lineage_tokens.len() != expected_len {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn cami_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        CAMI_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("Lock poisoned")
+    }
+
+    fn with_cami_ignore<F: FnOnce()>(value: bool, f: F) {
+        set_cami_ignore_lineage_error(value);
+        f();
+        set_cami_ignore_lineage_error(false);
     }
 }

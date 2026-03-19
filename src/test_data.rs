@@ -1,5 +1,6 @@
 use indoc::indoc;
 
+#[cfg(test)]
 const TEST_MINIMAL: &str = indoc! {"
 s__Agathobacter_rectalis	d__Bacteria;p__Bacillota_A;c__Clostridia;o__Lachnospirales;f__Lachnospiraceae;g__Agathobacter;s__Agathobacter rectalis	0.034403669724770644	GUT_GENOME001631
 s__Agathobaculum_butyriciproducens	d__Bacteria;p__Bacillota_A;c__Clostridia;o__Oscillospirales;f__Butyricicoccaceae;g__Agathobaculum;s__Agathobaculum butyriciproducens	0.005733944954128441	GUT_GENOME140100
@@ -696,3 +697,13 @@ pub const TEST_CAMI: &str = indoc! {"
 1583100	species	2|976|117743|200644|49546|76831|1583100	Bacteria|Bacteroidetes|Flavobacteriia|Flavobacteriales|Flavobacteriaceae|Myroides|Myroides sp. A21	0.0	OTU_97.479.0
 2047	species	2|201174|1760|85006|1268|32207|2047	Bacteria|Actinobacteria|Actinobacteria|Micrococcales|Micrococcaceae|Rothia|Rothia dentocariosa	0.0	OTU_97.38269.0
 "};
+
+#[cfg(test)]
+mod tests {
+    use super::TEST_MINIMAL;
+
+    #[test]
+    fn test_minimal_dataset_is_non_empty() {
+        assert!(!TEST_MINIMAL.trim().is_empty());
+    }
+}

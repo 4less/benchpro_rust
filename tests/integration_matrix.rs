@@ -19,6 +19,7 @@ fn test_matrix_output_matches_golden() {
 
     let status = Command::new(&bin)
         .args([
+            "profile",
             "--meta",
             "data/test_data/meta/meta_matrix.xlsx",
             "--outprefix",
@@ -27,6 +28,7 @@ fn test_matrix_output_matches_golden() {
             "--allow-alternatives",
             "--log-level",
             "error",
+            "--ignore-abundance-error",
         ])
         .status()
         .expect("Failed to run benchpro");

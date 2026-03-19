@@ -1,13 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    fs::File,
-    io::{BufReader, Cursor},
-    iter::repeat,
-    mem::swap,
-    path::Path,
-    process::exit,
-    sync::{Arc, Mutex, RwLock},
-};
+use std::{collections::HashMap, fs::File, iter::repeat, path::Path, process::exit, sync::Mutex};
 
 use itertools::{izip, Itertools};
 use log::{debug, error, info, warn};
@@ -16,24 +7,23 @@ use polars::{
     frame::DataFrame,
     io::SerWriter,
     prelude::{
-        col, cols, lit, when, CsvWriter, DataFrameJoinOps, DataType, IntoLazy, NamedFrom,
-        PlSmallStr, QuoteStyle, SortMultipleOptions,
+        col, lit, when, CsvWriter, DataFrameJoinOps, IntoLazy, NamedFrom, QuoteStyle,
+        SortMultipleOptions,
     },
     series::Series,
 };
 
 use crate::{
     common::{Detectable, TaxonomicRank},
-    meta::{self, Meta, MetaColumn},
+    meta::{Meta, MetaColumn},
     options::CommonArgs,
-    profile::{LoadProfile, Profile, ProfileWrapper, ABUNDANCE_SUM_TOLERANCE},
+    profile::{ProfileWrapper, ABUNDANCE_SUM_TOLERANCE},
     profile_handler::ProfileHandler,
     tree_adjusted_benchmarks::get_adjusted_benchmarks,
-    tree_handler::{TaxaSet, TreeHandler},
+    tree_handler::TreeHandler,
     utils::{
-        add_string_columns, bray_curtis_similarity, f1_score, get_lca, get_subtree,
-        get_subtree_with_leaves, l2_similarity, pearson_correlation, precision, sample_apply,
-        sensitivity, spearman_correlation, tree_collapse_edges, wrap_names, write_df,
+        add_string_columns, bray_curtis_similarity, f1_score, l2_similarity, pearson_correlation,
+        precision, sensitivity, spearman_correlation,
     },
 };
 
@@ -365,7 +355,7 @@ pub fn get_taxon_df(
     debug!("Number of gold profiles: {}", handler.gold_std_map.len());
 
     let mut dfs: Vec<DataFrame> = Vec::default();
-    let mut dfs_with_taxa: Vec<DataFrame> = Vec::default();
+    let _dfs_with_taxa: Vec<DataFrame> = Vec::default();
 
     for row in handler.meta.entries.iter() {
         let prediction = handler.prediction_map.get(row.profile.to_str().unwrap());
@@ -478,7 +468,6 @@ pub fn get_taxon_df(
 ///
 /// * `args` - Parsed CLI arguments shared by subcommands
 pub fn meta_based_workflow(args: &CommonArgs) {
-    type C = MetaColumn;
     let path = Path::new(args.meta.as_ref().unwrap());
     let outprefix = args
         .outprefix
@@ -500,7 +489,7 @@ pub fn meta_based_workflow(args: &CommonArgs) {
     ///////////////////////////////////////////////////////////////////////
     // Binary classification DF
 
-    let mut complete_df = get_taxon_df(
+    let complete_df = get_taxon_df(
         &handler,
         args.allow_alternatives,
         args.ignore_abundance_error,
@@ -543,7 +532,8 @@ pub fn meta_based_workflow(args: &CommonArgs) {
 
                 debug!("Height DFA {}", dfa.height());
 
-                add_string_columns(&mut dfa, &[("Adjusted".to_string(), "True".to_string())]);
+                let _ =
+                    add_string_columns(&mut dfa, &[("Adjusted".to_string(), "True".to_string())]);
 
                 debug!("Height DFA {}", dfa.height());
                 let _ = add_string_columns(
@@ -616,7 +606,7 @@ pub fn meta_based_workflow(args: &CommonArgs) {
 
     debug!("new_complete_df:\n{:#?}", new_complete_df);
 
-    let mut newdf =
+    let newdf =
         add_binary_classification(new_complete_df.clone()).expect("Could not derive binclas");
 
     let mut newdf = newdf
