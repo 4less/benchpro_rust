@@ -115,7 +115,6 @@ mod tests_lineage {
         assert_eq!(lowest.rank.as_ref(), Some(&TaxonomicRank::Order));
     }
 }
-
 impl FromStr for TaxonomicRank {
     type Err = String;
 
@@ -642,6 +641,16 @@ impl Detectable {
 mod tests {
     // Note this useful idiom: importing names from outer (for mod tests) scope.
     use super::*;
+
+    #[test]
+    fn test_lowest_rank_prefers_order_over_class() {
+        let lineage = GTDB::lineage_from_string(
+            "d__Bacteria;p__Firmicutes;c__Bacilli;o__Lactobacillales",
+            None,
+        );
+        let lowest = lineage.lowest().expect("Expected lowest rank");
+        assert_eq!(lowest.rank.as_ref(), Some(&TaxonomicRank::Order));
+    }
 
     #[test]
     fn test_taxon_equality() {

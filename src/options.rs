@@ -1,4 +1,4 @@
-use clap::{Args as ClapArgs, Parser, Subcommand};
+use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 /// ASCII logo shown at startup and in help output.
@@ -35,6 +35,8 @@ pub enum Command {
     Merge(MergeArgs),
     /// Compute MSA summary statistics.
     Msa(MsaArgs),
+    /// Normalize bacterial profiles to a standard format.
+    Normalize(NormalizeArgs),
 }
 
 /// CLI arguments for the `profile` subcommand.
@@ -51,6 +53,33 @@ pub struct StrainArgs {
     /// Common benchmark arguments.
     #[command(flatten)]
     pub common: CommonArgs,
+}
+
+/// CLI arguments for the `normalize` subcommand.
+#[derive(ClapArgs, Debug, Clone)]
+pub struct NormalizeArgs {
+    /// Input profile file to normalize
+    #[arg(short = 'i', long)]
+    pub input: String,
+
+    /// Output file for normalized profile
+    #[arg(short = 'o', long, required_unless_present = "detect")]
+    pub output: Option<String>,
+
+    /// Only detect and print profile format/tool/version.
+    #[arg(long, default_value_t = false)]
+    pub detect: bool,
+
+    /// Output format for normalized content.
+    #[arg(long, value_enum, default_value_t = NormalizeOutputFormat::Plain)]
+    pub output_format: NormalizeOutputFormat,
+}
+
+/// Output format for the `normalize` subcommand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum NormalizeOutputFormat {
+    Plain,
+    Cami,
 }
 
 /// Shared benchmark arguments used by multiple subcommands.
@@ -129,7 +158,7 @@ pub struct MsaArgs {
 
 #[cfg(test)]
 mod tests {
-    use super::{Args, Command};
+    use super::{Args, Command, NormalizeOutputFormat};
     use clap::Parser;
 
     #[test]
@@ -151,6 +180,7 @@ mod tests {
             Command::Strain(_) => panic!("Expected profile subcommand"),
             Command::Merge(_) => panic!("Expected profile subcommand"),
             Command::Msa(_) => panic!("Expected profile subcommand"),
+            Command::Normalize(_) => panic!("Expected profile subcommand"),
         }
     }
 
@@ -179,6 +209,7 @@ mod tests {
             Command::Profile(_) => panic!("Expected strain subcommand"),
             Command::Merge(_) => panic!("Expected strain subcommand"),
             Command::Msa(_) => panic!("Expected strain subcommand"),
+            Command::Normalize(_) => panic!("Expected strain subcommand"),
         }
     }
 
@@ -232,6 +263,70 @@ mod tests {
                 assert_eq!(msa_args.output.to_string_lossy(), "stats.tsv");
             }
             _ => panic!("Expected msa subcommand"),
+        }
+    }
+
+    #[test]
+    fn parses_normalize_subcommand() {
+        let args = Args::parse_from([
+            "benchpro",
+            "normalize",
+            "--input",
+            "input.profile",
+            "--output",
+            "output.tsv",
+        ]);
+
+        match args.command {
+            Command::Normalize(normalize_args) => {
+                assert_eq!(normalize_args.input, "input.profile");
+                assert_eq!(normalize_args.output.as_deref(), Some("output.tsv"));
+                assert!(!normalize_args.detect);
+                assert_eq!(normalize_args.output_format, NormalizeOutputFormat::Plain);
+            }
+            _ => panic!("Expected normalize subcommand"),
+        }
+    }
+
+    #[test]
+    fn parses_normalize_detect_only_subcommand() {
+        let args = Args::parse_from([
+            "benchpro",
+            "normalize",
+            "--input",
+            "input.profile",
+            "--detect",
+        ]);
+
+        match args.command {
+            Command::Normalize(normalize_args) => {
+                assert_eq!(normalize_args.input, "input.profile");
+                assert_eq!(normalize_args.output, None);
+                assert!(normalize_args.detect);
+                assert_eq!(normalize_args.output_format, NormalizeOutputFormat::Plain);
+            }
+            _ => panic!("Expected normalize subcommand"),
+        }
+    }
+
+    #[test]
+    fn parses_normalize_cami_output_format() {
+        let args = Args::parse_from([
+            "benchpro",
+            "normalize",
+            "--input",
+            "input.profile",
+            "--output",
+            "output.profile",
+            "--output-format",
+            "cami",
+        ]);
+
+        match args.command {
+            Command::Normalize(normalize_args) => {
+                assert_eq!(normalize_args.output_format, NormalizeOutputFormat::Cami);
+            }
+            _ => panic!("Expected normalize subcommand"),
         }
     }
 }

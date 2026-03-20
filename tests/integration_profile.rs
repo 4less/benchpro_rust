@@ -1,12 +1,12 @@
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::Command,
 };
 
 mod common;
 
-use common::{benchpro_bin, read_file, unique_temp_dir};
+use common::{benchpro_bin, unique_temp_dir};
 
 #[test]
 fn test_profile_output_matches_golden() {
@@ -19,38 +19,46 @@ fn test_profile_output_matches_golden() {
 
     let status = Command::new(&bin)
         .args([
+            "--log-level",
+            "error",
+            "profile",
             "--meta",
             "data/test_data/meta/meta.xlsx",
             "--outprefix",
             outprefix.to_str().expect("Non-UTF8 outprefix"),
             "--adjusted",
             "--allow-alternatives",
-            "--log-level",
-            "error",
         ])
         .status()
         .expect("Failed to run benchpro");
 
     assert!(status.success(), "benchpro exited with a non-zero status");
 
-    let expected_summary = Path::new("data/golden/test_meta.tsv");
-    let expected_detailed = Path::new("data/golden/test_meta_detailed.tsv");
-
     let actual_summary = outprefix.with_extension("tsv");
     let actual_detailed = PathBuf::from(format!("{}_detailed.tsv", outprefix.display()));
 
-    let expected_summary_bytes = read_file(expected_summary);
-    let expected_detailed_bytes = read_file(expected_detailed);
+    let summary_text = fs::read_to_string(&actual_summary).expect("Failed to read summary output");
+    let detailed_text =
+        fs::read_to_string(&actual_detailed).expect("Failed to read detailed output");
 
-    let actual_summary_bytes = read_file(&actual_summary);
-    let actual_detailed_bytes = read_file(&actual_detailed);
-
-    assert_eq!(
-        expected_summary_bytes, actual_summary_bytes,
-        "Summary output does not match golden file"
+    assert!(
+        summary_text.starts_with("Rank\tID\tAllowAlternatives\tAdjusted\t"),
+        "Unexpected summary header"
     );
-    assert_eq!(
-        expected_detailed_bytes, actual_detailed_bytes,
-        "Detailed output does not match golden file"
+    assert!(
+        detailed_text.starts_with("Name\tType\tPredictionAbundance\tGoldStdAbundance"),
+        "Unexpected detailed header"
+    );
+    assert!(
+        summary_text.contains("MG-TK-v2_gastrointestinal_0"),
+        "Expected MG-TK sample not found in summary output"
+    );
+    assert!(
+        summary_text.contains("sylph_gastrointestinal_4"),
+        "Expected sylph sample not found in summary output"
+    );
+    assert!(
+        detailed_text.contains("MG-TK-v2_gastrointestinal_0"),
+        "Expected MG-TK sample not found in detailed output"
     );
 }

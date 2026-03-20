@@ -216,6 +216,20 @@ impl Columns {
             return Some(res);
         }
 
+        // Fallback: if there are abundance columns, take the last one as abundance
+        if !abundance_column.is_empty() {
+            let mut res = Columns::default();
+            res.abundance = Some(abundance_column.last().unwrap().0);
+            // Find name column: first non-numeric column
+            for (i, token) in tokens.iter().enumerate() {
+                if token.as_ref().parse::<f64>().is_err() {
+                    res.taxon_name = Some(i);
+                    break;
+                }
+            }
+            return Some(res);
+        }
+
         None
     }
 
@@ -985,9 +999,11 @@ mod tests {
     use crate::profile::{LoadProfile, Profile};
 
     const NCBI_TEST_DIR: &str =
-        "/home/fritscher/git/4less/benchpro_rust/data/test_data/profiles/gold_standard/NCBI";
-    const NCBI_MOTUS_MOUSE_DIR: &str =
-        "/home/fritscher/git/4less/benchpro_rust/data/test_data/profiles/predictions/mOTUs3/mouse";
+        concat!(env!("CARGO_MANIFEST_DIR"), "/data/test_data/profiles/gold_standard/NCBI");
+    const NCBI_MOTUS_MOUSE_DIR: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/data/test_data/profiles/predictions/mOTUs3/mouse"
+    );
     static CAMI_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     #[test]

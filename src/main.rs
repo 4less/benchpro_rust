@@ -7,6 +7,10 @@ pub mod format;
 pub mod merge;
 pub mod msa;
 pub mod meta;
+pub mod ncbi_taxdump;
+pub mod normalize;
+pub mod normalize_detect;
+pub mod normalize_loader;
 pub mod options;
 pub mod profile;
 pub mod profile_handler;
@@ -70,6 +74,9 @@ fn main() {
                 error!("MSA failed: {}", err);
                 std::process::exit(1);
             }
+        }
+        Command::Normalize(normalize_args) => {
+            normalize::run(normalize_args);
         }
     });
 
