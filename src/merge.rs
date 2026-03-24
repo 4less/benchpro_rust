@@ -176,6 +176,11 @@ fn write_abundance_matrix(
     df: &DataFrame,
     output: &Path,
 ) -> Result<HashMap<String, f64>, MergeError> {
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
     let mut file = File::create(output)?;
     let mut df = df.clone();
     CsvWriter::new(&mut file)
@@ -284,6 +289,19 @@ fn taxon_key<T: Taxonomy>(
         .as_deref()
         .map(|value| format!("row='{}'", value))
         .unwrap_or_else(|| "row=<unavailable>".to_string());
+    if entry.rank == TaxonomicRank::Unknown
+        && entry.lineage.is_none()
+        && entry
+            .taxon_name
+            .as_deref()
+            .is_some_and(|name| name.trim().eq_ignore_ascii_case("UNCLASSIFIED"))
+    {
+        return Ok(Some(TaxonKey {
+            rank: target_rank.clone(),
+            name: "UNCLASSIFIED".to_owned(),
+        }));
+    }
+
     if entry.rank == TaxonomicRank::Unknown && entry.lineage.is_none() {
         return Err(MergeError::ProfileParse {
             path: path.to_path_buf(),
@@ -589,8 +607,8 @@ mod tests {
     use crate::common::Taxonomy;
     use crate::profile::{Profile, ProfileWrapper};
     use crate::profile_handler::ProfileHandler;
-    use std::fs;
     use std::collections::HashMap;
+    use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -701,7 +719,11 @@ mod tests {
         )?;
 
         // a) Ensure loading/merge recovered both input profiles.
-        assert_eq!(sample_paths.len(), 2, "Expected exactly two recovered sample files");
+        assert_eq!(
+            sample_paths.len(),
+            2,
+            "Expected exactly two recovered sample files"
+        );
         assert!(sample_paths.values().any(|path| path == &profile_a));
         assert!(sample_paths.values().any(|path| path == &profile_b));
 
@@ -811,10 +833,10 @@ mod tests {
         let matrix_a_ref = format!("matrix:{}::{}", output.display(), sample_a_name);
         let matrix_b_ref = format!("matrix:{}::{}", output.display(), sample_b_name);
 
-        let direct_a = ProfileHandler::load_profile_auto(&profile_a)
-            .expect("Failed to load direct profile_a");
-        let direct_b = ProfileHandler::load_profile_auto(&profile_b)
-            .expect("Failed to load direct profile_b");
+        let direct_a =
+            ProfileHandler::load_profile_auto(&profile_a).expect("Failed to load direct profile_a");
+        let direct_b =
+            ProfileHandler::load_profile_auto(&profile_b).expect("Failed to load direct profile_b");
 
         let matrix_a = ProfileHandler::load_profile(&matrix_a_ref, Some("GTDB"), None::<&str>)
             .expect("Failed to load matrix-derived profile_a");
@@ -853,6 +875,31 @@ mod tests {
                 matrix_abundance
             );
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn merge_promotes_unclassified_to_species_bucket() -> Result<(), MergeError> {
+        let profile = temp_path("profile_unclassified.tsv");
+        let output = temp_path("abundance_unclassified.tsv");
+        let content = "\
+#mpa_vJan25_CHOCOPhlAnSGB_202503
+#clade_name\trelative_abundance
+UNCLASSIFIED\t2.5
+d__Bacteria;p__Firmicutes;s__Foo\t97.5
+";
+        write_profile(&profile, content);
+
+        merge_profiles(&[profile], &output, &TaxonomicRank::Species)?;
+
+        let output_content = fs::read_to_string(output).expect("Failed to read output");
+        assert!(
+            output_content.contains("\ns__UNCLASSIFIED\t2.5")
+                || output_content.contains("\ns__UNCLASSIFIED\t2.500000"),
+            "Expected s__UNCLASSIFIED row in merged matrix, got:\n{}",
+            output_content
+        );
 
         Ok(())
     }

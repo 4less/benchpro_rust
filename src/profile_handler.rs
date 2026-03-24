@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    fs::File,
+    fs::{self, File},
     io::{BufRead, BufReader, Cursor, Seek},
     path::{Path, PathBuf},
 };
@@ -12,6 +12,8 @@ use crate::{
     common::{ChocoPhlAn, Custom, TaxonomicRank, GTDB, NCBI},
     format::{Auto, Columns, Custom as CustomFormat, ProfileFormat},
     meta::Meta,
+    normalize_detect::detect_profile,
+    normalize_loader::load_normalized_for_kind,
     profile::{LoadProfile, Profile, ProfileWrapper},
     utils::load_file_lineages_to_hashset,
 };
@@ -326,6 +328,15 @@ impl ProfileHandler {
             path.as_ref().display()
         );
 
+        if let Some(profile) = load_profile_from_normalized(path.as_ref(), &inferred_taxonomy) {
+            info!(
+                "Loaded profile through unified normalization path; taxonomy: {}; path: {}",
+                taxonomy_label,
+                path.as_ref().display()
+            );
+            return Some(profile);
+        }
+
         if columns.is_some() {
             info!(
                 "Using explicit column mapping from meta; taxonomy: {}; path: {}",
@@ -441,6 +452,59 @@ fn load_profile_with_auto_taxonomy(
             }
         }
     }
+}
+
+fn load_profile_from_normalized(path: &Path, taxonomy: &str) -> Option<ProfileWrapper> {
+    let content = fs::read_to_string(path).ok()?;
+    let detection = detect_profile(&content);
+    let entries = load_normalized_for_kind(
+        &content,
+        &detection.format,
+        &detection.tool,
+        &detection.version,
+    )
+    .ok()?;
+
+    let mut body = String::new();
+    for entry in entries {
+        if entry.lineage.trim().is_empty() {
+            continue;
+        }
+        body.push_str(&entry.lineage);
+        body.push('\t');
+        body.push_str(&entry.abundance.to_string());
+        body.push('\n');
+    }
+    if body.is_empty() {
+        return None;
+    }
+
+    let mut cursor = Cursor::new(body.into_bytes());
+    let columns = Some(Columns {
+        lineage: Some(0),
+        abundance: Some(1),
+        ..Columns::default()
+    });
+
+    if taxonomy.starts_with("GTDB") {
+        return Profile::<GTDB>::load::<CustomFormat, _>(&mut cursor, columns)
+            .ok()
+            .map(|p| p.wrap());
+    }
+    if taxonomy.starts_with("NCBI") {
+        return Profile::<NCBI>::load::<CustomFormat, _>(&mut cursor, columns)
+            .ok()
+            .map(|p| p.wrap());
+    }
+    if taxonomy.starts_with("ChocoPhlAn") {
+        return Profile::<ChocoPhlAn>::load::<CustomFormat, _>(&mut cursor, columns)
+            .ok()
+            .map(|p| p.wrap());
+    }
+
+    Profile::<Custom>::load::<CustomFormat, _>(&mut cursor, columns)
+        .ok()
+        .map(|p| p.wrap())
 }
 
 fn infer_taxonomy_label(path: &Path, format: &ProfileFormat) -> String {

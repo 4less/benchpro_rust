@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::common::canonicalize_unclassified_lineage;
 use crate::ncbi_taxdump::NcbiTaxdump;
 use crate::normalize_detect::{DetectionResult, ProfileFormatKind};
 
@@ -497,6 +498,9 @@ fn rightmost_taxon(lineage: &str) -> String {
 }
 
 fn trim_lineage_to_standard_ranks(lineage: &str) -> String {
+    let lineage = canonicalize_unclassified_lineage(lineage, ';');
+    let lineage = lineage.as_ref();
+
     let delimiter = if lineage.contains('|') {
         '|'
     } else if lineage.contains(';') {
@@ -675,6 +679,33 @@ mod tests {
         let lineage = "k__Bacteria|p__P|c__C|o__O|f__F|g__G|s__S|t__SGB1|x__ignored";
         let trimmed = trim_lineage_to_standard_ranks(lineage);
         assert_eq!(trimmed, "k__Bacteria|p__P|c__C|o__O|f__F|g__G|s__S|t__SGB1");
+    }
+
+    #[test]
+    fn expands_unclassified_to_full_ranked_lineage() {
+        let trimmed = trim_lineage_to_standard_ranks("UNCLASSIFIED");
+        assert_eq!(
+            trimmed,
+            "d__UNCLASSIFIED;p__UNCLASSIFIED;c__UNCLASSIFIED;o__UNCLASSIFIED;f__UNCLASSIFIED;g__UNCLASSIFIED;s__UNCLASSIFIED"
+        );
+    }
+
+    #[test]
+    fn metaphlan_unclassified_normalizes_to_species_identifier() {
+        let content = "\
+#mpa_vJan25_CHOCOPhlAnSGB_202503
+#clade_name\trelative_abundance
+UNCLASSIFIED\t38.952687
+";
+        let detection = detect_profile(content);
+        let entries = load_normalized(content, &detection).expect("failed to load metaphlan");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].identifier, "s__UNCLASSIFIED");
+        assert_eq!(
+            entries[0].lineage,
+            "d__UNCLASSIFIED;p__UNCLASSIFIED;c__UNCLASSIFIED;o__UNCLASSIFIED;f__UNCLASSIFIED;g__UNCLASSIFIED;s__UNCLASSIFIED"
+        );
+        assert_eq!(entries[0].abundance, 38.952687);
     }
 
     #[test]

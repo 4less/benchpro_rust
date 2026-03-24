@@ -274,10 +274,57 @@ pub struct Custom;
 
 pub const LINEAGE_DELIMITERS: &[char] = &[';', '|'];
 
+/// Returns the canonical delimiter for lineage strings in a taxonomy.
+///
+/// # Arguments
+///
+/// * `taxonomy` - Taxonomy system identifier
+///
+/// # Returns
+///
+/// Delimiter used for lineage token separation.
+pub fn taxonomy_lineage_delimiter(taxonomy: &TaxonomyEnum) -> char {
+    match taxonomy {
+        TaxonomyEnum::NCBI => '|',
+        _ => ';',
+    }
+}
+
+/// Expands bare `UNCLASSIFIED` lineage labels into a full ranked lineage.
+///
+/// # Arguments
+///
+/// * `lineage` - Raw lineage value from profile input
+/// * `delimiter` - Delimiter used by the target lineage format
+///
+/// # Returns
+///
+/// Borrowed input when unchanged, otherwise an owned expanded lineage string.
+pub fn canonicalize_unclassified_lineage<'a>(lineage: &'a str, delimiter: char) -> Cow<'a, str> {
+    if !lineage.trim().eq_ignore_ascii_case("UNCLASSIFIED") {
+        return Cow::Borrowed(lineage);
+    }
+
+    Cow::Owned(
+        [
+            "d__UNCLASSIFIED",
+            "p__UNCLASSIFIED",
+            "c__UNCLASSIFIED",
+            "o__UNCLASSIFIED",
+            "f__UNCLASSIFIED",
+            "g__UNCLASSIFIED",
+            "s__UNCLASSIFIED",
+        ]
+        .join(&delimiter.to_string()),
+    )
+}
+
 impl Taxonomy for GTDB {
     // impl LineageFromString<GTDB> for Lineage<GTDB> {
     fn lineage_from_string(str: &str, _ranks: Option<&Vec<TaxonomicRank>>) -> Lineage<GTDB> {
-        let tokens = str.split(|c| LINEAGE_DELIMITERS.iter().any(|&del| del == c));
+        let canonical =
+            canonicalize_unclassified_lineage(str, taxonomy_lineage_delimiter(&TaxonomyEnum::GTDB));
+        let tokens = canonical.split(|c| LINEAGE_DELIMITERS.iter().any(|&del| del == c));
 
         let mut res = Lineage {
             data: TaxonMap::default(),
@@ -322,7 +369,11 @@ impl Taxonomy for GTDB {
 
 impl Taxonomy for ChocoPhlAn {
     fn lineage_from_string(str: &str, _ranks: Option<&Vec<TaxonomicRank>>) -> Lineage<ChocoPhlAn> {
-        let tokens = str.split(|c| LINEAGE_DELIMITERS.iter().any(|&del| del == c));
+        let canonical = canonicalize_unclassified_lineage(
+            str,
+            taxonomy_lineage_delimiter(&TaxonomyEnum::ChocoPhlAn),
+        );
+        let tokens = canonical.split(|c| LINEAGE_DELIMITERS.iter().any(|&del| del == c));
 
         let mut res = Lineage {
             data: TaxonMap::default(),
@@ -367,7 +418,11 @@ impl Taxonomy for ChocoPhlAn {
 impl Taxonomy for Custom {
     // impl LineageFromString<Custom> for  Lineage<Custom> {
     fn lineage_from_string(str: &str, _ranks: Option<&Vec<TaxonomicRank>>) -> Lineage<Self> {
-        let tokens = str.split(";");
+        let canonical = canonicalize_unclassified_lineage(
+            str,
+            taxonomy_lineage_delimiter(&TaxonomyEnum::Custom),
+        );
+        let tokens = canonical.split(";");
 
         let mut res = Lineage {
             data: TaxonMap::default(),
@@ -412,7 +467,9 @@ impl Taxonomy for Custom {
 impl Taxonomy for NCBI {
     // impl LineageFromString<NCBI> for Lineage<NCBI> {
     fn lineage_from_string(str: &str, ranks: Option<&Vec<TaxonomicRank>>) -> Lineage<Self> {
-        let tokens = str.split("|");
+        let canonical =
+            canonicalize_unclassified_lineage(str, taxonomy_lineage_delimiter(&TaxonomyEnum::NCBI));
+        let tokens = canonical.split("|");
 
         let mut res = Lineage {
             data: TaxonMap::default(),
@@ -760,6 +817,28 @@ g__Lactobacillus;s__Lactobacillus acidophilus";
         assert_eq!(
             lineage.get(&R::Species).unwrap().name,
             "s__Lactobacillus acidophilus"
+        );
+    }
+
+    #[test]
+    fn test_unclassified_expands_to_species_for_gtdb() {
+        let lineage = GTDB::lineage_from_string("UNCLASSIFIED", None);
+        assert_eq!(
+            lineage
+                .get(&TaxonomicRank::Species)
+                .map(|taxon| taxon.name.as_str()),
+            Some("s__UNCLASSIFIED")
+        );
+    }
+
+    #[test]
+    fn test_unclassified_expands_to_species_for_ncbi() {
+        let lineage = NCBI::lineage_from_string("UNCLASSIFIED", None);
+        assert_eq!(
+            lineage
+                .get(&TaxonomicRank::Species)
+                .map(|taxon| taxon.name.as_str()),
+            Some("s__UNCLASSIFIED")
         );
     }
 }

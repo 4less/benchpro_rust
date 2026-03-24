@@ -7,7 +7,9 @@ use std::{
 use itertools::Itertools;
 
 use crate::{
-    common::{TaxonomicRank, Taxonomy},
+    common::{
+        canonicalize_unclassified_lineage, taxonomy_lineage_delimiter, TaxonomicRank, Taxonomy,
+    },
     profile::{Entry, Profile, ProfileError, ProfileResult},
 };
 
@@ -598,9 +600,6 @@ impl Custom {
                 columns
             ));
 
-            let lineage = T::lineage_from_string(tokens[lineage_column], ranks.as_ref());
-            entry.lineage = Some(lineage);
-
             entry.abundance = match tokens[abundance_column].parse::<f64>() {
                 Ok(val) => val,
                 Err(_) => {
@@ -610,6 +609,10 @@ impl Custom {
                     )))
                 }
             };
+
+            let raw_lineage = tokens[lineage_column].trim();
+            let lineage = T::lineage_from_string(raw_lineage, ranks.as_ref());
+            entry.lineage = Some(lineage);
 
             if let Some(col) = columns.taxon_id {
                 entry.taxon_name = Some(tokens[col].to_owned());
@@ -629,14 +632,30 @@ impl Custom {
                 let rank = entry
                     .lineage
                     .as_ref()
-                    .expect("Benchpro currently requires some sort of lineage")
-                    .lowest()
-                    .expect("A lineage without rank information is not valid.")
-                    .rank
-                    .as_ref()
-                    .expect("Benchpro currently requires some sort of rank information.");
-                // eprintln!("Rank {:?}", entry.lineage.as_ref().unwrap().lowest().as_ref().unwrap().rank.as_ref().unwrap());
-                entry.rank = rank.clone();
+                    .and_then(|lineage| lineage.lowest())
+                    .and_then(|taxon| taxon.rank.clone());
+
+                if let Some(rank) = rank {
+                    entry.rank = rank;
+                } else {
+                    if raw_lineage.eq_ignore_ascii_case("UNCLASSIFIED") {
+                        let canonical = canonicalize_unclassified_lineage(
+                            raw_lineage,
+                            taxonomy_lineage_delimiter(&T::get_enum()),
+                        );
+                        let lineage = T::lineage_from_string(canonical.as_ref(), ranks.as_ref());
+                        entry.rank = TaxonomicRank::Species;
+                        entry.lineage = Some(lineage);
+                        if entry.taxon_name.is_none() {
+                            entry.taxon_name = Some("s__UNCLASSIFIED".to_owned());
+                        }
+                    } else {
+                        return Err(ProfileError::FormatError(format!(
+                            "Unable to infer rank from lineage '{}'; row='{}'",
+                            raw_lineage, line
+                        )));
+                    }
+                }
             }
             result.taxa.push(entry);
         }
@@ -993,12 +1012,13 @@ fn cami_row_error(message: String, row: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::io::Cursor;
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, OnceLock};
 
-    use crate::common::{TaxonomicRank, NCBI};
-    use crate::format::{set_cami_ignore_lineage_error, Auto, Columns, ProfileFormat};
-    use crate::profile::{LoadProfile, Profile};
+    use crate::common::{TaxonomicRank, GTDB, NCBI};
+    use crate::format::{set_cami_ignore_lineage_error, Auto, Columns, Custom, ProfileFormat};
+    use crate::profile::{LoadProfile, Profile, ProfileError};
 
     const NCBI_TEST_DIR: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -1106,6 +1126,57 @@ mod tests {
         assert_eq!(columns.lineage, Some(1));
         assert_eq!(columns.abundance, Some(2));
         assert_eq!(columns.taxon_id, Some(0));
+    }
+
+    #[test]
+    fn metaphlan_unclassified_row_is_promoted_to_full_unclassified_lineage() {
+        let content = "\
+#mpa_vJan25_CHOCOPhlAnSGB_202503
+#clade_name\trelative_abundance
+UNCLASSIFIED\t2.476446
+d__Bacteria\t97.523555
+";
+        let mut cursor = Cursor::new(content.as_bytes().to_vec());
+        let profile = Profile::<GTDB>::load::<Auto, _>(&mut cursor, None)
+            .expect("Expected MetaPhlAn profile to parse");
+
+        assert_eq!(profile.taxa.len(), 2);
+        assert_eq!(profile.taxa[0].rank, TaxonomicRank::Species);
+        assert_eq!(
+            profile.taxa[0]
+                .lineage
+                .as_ref()
+                .and_then(|lineage| lineage.get(&TaxonomicRank::Species))
+                .map(|taxon| taxon.name.as_str()),
+            Some("s__UNCLASSIFIED")
+        );
+        assert_eq!(profile.taxa[0].abundance, 2.476446);
+        assert_eq!(profile.taxa[1].rank, TaxonomicRank::Domain);
+        assert_eq!(profile.taxa[1].abundance, 97.523555);
+    }
+
+    #[test]
+    fn custom_rankless_non_unclassified_lineage_returns_error() {
+        let content = "NOT_A_RANKED_LINEAGE\t1.0\n";
+        let mut cursor = Cursor::new(content.as_bytes().to_vec());
+        let columns = Some(Columns {
+            lineage: Some(0),
+            abundance: Some(1),
+            ..Columns::default()
+        });
+        let error = Profile::<GTDB>::load::<Custom, _>(&mut cursor, columns)
+            .expect_err("Expected malformed lineage to return an error");
+
+        match error {
+            ProfileError::FormatError(msg) => {
+                assert!(
+                    msg.contains("Unable to infer rank from lineage"),
+                    "Unexpected error message: {}",
+                    msg
+                );
+            }
+            other => panic!("Unexpected error variant: {}", other),
+        }
     }
 
     fn list_profile_files(dirs: &[&Path]) -> Vec<PathBuf> {
