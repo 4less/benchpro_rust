@@ -1648,7 +1648,8 @@ s__Akkermansia muciniphila_A";
         assert_eq!(columns1.abundance, Some(2));
 
         // GTDB lineage in column 0 is recognized as lineage, with the last float used as abundance.
-        let columns2 = columns2.expect("Expected fallback inferred columns for multi-numeric input");
+        let columns2 =
+            columns2.expect("Expected fallback inferred columns for multi-numeric input");
         assert_eq!(columns2.lineage, Some(0));
         assert_eq!(columns2.taxon_name, None);
         assert_eq!(columns2.abundance, Some(2));

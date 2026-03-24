@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{BufRead, Seek};
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 use indicatif::{ProgressBar, ProgressStyle};
@@ -13,10 +13,10 @@ use rayon::prelude::*;
 use regex::Regex;
 use thiserror::Error;
 
-use crate::common::{Custom, TaxonomicRank, Taxonomy, GTDB, NCBI};
-use crate::format::Auto;
+use crate::common::{TaxonomicRank, Taxonomy};
 use crate::options::MergeArgs;
-use crate::profile::{Entry, LoadProfile, Profile, ProfileWrapper};
+use crate::profile::{Entry, Profile, ProfileWrapper};
+use crate::profile_handler::ProfileHandler;
 
 /// Errors produced while merging profile files.
 #[derive(Debug, Error)]
@@ -225,70 +225,9 @@ fn write_abundance_matrix(
 }
 
 fn load_profile_auto(path: &Path) -> Result<ProfileWrapper, MergeError> {
-    let mut file = File::open(path)?;
-    let mut errors = Vec::new();
-    let detected = Auto::detect(&mut file);
-    let _ = file.rewind();
-    let has_gtdb_prefixes = detect_gtdb_prefixes(path)?;
-
-    if matches!(detected, crate::format::ProfileFormat::MetaPhlAn(_)) {
-        match Profile::<crate::common::ChocoPhlAn>::load::<Auto, _>(&mut file, None) {
-            Ok(profile) => {
-                info!(
-                    "Profile format detected: {}; taxonomy: ChocoPhlAn; path: {}",
-                    profile_format_label(&detected),
-                    path.display()
-                );
-                return Ok(profile.wrap());
-            }
-            Err(err) => errors.push(format!("ChocoPhlAn: {}", err)),
-        }
-        let _ = file.rewind();
-    }
-
-    if has_gtdb_prefixes {
-        match Profile::<GTDB>::load::<Auto, _>(&mut file, None) {
-            Ok(profile) => {
-                info!(
-                    "Profile format detected: {}; taxonomy: GTDB; path: {}",
-                    profile_format_label(&detected),
-                    path.display()
-                );
-                return Ok(profile.wrap());
-            }
-            Err(err) => errors.push(format!("GTDB: {}", err)),
-        }
-    }
-
-    file.rewind()?;
-    match Profile::<NCBI>::load::<Auto, _>(&mut file, None) {
-        Ok(profile) => {
-            info!(
-                "Profile format detected: {}; taxonomy: NCBI; path: {}",
-                profile_format_label(&detected),
-                path.display()
-            );
-            return Ok(profile.wrap());
-        }
-        Err(err) => errors.push(format!("NCBI: {}", err)),
-    }
-
-    file.rewind()?;
-    match Profile::<Custom>::load::<Auto, _>(&mut file, None) {
-        Ok(profile) => {
-            info!(
-                "Profile format detected: {}; taxonomy: Custom; path: {}",
-                profile_format_label(&detected),
-                path.display()
-            );
-            return Ok(profile.wrap());
-        }
-        Err(err) => errors.push(format!("Custom: {}", err)),
-    }
-
-    Err(MergeError::ProfileParse {
+    ProfileHandler::load_profile_auto(path).ok_or_else(|| MergeError::ProfileParse {
         path: path.to_path_buf(),
-        errors,
+        errors: vec!["Auto-detect profile loading failed in shared profile handler".to_owned()],
     })
 }
 
@@ -613,15 +552,6 @@ fn print_column_sums(sums: &HashMap<String, f64>, sample_paths: &HashMap<String,
     }
 }
 
-fn profile_format_label(format: &crate::format::ProfileFormat) -> &'static str {
-    match format {
-        crate::format::ProfileFormat::CAMI => "CAMI",
-        crate::format::ProfileFormat::Custom(_) => "Custom",
-        crate::format::ProfileFormat::MetaPhlAn(_) => "MetaPhlAn",
-        crate::format::ProfileFormat::Unknown => "Unknown",
-    }
-}
-
 fn entry_context<T: Taxonomy>(entry: &Entry<T>) -> String {
     let name = entry.taxon_name.as_deref().unwrap_or("<none>");
     let rank = entry.rank.to_string();
@@ -653,27 +583,14 @@ fn read_culprit_row(path: &Path, entry_index: usize) -> Option<String> {
     None
 }
 
-fn detect_gtdb_prefixes(path: &Path) -> Result<bool, MergeError> {
-    let file = File::open(path)?;
-    let reader = std::io::BufReader::new(file);
-    let prefixes = [
-        "d__", "k__", "p__", "c__", "o__", "f__", "g__", "s__", "t__",
-    ];
-    for line in reader.lines().flatten() {
-        if line.starts_with('#') || line.starts_with('@') {
-            continue;
-        }
-        if prefixes.iter().any(|prefix| line.contains(prefix)) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{merge_profiles, MergeError};
+    use crate::common::Taxonomy;
+    use crate::profile::{Profile, ProfileWrapper};
+    use crate::profile_handler::ProfileHandler;
     use std::fs;
+    use std::collections::HashMap;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -689,6 +606,27 @@ mod tests {
 
     fn write_profile(path: &PathBuf, content: &str) {
         fs::write(path, content).expect("Failed to write test profile");
+    }
+
+    fn species_abundance_map_for<T: Taxonomy>(profile: &Profile<T>) -> HashMap<String, f64> {
+        profile
+            .get_taxa_string_dict(&TaxonomicRank::Species)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, entries)| {
+                let sum = entries.iter().map(|entry| entry.abundance).sum::<f64>();
+                (name, sum)
+            })
+            .collect::<HashMap<_, _>>()
+    }
+
+    fn species_abundance_map(profile: &ProfileWrapper) -> HashMap<String, f64> {
+        match profile {
+            ProfileWrapper::GTDBProfile(inner) => species_abundance_map_for(inner),
+            ProfileWrapper::NCBIProfile(inner) => species_abundance_map_for(inner),
+            ProfileWrapper::ChocoPhlAnProfile(inner) => species_abundance_map_for(inner),
+            ProfileWrapper::CustomProfile(inner) => species_abundance_map_for(inner),
+        }
     }
 
     #[test]
@@ -727,6 +665,194 @@ mod tests {
         assert!(output_content.contains("s__Foo"));
         assert!(output_content.contains("s__Bar"));
         assert!(output_content.contains("s__Baz"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn merges_duplicate_species_rows_by_summing_per_profile() -> Result<(), MergeError> {
+        let profile_a = temp_path("profile_dup_a.tsv");
+        let profile_b = temp_path("profile_dup_b.tsv");
+        let output = temp_path("abundance_dup.tsv");
+
+        let header = "Lineage\tabundance\n";
+        let content_a = format!(
+            "{}{}\n{}\n{}",
+            header,
+            "d__Bacteria;p__Firmicutes;s__Alpha\t0.1",
+            "d__Bacteria;p__Firmicutes;s__Alpha\t0.2",
+            "d__Bacteria;p__Firmicutes;s__Beta\t0.7"
+        );
+        let content_b = format!(
+            "{}{}\n{}\n{}",
+            header,
+            "d__Bacteria;p__Firmicutes;s__Alpha\t0.3",
+            "d__Bacteria;p__Firmicutes;s__Alpha\t0.4",
+            "d__Bacteria;p__Firmicutes;s__Gamma\t0.3"
+        );
+
+        write_profile(&profile_a, &content_a);
+        write_profile(&profile_b, &content_b);
+
+        let (_sums, sample_paths) = merge_profiles(
+            &[profile_a.clone(), profile_b.clone()],
+            &output,
+            &TaxonomicRank::Species,
+        )?;
+
+        // a) Ensure loading/merge recovered both input profiles.
+        assert_eq!(sample_paths.len(), 2, "Expected exactly two recovered sample files");
+        assert!(sample_paths.values().any(|path| path == &profile_a));
+        assert!(sample_paths.values().any(|path| path == &profile_b));
+
+        let output_content = fs::read_to_string(&output).expect("Failed to read output");
+        let mut lines = output_content.lines();
+        let header_tokens = lines
+            .next()
+            .expect("Missing matrix header")
+            .split('\t')
+            .collect::<Vec<_>>();
+        assert_eq!(header_tokens.first().copied(), Some("Taxon"));
+
+        let sample_a_name = profile_a
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .expect("Invalid profile_a file stem");
+        let sample_b_name = profile_b
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .expect("Invalid profile_b file stem");
+
+        let sample_a_col = header_tokens
+            .iter()
+            .position(|name| *name == sample_a_name)
+            .expect("Missing profile_a matrix column");
+        let sample_b_col = header_tokens
+            .iter()
+            .position(|name| *name == sample_b_name)
+            .expect("Missing profile_b matrix column");
+
+        let mut alpha_values: Option<(f64, f64)> = None;
+        for line in lines {
+            let tokens = line.split('\t').collect::<Vec<_>>();
+            if tokens.first().copied() == Some("s__Alpha") {
+                let a = tokens
+                    .get(sample_a_col)
+                    .expect("Missing profile_a alpha abundance")
+                    .parse::<f64>()
+                    .expect("Invalid profile_a alpha abundance");
+                let b = tokens
+                    .get(sample_b_col)
+                    .expect("Missing profile_b alpha abundance")
+                    .parse::<f64>()
+                    .expect("Invalid profile_b alpha abundance");
+                alpha_values = Some((a, b));
+                break;
+            }
+        }
+
+        // b) Ensure species abundance is summed for duplicate rows per profile.
+        let (alpha_a, alpha_b) = alpha_values.expect("Merged matrix missing s__Alpha row");
+        assert!(
+            (alpha_a - 0.3).abs() < 1e-12,
+            "Expected profile_a s__Alpha sum 0.3, got {}",
+            alpha_a
+        );
+        assert!(
+            (alpha_b - 0.7).abs() < 1e-12,
+            "Expected profile_b s__Alpha sum 0.7, got {}",
+            alpha_b
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn matrix_roundtrip_matches_direct_profile_species_abundances() -> Result<(), MergeError> {
+        let profile_a = temp_path("profile_roundtrip_a.tsv");
+        let profile_b = temp_path("profile_roundtrip_b.tsv");
+        let output = temp_path("abundance_roundtrip.tsv");
+
+        let header = "Lineage\tabundance\n";
+        let content_a = format!(
+            "{}{}\n{}\n{}",
+            header,
+            "d__Bacteria;p__Firmicutes;s__Alpha\t0.15",
+            "d__Bacteria;p__Firmicutes;s__Alpha\t0.35",
+            "d__Bacteria;p__Firmicutes;s__Beta\t0.5"
+        );
+        let content_b = format!(
+            "{}{}\n{}\n{}",
+            header,
+            "d__Bacteria;p__Firmicutes;s__Alpha\t0.4",
+            "d__Bacteria;p__Firmicutes;s__Gamma\t0.4",
+            "d__Bacteria;p__Firmicutes;s__Gamma\t0.2"
+        );
+
+        write_profile(&profile_a, &content_a);
+        write_profile(&profile_b, &content_b);
+
+        let (_sums, sample_paths) = merge_profiles(
+            &[profile_a.clone(), profile_b.clone()],
+            &output,
+            &TaxonomicRank::Species,
+        )?;
+        assert_eq!(sample_paths.len(), 2);
+
+        let sample_a_name = profile_a
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .expect("Invalid profile_a file stem");
+        let sample_b_name = profile_b
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .expect("Invalid profile_b file stem");
+
+        let matrix_a_ref = format!("matrix:{}::{}", output.display(), sample_a_name);
+        let matrix_b_ref = format!("matrix:{}::{}", output.display(), sample_b_name);
+
+        let direct_a = ProfileHandler::load_profile_auto(&profile_a)
+            .expect("Failed to load direct profile_a");
+        let direct_b = ProfileHandler::load_profile_auto(&profile_b)
+            .expect("Failed to load direct profile_b");
+
+        let matrix_a = ProfileHandler::load_profile(&matrix_a_ref, Some("GTDB"), None::<&str>)
+            .expect("Failed to load matrix-derived profile_a");
+        let matrix_b = ProfileHandler::load_profile(&matrix_b_ref, Some("GTDB"), None::<&str>)
+            .expect("Failed to load matrix-derived profile_b");
+
+        let direct_a_map = species_abundance_map(&direct_a);
+        let direct_b_map = species_abundance_map(&direct_b);
+        let matrix_a_map = species_abundance_map(&matrix_a);
+        let matrix_b_map = species_abundance_map(&matrix_b);
+
+        assert_eq!(direct_a_map.len(), matrix_a_map.len());
+        assert_eq!(direct_b_map.len(), matrix_b_map.len());
+
+        for (taxon, direct_abundance) in &direct_a_map {
+            let matrix_abundance = matrix_a_map
+                .get(taxon)
+                .expect("Matrix profile_a is missing expected species");
+            assert!(
+                (direct_abundance - matrix_abundance).abs() < 1e-12,
+                "Mismatch for profile_a taxon {}: direct={}, matrix={}",
+                taxon,
+                direct_abundance,
+                matrix_abundance
+            );
+        }
+        for (taxon, direct_abundance) in &direct_b_map {
+            let matrix_abundance = matrix_b_map
+                .get(taxon)
+                .expect("Matrix profile_b is missing expected species");
+            assert!(
+                (direct_abundance - matrix_abundance).abs() < 1e-12,
+                "Mismatch for profile_b taxon {}: direct={}, matrix={}",
+                taxon,
+                direct_abundance,
+                matrix_abundance
+            );
+        }
 
         Ok(())
     }

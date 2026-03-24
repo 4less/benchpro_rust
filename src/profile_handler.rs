@@ -10,7 +10,7 @@ use log::{debug, info, warn};
 
 use crate::{
     common::{ChocoPhlAn, Custom, TaxonomicRank, GTDB, NCBI},
-    format::{Auto, Columns, Custom as CustomFormat, ProfileFormat, CAMI},
+    format::{Auto, Columns, Custom as CustomFormat, ProfileFormat},
     meta::Meta,
     profile::{LoadProfile, Profile, ProfileWrapper},
     utils::load_file_lineages_to_hashset,
@@ -296,123 +296,182 @@ impl ProfileHandler {
             return Self::load_matrix_profile(&matrix_path, &column, taxonomy);
         }
 
-        let mut file = File::open(&path).unwrap();
-        let columns = column_format.map_or(None, |str| Columns::from_format_str(str.as_ref()).ok());
-        let taxonomy_label = taxonomy
-            .as_ref()
-            .map(|value| value.as_ref())
-            .unwrap_or("Unknown");
-
-        let profile = if columns.is_some() {
-            info!(
-                "Profile format detected: Custom (columns provided); taxonomy: {}; path: {}",
-                taxonomy_label,
-                path.as_ref().display()
-            );
-            match taxonomy {
-                Some(s) if s.as_ref().starts_with("GTDB") => {
-                    match Profile::<GTDB>::load::<CustomFormat, _>(&mut file, columns) {
-                        Ok(profile) => Some(profile.wrap()),
-                        Err(e) => {
-                            warn!(
-                                "GTDB Custom Error: {}\nFile: {}",
-                                e,
-                                path.as_ref().display()
-                            );
-                            None
-                        }
-                    }
-                }
-                Some(s) if s.as_ref().starts_with("NCBI") => {
-                    match Profile::<NCBI>::load::<CustomFormat, _>(&mut file, columns) {
-                        Ok(profile) => Some(profile.wrap()),
-                        Err(e) => {
-                            warn!(
-                                "NCBI Custom Error: {}\nFile: {}",
-                                e,
-                                path.as_ref().display()
-                            );
-                            None
-                        }
-                    }
-                }
-                Some(s) if s.as_ref().starts_with("ChocoPhlAn") => {
-                    match Profile::<ChocoPhlAn>::load::<CustomFormat, _>(&mut file, columns) {
-                        Ok(profile) => Some(profile.wrap()),
-                        Err(e) => {
-                            warn!(
-                                "ChocoPhlAn Custom Error: {}\nFile: {}",
-                                e,
-                                path.as_ref().display()
-                            );
-                            None
-                        }
-                    }
-                }
-                Some(_) => match Profile::<Custom>::load::<CustomFormat, _>(&mut file, columns) {
-                    Ok(profile) => Some(profile.wrap()),
-                    Err(e) => {
-                        warn!("Custom Error: {}\nFile: {}", e, path.as_ref().display());
-                        None
-                    }
-                },
-                None => panic!("This should not happen"),
-            }
-        } else {
-            let detected = Auto::detect(&mut file);
-            let _ = file.rewind();
-            info!(
-                "Profile format detected: {}; taxonomy: {}; path: {}",
-                profile_format_label(&detected),
-                taxonomy_label,
-                path.as_ref().display()
-            );
-            match taxonomy {
-                Some(s) if s.as_ref().starts_with("GTDB") => {
-                    match Profile::<GTDB>::load::<Auto, _>(&mut file, columns) {
-                        Ok(profile) => Some(profile.wrap()),
-                        Err(e) => {
-                            warn!(
-                                "GTDB Autodetect Error: {}\nFile: {}",
-                                e,
-                                path.as_ref().display()
-                            );
-                            None
-                        }
-                    }
-                }
-                Some(s) if s.as_ref().starts_with("NCBI") => {
-                    match Profile::<NCBI>::load::<CAMI, _>(&mut file, None) {
-                        Ok(profile) => Some(profile.wrap()),
-                        Err(e) => {
-                            warn!("NCBI CAMI Error: {}", e);
-                            None
-                        }
-                    }
-                }
-                Some(s) if s.as_ref().starts_with("ChocoPhlAn") => {
-                    match Profile::<ChocoPhlAn>::load::<Auto, _>(&mut file, columns) {
-                        Ok(profile) => Some(profile.wrap()),
-                        Err(e) => {
-                            warn!("ChocoPhlAn Auto Error: {}", e);
-                            None
-                        }
-                    }
-                }
-                Some(_) => match Profile::<Custom>::load::<Auto, _>(&mut file, columns) {
-                    Ok(profile) => Some(profile.wrap()),
-                    Err(e) => {
-                        warn!("CAMI Error: {}", e);
-                        None
-                    }
-                },
-                None => panic!("This should not happen"),
+        let mut file = match File::open(&path) {
+            Ok(file) => file,
+            Err(err) => {
+                warn!(
+                    "Failed to open profile '{}': {}",
+                    path.as_ref().display(),
+                    err
+                );
+                return None;
             }
         };
+        let columns = column_format.map_or(None, |str| Columns::from_format_str(str.as_ref()).ok());
+        let detected = Auto::detect(&mut file);
+        let _ = file.rewind();
+        let inferred_taxonomy = taxonomy
+            .as_ref()
+            .map(|value| value.as_ref().to_owned())
+            .unwrap_or_else(|| infer_taxonomy_label(path.as_ref(), &detected));
+        let taxonomy_label = taxonomy
+            .as_ref()
+            .map(|value| value.as_ref().to_owned())
+            .unwrap_or_else(|| inferred_taxonomy.clone());
 
-        profile
+        info!(
+            "Profile format detected: {}; taxonomy: {}; path: {}",
+            profile_format_label(&detected),
+            taxonomy_label,
+            path.as_ref().display()
+        );
+
+        if columns.is_some() {
+            info!(
+                "Using explicit column mapping from meta; taxonomy: {}; path: {}",
+                taxonomy_label,
+                path.as_ref().display()
+            );
+            return load_profile_with_custom_taxonomy(
+                &mut file,
+                path.as_ref(),
+                &inferred_taxonomy,
+                columns,
+            );
+        }
+
+        load_profile_with_auto_taxonomy(&mut file, path.as_ref(), &inferred_taxonomy, columns)
     }
 
+    /// Loads a profile using full auto-detection and inferred taxonomy.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Profile file path
+    ///
+    /// # Returns
+    ///
+    /// Parsed `ProfileWrapper` when loading succeeds.
+    pub fn load_profile_auto(path: impl AsRef<Path>) -> Option<ProfileWrapper> {
+        Self::load_profile(path, None::<&str>, None::<&str>)
+    }
+}
+
+fn load_profile_with_custom_taxonomy(
+    file: &mut File,
+    path: &Path,
+    taxonomy: &str,
+    columns: Option<Columns>,
+) -> Option<ProfileWrapper> {
+    if taxonomy.starts_with("GTDB") {
+        match Profile::<GTDB>::load::<CustomFormat, _>(file, columns) {
+            Ok(profile) => Some(profile.wrap()),
+            Err(err) => {
+                warn!("GTDB Custom Error: {}\nFile: {}", err, path.display());
+                None
+            }
+        }
+    } else if taxonomy.starts_with("NCBI") {
+        match Profile::<NCBI>::load::<CustomFormat, _>(file, columns) {
+            Ok(profile) => Some(profile.wrap()),
+            Err(err) => {
+                warn!("NCBI Custom Error: {}\nFile: {}", err, path.display());
+                None
+            }
+        }
+    } else if taxonomy.starts_with("ChocoPhlAn") {
+        match Profile::<ChocoPhlAn>::load::<CustomFormat, _>(file, columns) {
+            Ok(profile) => Some(profile.wrap()),
+            Err(err) => {
+                warn!("ChocoPhlAn Custom Error: {}\nFile: {}", err, path.display());
+                None
+            }
+        }
+    } else {
+        match Profile::<Custom>::load::<CustomFormat, _>(file, columns) {
+            Ok(profile) => Some(profile.wrap()),
+            Err(err) => {
+                warn!("Custom Error: {}\nFile: {}", err, path.display());
+                None
+            }
+        }
+    }
+}
+
+fn load_profile_with_auto_taxonomy(
+    file: &mut File,
+    path: &Path,
+    taxonomy: &str,
+    columns: Option<Columns>,
+) -> Option<ProfileWrapper> {
+    if taxonomy.starts_with("GTDB") {
+        match Profile::<GTDB>::load::<Auto, _>(file, columns) {
+            Ok(profile) => Some(profile.wrap()),
+            Err(err) => {
+                warn!("GTDB Autodetect Error: {}\nFile: {}", err, path.display());
+                None
+            }
+        }
+    } else if taxonomy.starts_with("NCBI") {
+        match Profile::<NCBI>::load::<Auto, _>(file, columns) {
+            Ok(profile) => Some(profile.wrap()),
+            Err(err) => {
+                warn!("NCBI Autodetect Error: {}\nFile: {}", err, path.display());
+                None
+            }
+        }
+    } else if taxonomy.starts_with("ChocoPhlAn") {
+        match Profile::<ChocoPhlAn>::load::<Auto, _>(file, columns) {
+            Ok(profile) => Some(profile.wrap()),
+            Err(err) => {
+                warn!(
+                    "ChocoPhlAn Autodetect Error: {}\nFile: {}",
+                    err,
+                    path.display()
+                );
+                None
+            }
+        }
+    } else {
+        match Profile::<Custom>::load::<Auto, _>(file, columns) {
+            Ok(profile) => Some(profile.wrap()),
+            Err(err) => {
+                warn!("Custom Autodetect Error: {}\nFile: {}", err, path.display());
+                None
+            }
+        }
+    }
+}
+
+fn infer_taxonomy_label(path: &Path, format: &ProfileFormat) -> String {
+    if matches!(format, ProfileFormat::MetaPhlAn(_)) {
+        return "ChocoPhlAn".to_owned();
+    }
+
+    match detect_gtdb_prefixes(path) {
+        Ok(true) => "GTDB".to_owned(),
+        Ok(false) => "NCBI".to_owned(),
+        Err(_) => "Custom".to_owned(),
+    }
+}
+
+fn detect_gtdb_prefixes(path: &Path) -> std::io::Result<bool> {
+    let file = File::open(path)?;
+    let reader = std::io::BufReader::new(file);
+    let prefixes = [
+        "d__", "k__", "p__", "c__", "o__", "f__", "g__", "s__", "t__",
+    ];
+    for line in reader.lines().flatten() {
+        if line.starts_with('#') || line.starts_with('@') {
+            continue;
+        }
+        if prefixes.iter().any(|prefix| line.contains(prefix)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+impl ProfileHandler {
     /// Builds a handler by loading profiles referenced in a meta file.
     ///
     /// # Arguments

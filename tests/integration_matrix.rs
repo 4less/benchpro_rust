@@ -1,9 +1,4 @@
-use std::{
-    fs,
-    io::Write,
-    path::PathBuf,
-    process::Command,
-};
+use std::{fs, io::Write, path::PathBuf, process::Command};
 
 mod common;
 
@@ -20,10 +15,13 @@ fn test_matrix_output_matches_golden() {
 
     let outprefix = temp_dir.join("test_matrix");
 
-    let profile_matrix = repo_root.join("data/test_data/profiles/predictions/protal/abundance_matrix.tsv");
-    let gold_matrix = repo_root.join("data/test_data/profiles/gold_standard/GTDB/r214/abundance_matrix.tsv");
+    let profile_matrix =
+        repo_root.join("data/test_data/profiles/predictions/protal/abundance_matrix.tsv");
+    let gold_matrix =
+        repo_root.join("data/test_data/profiles/gold_standard/GTDB/r214/abundance_matrix.tsv");
     let tree_path = repo_root.join("data/test_data/trees/gtdb/r214/bac120_r214.sp_labels.tree");
-    let detectable_path = repo_root.join("data/test_data/detectable_species/gtdb_all_species_r214.tsv");
+    let detectable_path =
+        repo_root.join("data/test_data/detectable_species/gtdb_all_species_r214.tsv");
 
     let mut meta_file = fs::File::create(&meta_path).expect("Failed to create matrix meta fixture");
     writeln!(

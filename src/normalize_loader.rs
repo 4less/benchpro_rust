@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use crate::normalize_detect::{DetectionResult, ProfileFormatKind};
 use crate::ncbi_taxdump::NcbiTaxdump;
+use crate::normalize_detect::{DetectionResult, ProfileFormatKind};
 
 /// One normalized record written by the `normalize` command.
 #[derive(Debug, Clone, PartialEq)]
@@ -16,6 +16,14 @@ pub struct NormalizedEntry {
     pub vertical_coverage: Option<f64>,
     /// Optional extensible metadata map for source-specific fields (for example tax IDs).
     pub metadata: BTreeMap<String, String>,
+    /// Detected top-level source format (`cami`, `tool`, `unknown`).
+    pub source_format: String,
+    /// Detected source tool name.
+    pub source_tool: String,
+    /// Detected source version.
+    pub source_version: String,
+    /// Inferred source taxonomy label.
+    pub source_taxonomy: String,
 }
 
 /// Loads and normalizes profile rows into a unified table shape.
@@ -36,7 +44,12 @@ pub fn load_normalized(
     content: &str,
     detection: &DetectionResult,
 ) -> Result<Vec<NormalizedEntry>, String> {
-    load_normalized_for_kind(content, &detection.format, &detection.tool)
+    load_normalized_for_kind(
+        content,
+        &detection.format,
+        &detection.tool,
+        &detection.version,
+    )
 }
 
 /// Loads and normalizes profile rows from an explicit format/tool pair.
@@ -44,8 +57,9 @@ pub fn load_normalized_for_kind(
     content: &str,
     format: &ProfileFormatKind,
     tool: &str,
+    version: &str,
 ) -> Result<Vec<NormalizedEntry>, String> {
-    match format {
+    let mut entries = match format {
         ProfileFormatKind::Cami => load_cami(content),
         ProfileFormatKind::Tool => match tool {
             "bracken" => load_bracken(content),
@@ -57,7 +71,17 @@ pub fn load_normalized_for_kind(
             _ => load_generic_tool(content),
         },
         ProfileFormatKind::Unknown => load_generic_tool(content),
+    }?;
+
+    let taxonomy = infer_taxonomy(tool, &entries);
+    for entry in &mut entries {
+        entry.source_format = format.as_str().to_owned();
+        entry.source_tool = tool.to_owned();
+        entry.source_version = version.to_owned();
+        entry.source_taxonomy = taxonomy.to_owned();
     }
+
+    Ok(entries)
 }
 
 fn load_cami(content: &str) -> Result<Vec<NormalizedEntry>, String> {
@@ -108,6 +132,10 @@ fn load_cami(content: &str) -> Result<Vec<NormalizedEntry>, String> {
             abundance,
             vertical_coverage: None,
             metadata: metadata_with_taxpath_ids(taxpath_ids),
+            source_format: String::new(),
+            source_tool: String::new(),
+            source_version: String::new(),
+            source_taxonomy: String::new(),
         });
     }
 
@@ -165,6 +193,10 @@ fn load_metaphlan_tool(content: &str) -> Result<Vec<NormalizedEntry>, String> {
             abundance,
             vertical_coverage: None,
             metadata: BTreeMap::new(),
+            source_format: String::new(),
+            source_tool: String::new(),
+            source_version: String::new(),
+            source_taxonomy: String::new(),
         });
     }
 
@@ -237,6 +269,10 @@ fn load_sylph(content: &str) -> Result<Vec<NormalizedEntry>, String> {
             abundance,
             vertical_coverage,
             metadata: BTreeMap::new(),
+            source_format: String::new(),
+            source_tool: String::new(),
+            source_version: String::new(),
+            source_taxonomy: String::new(),
         });
     }
 
@@ -294,6 +330,10 @@ fn load_bracken(content: &str) -> Result<Vec<NormalizedEntry>, String> {
             abundance,
             vertical_coverage: None,
             metadata: metadata_with_taxpath_ids(taxid.map(|value| value.to_string())),
+            source_format: String::new(),
+            source_tool: String::new(),
+            source_version: String::new(),
+            source_taxonomy: String::new(),
         });
     }
 
@@ -325,6 +365,10 @@ fn load_mg_tk_two_col(content: &str) -> Result<Vec<NormalizedEntry>, String> {
             abundance,
             vertical_coverage: None,
             metadata: BTreeMap::new(),
+            source_format: String::new(),
+            source_tool: String::new(),
+            source_version: String::new(),
+            source_taxonomy: String::new(),
         });
     }
 
@@ -360,6 +404,10 @@ fn load_protal_three_col(content: &str) -> Result<Vec<NormalizedEntry>, String> 
             abundance,
             vertical_coverage: None,
             metadata: BTreeMap::new(),
+            source_format: String::new(),
+            source_tool: String::new(),
+            source_version: String::new(),
+            source_taxonomy: String::new(),
         });
     }
 
@@ -400,6 +448,10 @@ fn load_motus_relab(content: &str) -> Result<Vec<NormalizedEntry>, String> {
             abundance,
             vertical_coverage: None,
             metadata: BTreeMap::new(),
+            source_format: String::new(),
+            source_tool: String::new(),
+            source_version: String::new(),
+            source_taxonomy: String::new(),
         });
     }
 
@@ -534,6 +586,29 @@ fn metadata_with_taxpath_ids(taxpath_ids: Option<String>) -> BTreeMap<String, St
     metadata
 }
 
+fn infer_taxonomy(tool: &str, entries: &[NormalizedEntry]) -> &'static str {
+    if tool.eq_ignore_ascii_case("bracken") {
+        return "NCBI";
+    }
+    if tool.eq_ignore_ascii_case("metaphlan") {
+        return "ChocoPhlAn";
+    }
+    if entries.iter().any(|entry| {
+        entry.lineage.contains("d__")
+            || entry.lineage.contains("k__")
+            || entry.lineage.contains("p__")
+    }) {
+        return "GTDB";
+    }
+    if entries
+        .iter()
+        .any(|entry| entry.metadata.contains_key("taxpath_ids"))
+    {
+        return "NCBI";
+    }
+    "Custom"
+}
+
 #[cfg(test)]
 mod tests {
     use crate::normalize_detect::detect_profile;
@@ -564,9 +639,7 @@ mod tests {
         assert!(entries
             .iter()
             .any(|entry| entry.vertical_coverage.is_some()));
-        assert!(entries
-            .iter()
-            .any(|entry| entry.lineage.contains("t__")));
+        assert!(entries.iter().any(|entry| entry.lineage.contains("t__")));
     }
 
     #[test]
@@ -578,7 +651,9 @@ mod tests {
         let detection = detect_profile(content);
         let entries = load_normalized(content, &detection).expect("failed to load sylph example");
         assert!(!entries.is_empty());
-        assert!(entries.iter().any(|entry| entry.vertical_coverage.is_some()));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.vertical_coverage.is_some()));
     }
 
     #[test]
@@ -599,10 +674,7 @@ mod tests {
     fn trims_to_species_plus_optional_t_rank() {
         let lineage = "k__Bacteria|p__P|c__C|o__O|f__F|g__G|s__S|t__SGB1|x__ignored";
         let trimmed = trim_lineage_to_standard_ranks(lineage);
-        assert_eq!(
-            trimmed,
-            "k__Bacteria|p__P|c__C|o__O|f__F|g__G|s__S|t__SGB1"
-        );
+        assert_eq!(trimmed, "k__Bacteria|p__P|c__C|o__O|f__F|g__G|s__S|t__SGB1");
     }
 
     #[test]

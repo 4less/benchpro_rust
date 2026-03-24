@@ -34,14 +34,20 @@ pub fn run(args: &NormalizeArgs) {
         .as_deref()
         .expect("Output path is required unless --detect is provided");
 
-    let entries = load_normalized_for_kind(&content, &detection.format, &detection.tool)
-        .unwrap_or_else(|err| panic!("Failed to load profile: {err}"));
+    let entries = load_normalized_for_kind(
+        &content,
+        &detection.format,
+        &detection.tool,
+        &detection.version,
+    )
+    .unwrap_or_else(|err| panic!("Failed to load profile: {err}"));
 
     let mut output = File::create(output_path).expect("Failed to create output file");
     writeln!(output, "#source_profile\t{}", args.input).expect("Failed to write metadata header");
     writeln!(output, "#detected_format\t{}", detection.format.as_str())
         .expect("Failed to write metadata header");
-    writeln!(output, "#detected_tool\t{}", detection.tool).expect("Failed to write metadata header");
+    writeln!(output, "#detected_tool\t{}", detection.tool)
+        .expect("Failed to write metadata header");
     writeln!(output, "#detected_version\t{}", detection.version)
         .expect("Failed to write metadata header");
     match args.output_format {
@@ -157,9 +163,16 @@ mod tests {
             vertical_coverage: None,
             metadata: {
                 let mut map = BTreeMap::new();
-                map.insert("taxpath_ids".to_owned(), "2|1224|1|2|3|4|5|987654".to_owned());
+                map.insert(
+                    "taxpath_ids".to_owned(),
+                    "2|1224|1|2|3|4|5|987654".to_owned(),
+                );
                 map
             },
+            source_format: "cami".to_owned(),
+            source_tool: "metaphlan".to_owned(),
+            source_version: "X".to_owned(),
+            source_taxonomy: "GTDB".to_owned(),
         }];
         let mut out = Vec::new();
         write_cami(&mut out, "sample.profile", "X", &entries);

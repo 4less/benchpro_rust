@@ -33,8 +33,12 @@ impl NcbiTaxdump {
     ///
     /// Returns an error if taxonomy files cannot be read or parsed.
     pub fn load_or_prepare_from_root(root: &Path) -> Result<Self, String> {
-        fs::create_dir_all(root)
-            .map_err(|err| format!("Cannot create taxdump directory '{}': {err}", root.display()))?;
+        fs::create_dir_all(root).map_err(|err| {
+            format!(
+                "Cannot create taxdump directory '{}': {err}",
+                root.display()
+            )
+        })?;
 
         let nodes = root.join("nodes.dmp");
         let names = root.join("names.dmp");
@@ -130,9 +134,8 @@ impl NcbiTaxdump {
         let mut rank_by_taxid = HashMap::new();
         let mut scientific_name_by_taxid = HashMap::new();
 
-        let nodes_file = File::open(nodes_path).map_err(|err| {
-            format!("Cannot open nodes.dmp '{}': {err}", nodes_path.display())
-        })?;
+        let nodes_file = File::open(nodes_path)
+            .map_err(|err| format!("Cannot open nodes.dmp '{}': {err}", nodes_path.display()))?;
         for line in BufReader::new(nodes_file).lines() {
             let line = line.map_err(|err| {
                 format!("Failed reading nodes.dmp '{}': {err}", nodes_path.display())
@@ -153,9 +156,8 @@ impl NcbiTaxdump {
             rank_by_taxid.insert(taxid, fields[2].to_owned());
         }
 
-        let names_file = File::open(names_path).map_err(|err| {
-            format!("Cannot open names.dmp '{}': {err}", names_path.display())
-        })?;
+        let names_file = File::open(names_path)
+            .map_err(|err| format!("Cannot open names.dmp '{}': {err}", names_path.display()))?;
         for line in BufReader::new(names_file).lines() {
             let line = line.map_err(|err| {
                 format!("Failed reading names.dmp '{}': {err}", names_path.display())

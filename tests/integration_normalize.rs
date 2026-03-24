@@ -89,20 +89,25 @@ fn test_normalize_plain_regression_examples() {
         let version = lines.next().unwrap_or_default();
         let header = lines.next().unwrap_or_default();
 
-        assert!(source.starts_with("#source_profile\t"), "missing source header");
+        assert!(
+            source.starts_with("#source_profile\t"),
+            "missing source header"
+        );
         assert!(
             source.ends_with(input),
             "source path header should match input for {input}"
         );
-        assert!(format.starts_with("#detected_format\t"), "missing format header");
+        assert!(
+            format.starts_with("#detected_format\t"),
+            "missing format header"
+        );
         assert!(tool.starts_with("#detected_tool\t"), "missing tool header");
         assert!(
             version.starts_with("#detected_version\t"),
             "missing version header"
         );
         assert_eq!(
-            header,
-            "identifier\tlineage\tabundance\tvertical_coverage",
+            header, "identifier\tlineage\tabundance\tvertical_coverage",
             "unexpected data header for {input}"
         );
 

@@ -234,18 +234,9 @@ fn load_msa_jobs(path: &Path) -> Result<Vec<MsaJob>, MsaError> {
         ))
     })?;
 
-    let ids = df
-        .column(&id_col)?
-        .str()
-        .map_err(MsaError::Polars)?;
-    let msas = df
-        .column(&msa_col)?
-        .str()
-        .map_err(MsaError::Polars)?;
-    let metas = df
-        .column(&meta_col)?
-        .str()
-        .map_err(MsaError::Polars)?;
+    let ids = df.column(&id_col)?.str().map_err(MsaError::Polars)?;
+    let msas = df.column(&msa_col)?.str().map_err(MsaError::Polars)?;
+    let metas = df.column(&meta_col)?.str().map_err(MsaError::Polars)?;
 
     let mut jobs = Vec::with_capacity(df.height());
     for row in 0..df.height() {
@@ -274,10 +265,7 @@ fn load_msa_jobs(path: &Path) -> Result<Vec<MsaJob>, MsaError> {
 
 fn load_msa_genome_groups(path: &Path) -> Result<BTreeMap<String, Vec<String>>, MsaError> {
     let df = Meta::polars_from_path(path).ok_or_else(|| {
-        MsaError::Meta(format!(
-            "Failed to read MSA meta file '{}'",
-            path.display()
-        ))
+        MsaError::Meta(format!("Failed to read MSA meta file '{}'", path.display()))
     })?;
 
     let id_col = find_column_name(&df, MsaSampleColumns::ID).ok_or_else(|| {
@@ -295,14 +283,8 @@ fn load_msa_genome_groups(path: &Path) -> Result<BTreeMap<String, Vec<String>>, 
         ))
     })?;
 
-    let ids = df
-        .column(&id_col)?
-        .str()
-        .map_err(MsaError::Polars)?;
-    let genomes = df
-        .column(&genome_col)?
-        .str()
-        .map_err(MsaError::Polars)?;
+    let ids = df.column(&id_col)?.str().map_err(MsaError::Polars)?;
+    let genomes = df.column(&genome_col)?.str().map_err(MsaError::Polars)?;
 
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for row in 0..df.height() {
@@ -356,7 +338,10 @@ fn read_fasta_alignment(path: &Path) -> Result<Alignment, MsaError> {
         }
         if trimmed.starts_with('>') {
             if let Some(id) = current_id.take() {
-                if sequences.insert(id, std::mem::take(&mut current_seq)).is_some() {
+                if sequences
+                    .insert(id, std::mem::take(&mut current_seq))
+                    .is_some()
+                {
                     return Err(MsaError::Msa(format!(
                         "Duplicate sequence id in '{}'",
                         path.display()
@@ -828,7 +813,10 @@ fn write_sample_overlap_plots(stats: &[OverlapStats], output: &Path) -> Result<(
 fn write_genome_overlap_plots(stats: &[OverlapStats], output: &Path) -> Result<(), MsaError> {
     let mut msa_groups: BTreeMap<String, Vec<&OverlapStats>> = BTreeMap::new();
     for stat in stats {
-        msa_groups.entry(stat.msa_id.clone()).or_default().push(stat);
+        msa_groups
+            .entry(stat.msa_id.clone())
+            .or_default()
+            .push(stat);
     }
 
     for (msa_id, entries) in msa_groups {
@@ -846,11 +834,7 @@ fn write_genome_overlap_plots(stats: &[OverlapStats], output: &Path) -> Result<(
         genome_entries.sort_by(|a, b| a.0.cmp(&b.0));
         html.push_str("<section class=\"genome-list\"><h2>Genomes</h2><ul>");
         for (genome, stats) in &genome_entries {
-            html.push_str(&format!(
-                "<li>{} ({} rows)</li>",
-                genome,
-                stats.len()
-            ));
+            html.push_str(&format!("<li>{} ({} rows)</li>", genome, stats.len()));
         }
         html.push_str("</ul></section>\n");
 

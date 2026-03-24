@@ -143,7 +143,9 @@ impl Columns {
         // 2: each token contains a GTDB-style rank prefix (e.g., "g__")
         let subtokens = str.split(gtdb_delimiter).collect::<Vec<_>>();
 
-        let prefixes = ["d__", "k__", "p__", "c__", "o__", "f__", "g__", "s__", "t__"];
+        let prefixes = [
+            "d__", "k__", "p__", "c__", "o__", "f__", "g__", "s__", "t__",
+        ];
         subtokens
             .iter()
             .all(|token| prefixes.iter().any(|prefix| token.contains(prefix)))
@@ -998,8 +1000,10 @@ mod tests {
     use crate::format::{set_cami_ignore_lineage_error, Auto, Columns, ProfileFormat};
     use crate::profile::{LoadProfile, Profile};
 
-    const NCBI_TEST_DIR: &str =
-        concat!(env!("CARGO_MANIFEST_DIR"), "/data/test_data/profiles/gold_standard/NCBI");
+    const NCBI_TEST_DIR: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/data/test_data/profiles/gold_standard/NCBI"
+    );
     const NCBI_MOTUS_MOUSE_DIR: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/data/test_data/profiles/predictions/mOTUs3/mouse"

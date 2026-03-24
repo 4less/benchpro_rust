@@ -183,21 +183,25 @@ fn is_metaphlan_tool(lines: &[&str]) -> bool {
 }
 
 fn is_protal(lines: &[&str]) -> bool {
-    lines.iter().filter(|line| !line.starts_with('#')).take(8).any(|line| {
-        let tokens = line.split('\t').collect::<Vec<_>>();
-        if tokens.len() < 3 {
-            return false;
-        }
-        let first_col = tokens[0].trim().to_ascii_lowercase();
-        if first_col == "motu" || first_col.starts_with("motuv") {
-            return false;
-        }
-        let lineage = tokens[1];
-        let abundance_ok = tokens[2].trim().parse::<f64>().is_ok();
-        abundance_ok
-            && (lineage.contains("d__") || lineage.contains("k__"))
-            && (lineage.contains('|') || lineage.contains(';'))
-    })
+    lines
+        .iter()
+        .filter(|line| !line.starts_with('#'))
+        .take(8)
+        .any(|line| {
+            let tokens = line.split('\t').collect::<Vec<_>>();
+            if tokens.len() < 3 {
+                return false;
+            }
+            let first_col = tokens[0].trim().to_ascii_lowercase();
+            if first_col == "motu" || first_col.starts_with("motuv") {
+                return false;
+            }
+            let lineage = tokens[1];
+            let abundance_ok = tokens[2].trim().parse::<f64>().is_ok();
+            abundance_ok
+                && (lineage.contains("d__") || lineage.contains("k__"))
+                && (lineage.contains('|') || lineage.contains(';'))
+        })
 }
 
 fn is_motus_relab(lines: &[&str]) -> bool {
