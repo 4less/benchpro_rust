@@ -37,11 +37,7 @@ pub enum MergeError {
     Polars(#[from] polars::error::PolarsError),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct TaxonKey {
-    rank: TaxonomicRank,
-    name: String,
-}
+type TaxonKey = String;
 
 /// Merge profiles into an abundance matrix and write it to disk.
 ///
@@ -157,7 +153,7 @@ fn build_abundance_matrix(
     let mut columns = Vec::with_capacity(1 + sample_names.len());
     columns.push(Series::new(
         "Taxon".into(),
-        taxa_sorted.iter().map(|t| t.name.as_str()).collect_vec(),
+        taxa_sorted.iter().map(|t| t.as_str()).collect_vec(),
     ));
 
     for (sample_index, sample_name) in sample_names.iter().enumerate() {
@@ -247,7 +243,7 @@ fn collect_abundances_from_profile<T: Taxonomy>(
         if entry.abundance == 0.0 {
             continue;
         }
-        if let Some(key) = taxon_key(entry, target_rank, path, index)? {
+        if let Some(key) = lineage_key(entry, target_rank, path, index)? {
             *map.entry(key.clone()).or_insert(0.0) += entry.abundance;
             taxa.insert(key);
         }
@@ -278,17 +274,19 @@ fn collect_abundances_from_wrapper(
     }
 }
 
-fn taxon_key<T: Taxonomy>(
+fn lineage_key<T: Taxonomy>(
     entry: &Entry<T>,
     target_rank: &TaxonomicRank,
     path: &Path,
     entry_index: usize,
 ) -> Result<Option<TaxonKey>, MergeError> {
-    let row = read_culprit_row(path, entry_index);
-    let row_label = row
-        .as_deref()
-        .map(|value| format!("row='{}'", value))
-        .unwrap_or_else(|| "row=<unavailable>".to_string());
+    // Closure so file I/O only happens when an error is actually constructed.
+    let row_label = || {
+        read_culprit_row(path, entry_index)
+            .map(|value| format!("row='{}'", value))
+            .unwrap_or_else(|| "row=<unavailable>".to_string())
+    };
+
     if entry.rank == TaxonomicRank::Unknown
         && entry.lineage.is_none()
         && entry
@@ -296,10 +294,7 @@ fn taxon_key<T: Taxonomy>(
             .as_deref()
             .is_some_and(|name| name.trim().eq_ignore_ascii_case("UNCLASSIFIED"))
     {
-        return Ok(Some(TaxonKey {
-            rank: target_rank.clone(),
-            name: "UNCLASSIFIED".to_owned(),
-        }));
+        return Ok(Some(format!("{}UNCLASSIFIED", rank_prefix(target_rank))));
     }
 
     if entry.rank == TaxonomicRank::Unknown && entry.lineage.is_none() {
@@ -309,7 +304,7 @@ fn taxon_key<T: Taxonomy>(
                 "Entry {} has no rank and no lineage; entry={}; {}",
                 entry_index,
                 entry_context(entry),
-                row_label
+                row_label()
             )],
         });
     }
@@ -329,9 +324,27 @@ fn taxon_key<T: Taxonomy>(
             "Unable to determine rank for entry {}; entry={}; {}",
             entry_index,
             entry_context(entry),
-            row_label
+            row_label()
         )],
     })?;
+
+    if let Some(lineage) = entry.lineage.as_ref() {
+        if lineage.get(target_rank).is_some() {
+            let delimiter = match T::get_enum() {
+                crate::common::TaxonomyEnum::NCBI => "|",
+                _ => ";",
+            };
+            let key = TaxonomicRank::all()
+                .into_iter()
+                .filter(|rank| *rank != TaxonomicRank::Unknown)
+                .filter(|rank| *rank <= *target_rank)
+                .filter_map(|rank| lineage.get(&rank).map(|taxon| taxon.name.clone()))
+                .join(delimiter);
+            if !key.is_empty() {
+                return Ok(Some(key));
+            }
+        }
+    }
 
     if &resolved_rank != target_rank {
         return Ok(None);
@@ -359,7 +372,7 @@ fn taxon_key<T: Taxonomy>(
                 "Unable to determine taxon name for entry {}; entry={}; {}",
                 entry_index,
                 entry_context(entry),
-                row_label
+                row_label()
             )],
         })?;
 
@@ -369,10 +382,27 @@ fn taxon_key<T: Taxonomy>(
         }
     }
 
-    Ok(Some(TaxonKey {
-        rank: resolved_rank,
-        name,
-    }))
+    let prefix = rank_prefix(&resolved_rank);
+    if prefix.is_empty() || name.starts_with(prefix) {
+        Ok(Some(name))
+    } else {
+        Ok(Some(format!("{}{}", prefix, name)))
+    }
+}
+
+fn rank_prefix(rank: &TaxonomicRank) -> &'static str {
+    match rank {
+        TaxonomicRank::Superkingdom => "k__",
+        TaxonomicRank::Domain => "d__",
+        TaxonomicRank::Phylum => "p__",
+        TaxonomicRank::Class => "c__",
+        TaxonomicRank::Order => "o__",
+        TaxonomicRank::Family => "f__",
+        TaxonomicRank::Genus => "g__",
+        TaxonomicRank::Species => "s__",
+        TaxonomicRank::Strain => "t__",
+        TaxonomicRank::Unknown => "",
+    }
 }
 
 fn dedupe_sample_name(
@@ -680,10 +710,47 @@ mod tests {
         assert!(output_content.contains("Taxon"));
         assert!(output_content.contains("profile_a"));
         assert!(output_content.contains("profile_b"));
-        assert!(output_content.contains("s__Foo"));
-        assert!(output_content.contains("s__Bar"));
-        assert!(output_content.contains("s__Baz"));
+        assert!(output_content.contains("d__Bacteria;p__Firmicutes;s__Foo"));
+        assert!(output_content.contains("d__Bacteria;p__Firmicutes;s__Bar"));
+        assert!(output_content.contains("d__Bacteria;p__Firmicutes;s__Baz"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn merges_genus_matrix_uses_full_lineage_and_aggregates_lower_ranks() -> Result<(), MergeError> {
+        let profile = temp_path("profile_genus.tsv");
+        let output = temp_path("abundance_genus.tsv");
+
+        let header = "Lineage\tabundance\n";
+        let content = format!(
+            "{}{}\n{}\n{}",
+            header,
+            "d__Bacteria;p__Firmicutes;g__Alpha;s__Foo\t0.1",
+            "d__Bacteria;p__Firmicutes;g__Alpha;s__Bar\t0.2",
+            "d__Bacteria;p__Firmicutes;g__Beta;s__Baz\t0.7"
+        );
+
+        write_profile(&profile, &content);
+
+        merge_profiles(&[profile.clone()], &output, &TaxonomicRank::Genus)?;
+
+        let output_content = fs::read_to_string(&output).expect("Failed to read output");
+        assert!(output_content.contains("d__Bacteria;p__Firmicutes;g__Alpha"));
+        assert!(output_content.contains("d__Bacteria;p__Firmicutes;g__Beta"));
+
+        let alpha_line = output_content
+            .lines()
+            .find(|line| line.starts_with("d__Bacteria;p__Firmicutes;g__Alpha\t"))
+            .expect("Expected genus Alpha row in merged matrix");
+        let tokens = alpha_line.split('\t').collect::<Vec<_>>();
+        let alpha_value = tokens
+            .get(1)
+            .expect("Missing alpha abundance")
+            .parse::<f64>()
+            .expect("Invalid alpha abundance");
+
+        assert!((alpha_value - 0.3).abs() < 1e-12);
         Ok(())
     }
 
@@ -757,7 +824,9 @@ mod tests {
         let mut alpha_values: Option<(f64, f64)> = None;
         for line in lines {
             let tokens = line.split('\t').collect::<Vec<_>>();
-            if tokens.first().copied() == Some("s__Alpha") {
+            if tokens.first().copied()
+                == Some("d__Bacteria;p__Firmicutes;s__Alpha")
+            {
                 let a = tokens
                     .get(sample_a_col)
                     .expect("Missing profile_a alpha abundance")
