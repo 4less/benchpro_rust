@@ -232,6 +232,19 @@ fn load_profile_auto(path: &Path) -> Result<ProfileWrapper, MergeError> {
     })
 }
 
+/// Returns the resolved rank for an entry: explicit rank if set, otherwise
+/// derived from the lowest node in the lineage.
+fn resolved_rank_of<T: Taxonomy>(entry: &Entry<T>) -> TaxonomicRank {
+    if entry.rank != TaxonomicRank::Unknown {
+        return entry.rank.clone();
+    }
+    entry
+        .lineage
+        .as_ref()
+        .and_then(|l| l.lowest().and_then(|t| t.rank.clone()))
+        .unwrap_or(TaxonomicRank::Unknown)
+}
+
 fn collect_abundances_from_profile<T: Taxonomy>(
     profile: &Profile<T>,
     target_rank: &TaxonomicRank,
@@ -239,8 +252,25 @@ fn collect_abundances_from_profile<T: Taxonomy>(
     map: &mut HashMap<TaxonKey, f64>,
     taxa: &mut HashSet<TaxonKey>,
 ) -> Result<(), MergeError> {
+    // If the profile already has entries at exactly the target rank, restrict
+    // collection to those entries only. This prevents double-counting in
+    // profiles that list every rank independently (e.g. CAMI / sylph), where
+    // a strain entry's lineage also contains the parent species and would
+    // otherwise be aggregated into the species bucket alongside the explicit
+    // species entry.
+    //
+    // If the profile has *no* entries at the target rank (e.g. a species-only
+    // profile targeted at genus), we fall back to aggregating finer entries.
+    let has_explicit_target_rank = profile
+        .taxa
+        .iter()
+        .any(|e| resolved_rank_of(e) == *target_rank);
+
     for (index, entry) in profile.taxa.iter().enumerate() {
         if entry.abundance == 0.0 {
+            continue;
+        }
+        if has_explicit_target_rank && resolved_rank_of(entry) != *target_rank {
             continue;
         }
         if let Some(key) = lineage_key(entry, target_rank, path, index)? {
@@ -968,6 +998,67 @@ d__Bacteria;p__Firmicutes;s__Foo\t97.5
                 || output_content.contains("\ns__UNCLASSIFIED\t2.500000"),
             "Expected s__UNCLASSIFIED row in merged matrix, got:\n{}",
             output_content
+        );
+
+        Ok(())
+    }
+
+    // Regression test for sylph/CAMI-style profiles that list every rank
+    // explicitly. These profiles have a strain entry for every species entry
+    // with the same abundance value. Without the `has_explicit_target_rank`
+    // guard, both the species entry and its child strain entry would be mapped
+    // to the same species key, doubling all abundances (~200 instead of ~100).
+    #[test]
+    fn no_double_count_when_profile_has_species_and_strain_entries() -> Result<(), MergeError> {
+        let profile = temp_path("profile_sylph_like.tsv");
+        let output = temp_path("abundance_sylph_like.tsv");
+
+        // Each species has a corresponding strain with the same abundance,
+        // mirroring what sylph outputs.
+        let content = "\
+Lineage\tabundance
+d__Bacteria;p__Firmicutes;g__Foo;s__Foo alpha\t60.0
+d__Bacteria;p__Firmicutes;g__Bar;s__Bar beta\t40.0
+d__Bacteria;p__Firmicutes;g__Foo;s__Foo alpha;t__GCF_001\t60.0
+d__Bacteria;p__Firmicutes;g__Bar;s__Bar beta;t__GCF_002\t40.0
+";
+        write_profile(&profile, content);
+
+        merge_profiles(&[profile], &output, &TaxonomicRank::Species)?;
+
+        let output_content = fs::read_to_string(output).expect("Failed to read output");
+
+        // Each species row should appear exactly once, not doubled.
+        let foo_line = output_content
+            .lines()
+            .find(|l| l.contains("s__Foo alpha"))
+            .expect("Missing s__Foo alpha row");
+        let foo_val: f64 = foo_line
+            .split('\t')
+            .nth(1)
+            .expect("Missing value column")
+            .parse()
+            .expect("Non-numeric value");
+        assert!(
+            (foo_val - 60.0).abs() < 1e-9,
+            "Expected s__Foo alpha = 60, got {} (double-counting?)",
+            foo_val
+        );
+
+        let bar_line = output_content
+            .lines()
+            .find(|l| l.contains("s__Bar beta"))
+            .expect("Missing s__Bar beta row");
+        let bar_val: f64 = bar_line
+            .split('\t')
+            .nth(1)
+            .expect("Missing value column")
+            .parse()
+            .expect("Non-numeric value");
+        assert!(
+            (bar_val - 40.0).abs() < 1e-9,
+            "Expected s__Bar beta = 40, got {} (double-counting?)",
+            bar_val
         );
 
         Ok(())
