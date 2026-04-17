@@ -207,6 +207,7 @@ dependencies = [
  "clap",
  "clap_derive",
  "env_logger",
+ "flate2",
  "indicatif 0.18.3",
  "indoc",
  "itertools 0.13.0",

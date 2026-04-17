@@ -3,6 +3,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
+use flate2::read::GzDecoder;
+
 use log::{info, warn};
 use plotly::layout::Layout;
 use plotly::{Bar, Plot};
@@ -317,15 +319,21 @@ fn find_column_name(df: &DataFrame, expected: &str) -> Option<String> {
 }
 
 #[derive(Debug)]
-struct Alignment {
-    sequences: HashMap<String, Vec<u8>>,
-    length: usize,
+pub struct Alignment {
+    pub sequences: HashMap<String, Vec<u8>>,
+    pub length: usize,
 }
 
-fn read_fasta_alignment(path: &Path) -> Result<Alignment, MsaError> {
+pub fn read_fasta_alignment(path: &Path) -> Result<Alignment, MsaError> {
     let file = File::open(path)?;
-    let reader = BufReader::new(file);
+    if path.extension().and_then(|e| e.to_str()) == Some("gz") {
+        read_fasta_from_reader(BufReader::new(GzDecoder::new(file)), path)
+    } else {
+        read_fasta_from_reader(BufReader::new(file), path)
+    }
+}
 
+fn read_fasta_from_reader(reader: impl BufRead, path: &Path) -> Result<Alignment, MsaError> {
     let mut sequences: HashMap<String, Vec<u8>> = HashMap::new();
     let mut current_id: Option<String> = None;
     let mut current_seq: Vec<u8> = Vec::new();
