@@ -7,6 +7,7 @@ pub mod format;
 pub mod merge;
 pub mod meta;
 pub mod msa;
+pub mod strain;
 pub mod ncbi_taxdump;
 pub mod normalize;
 pub mod normalize_detect;
@@ -59,8 +60,10 @@ fn main() {
             run(&profile_args.common);
         }
         Command::Strain(strain_args) => {
-            set_cami_ignore_lineage_error(strain_args.common.cami_ignore_lineage_error);
-            run(&strain_args.common);
+            if let Err(err) = strain::run_strain(strain_args) {
+                error!("Strain benchmarking failed: {}", err);
+                std::process::exit(1);
+            }
         }
         Command::Merge(merge_args) => {
             set_cami_ignore_lineage_error(merge_args.cami_ignore_lineage_error);

@@ -50,9 +50,14 @@ pub struct ProfileArgs {
 /// CLI arguments for the `strain` subcommand.
 #[derive(ClapArgs, Debug, Clone)]
 pub struct StrainArgs {
-    /// Common benchmark arguments.
-    #[command(flatten)]
-    pub common: CommonArgs,
+    /// Samplesheet meta file with columns: ID, Species, MSA, Tree, Meta.
+    #[arg(short = 'm', long, required = true, value_name = "PATH")]
+    pub meta: std::path::PathBuf,
+
+    /// Output prefix for strain benchmarking files.
+    /// E.g. `--outprefix results/run1` produces `results/run1.monophyly.tsv`.
+    #[arg(short = 'o', long, required = true, value_name = "PREFIX")]
+    pub outprefix: String,
 }
 
 /// CLI arguments for the `normalize` subcommand.
@@ -195,16 +200,14 @@ mod tests {
             "out",
             "--log-level",
             "debug",
-            "--ignore-abundance-error",
         ]);
 
         assert_eq!(args.log_level, "debug");
 
         match args.command {
             Command::Strain(strain_args) => {
-                assert_eq!(strain_args.common.meta.as_deref(), Some("meta.tsv"));
-                assert_eq!(strain_args.common.outprefix.as_deref(), Some("out"));
-                assert!(strain_args.common.ignore_abundance_error);
+                assert_eq!(strain_args.meta.to_string_lossy(), "meta.tsv");
+                assert_eq!(strain_args.outprefix, "out");
             }
             Command::Profile(_) => panic!("Expected strain subcommand"),
             Command::Merge(_) => panic!("Expected strain subcommand"),
