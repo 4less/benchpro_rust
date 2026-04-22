@@ -94,3 +94,10 @@ msa-test:
     cargo run -- msa \
         --meta data/test_data/strain/msa/test/meta.xlsx \
         --output data/test_data/strain/msa/test/stats
+
+strain-test1:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run -- strain \
+        --meta data/test_data/strain/test1/samplesheet/samplesheet.tsv \
+        --outprefix data/test_data/strain/test1/output/test1

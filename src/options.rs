@@ -58,6 +58,16 @@ pub struct StrainArgs {
     /// E.g. `--outprefix results/run1` produces `results/run1.monophyly.tsv`.
     #[arg(short = 'o', long, required = true, value_name = "PREFIX")]
     pub outprefix: String,
+
+    /// Exclude samples whose coverage (from the species meta file) is below this threshold.
+    #[arg(long, value_name = "FLOAT")]
+    pub cov_filter: Option<f64>,
+
+    /// Midpoint-root each tree before computing monophyly scores.
+    /// Use this when input trees are unrooted (trifurcating root), which is typical
+    /// for IQ-TREE / RAxML output, to avoid LCA artefacts from the arbitrary root.
+    #[arg(long, default_value_t = false)]
+    pub midpoint_root: bool,
 }
 
 /// CLI arguments for the `normalize` subcommand.

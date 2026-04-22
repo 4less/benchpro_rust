@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use log::{info, warn};
-use phylotree::tree::{NodeId, Tree};
+use phylotree::tree::{Node, NodeId, Tree};
 use polars::prelude::{CsvWriter, DataFrame, NamedFrom, SerWriter, Series};
 use rayon::prelude::*;
 use thiserror::Error;
@@ -39,6 +39,7 @@ impl StrainMetaColumns {
     const TREE: &'static str = "Tree";
     const META: &'static str = "Meta";
     const MSA: &'static str = "MSA";
+    const PARTITION: &'static str = "Partition";
     const GOLD_MSA: &'static str = "GoldMSA";
 }
 
@@ -60,6 +61,7 @@ struct StrainJob {
     tree_path: PathBuf,
     meta_path: PathBuf,
     msa_path: Option<PathBuf>,
+    partition_path: Option<PathBuf>,
     gold_msa_path: Option<PathBuf>,
 }
 
@@ -89,6 +91,31 @@ struct TipRow {
     pw_dist_max: f64,
     pw_dist_mean: f64,
     pw_dist_median: f64,
+}
+
+struct PartitionEntry {
+    name: String,
+    start: usize,
+    end: usize,
+}
+
+struct MsaGeneErrorRow {
+    id: String,
+    species: String,
+    sample: String,
+    gene: String,
+    error_num: u64,
+    error_rate: f64,
+    gene_length: u64,
+}
+
+struct MsaErrorRow {
+    id: String,
+    species: String,
+    sample: String,
+    error_num: u64,
+    error_rate: f64,
+    sequence_length: u64,
 }
 
 /// Minimum valid pairs needed to compute error scores for a sample.
@@ -138,6 +165,8 @@ pub fn run_strain(args: &StrainArgs) -> Result<(), StrainError> {
     let mut rows = Vec::new();
     let mut tip_rows = Vec::new();
     let mut sample_error_rows: Vec<SampleErrorRow> = Vec::new();
+    let mut msa_gene_error_rows: Vec<MsaGeneErrorRow> = Vec::new();
+    let mut msa_error_rows: Vec<MsaErrorRow> = Vec::new();
 
     for job in &jobs {
         info!(
@@ -145,8 +174,41 @@ pub fn run_strain(args: &StrainArgs) -> Result<(), StrainError> {
             job.id,
             job.tree_path.display()
         );
-        let tree = load_tree(&job.tree_path)?;
-        let genome_groups = load_genome_groups(&job.meta_path)?;
+        let mut tree = load_tree(&job.tree_path)?;
+        let root_children = tree
+            .get_root()
+            .ok()
+            .and_then(|r| tree.get(&r).ok())
+            .map(|n| n.children.len())
+            .unwrap_or(0);
+        let is_unrooted = root_children >= 3;
+        if args.midpoint_root || is_unrooted {
+            if is_unrooted && !args.midpoint_root {
+                info!(
+                    "Tree '{}' has a trifurcating root (unrooted IQ-TREE/RAxML format); \
+                     applying midpoint root automatically.",
+                    job.tree_path.display()
+                );
+            }
+            midpoint_root(&mut tree)?;
+        }
+        let mut genome_groups = load_genome_groups(&job.meta_path)?;
+        if let Some(min_cov) = args.cov_filter {
+            for samples in genome_groups.values_mut() {
+                samples.retain(|s| {
+                    if s.coverage < min_cov {
+                        warn!(
+                            "Filtering sample '{}' (coverage {:.3} < {:.3})",
+                            s.id, s.coverage, min_cov
+                        );
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+            genome_groups.retain(|_, samples| !samples.is_empty());
+        }
 
         let name2id: HashMap<String, NodeId> = tree
             .get_leaves()
@@ -246,6 +308,22 @@ pub fn run_strain(args: &StrainArgs) -> Result<(), StrainError> {
             }
         }
 
+        if let Some(msa_path) = &job.msa_path {
+            info!("Computing MSA sequence errors for '{}'...", job.id);
+            match compute_msa_error_rows_whole(job, msa_path, &genome_groups) {
+                Ok(rows) => msa_error_rows.extend(rows),
+                Err(e) => warn!("MSA sequence error computation failed for '{}': {}", job.id, e),
+            }
+
+            if let Some(partition_path) = &job.partition_path {
+                info!("Computing MSA gene errors for '{}'...", job.id);
+                match compute_msa_gene_error_rows(job, msa_path, partition_path, &genome_groups) {
+                    Ok(rows) => msa_gene_error_rows.extend(rows),
+                    Err(e) => warn!("MSA gene error computation failed for '{}': {}", job.id, e),
+                }
+            }
+        }
+
         match (&job.msa_path, &job.gold_msa_path) {
             (Some(msa_path), Some(gold_msa_path)) => {
                 info!("Computing MSA distance errors for '{}'...", job.id);
@@ -279,6 +357,19 @@ pub fn run_strain(args: &StrainArgs) -> Result<(), StrainError> {
         let error_output = PathBuf::from(format!("{}.sample_error.tsv", args.outprefix));
         write_sample_error_output(&sample_error_rows, &error_output)?;
         info!("Wrote sample error stats to '{}'.", error_output.display());
+    }
+
+    if !msa_error_rows.is_empty() {
+        let msa_error_output = PathBuf::from(format!("{}.msa_error.tsv", args.outprefix));
+        write_msa_error_output(&msa_error_rows, &msa_error_output)?;
+        info!("Wrote MSA sequence error stats to '{}'.", msa_error_output.display());
+    }
+
+    if !msa_gene_error_rows.is_empty() {
+        let msa_gene_error_output =
+            PathBuf::from(format!("{}.msa_gene_error.tsv", args.outprefix));
+        write_msa_gene_error_output(&msa_gene_error_rows, &msa_gene_error_output)?;
+        info!("Wrote MSA gene error stats to '{}'.", msa_gene_error_output.display());
     }
 
     Ok(())
@@ -374,6 +465,203 @@ fn load_tree(path: &Path) -> Result<Tree, StrainError> {
     Ok(Tree::from_newick(raw.trim())?)
 }
 
+/// Midpoint-roots `tree` in place.
+///
+/// Finds the two most distant leaves (the diameter), walks halfway along that
+/// path, inserts a new internal node if the midpoint falls inside an edge, and
+/// reverses the parent–child relationships from the old root to the new root.
+fn midpoint_root(tree: &mut Tree) -> Result<(), StrainError> {
+    let leaves = tree.get_leaves();
+    if leaves.len() < 3 {
+        return Ok(());
+    }
+
+    // Find the pair of leaves that maximises pairwise distance (diameter).
+    let mut max_dist = 0.0f64;
+    let mut far_a = leaves[0];
+    let mut far_b = leaves[1];
+    for i in 0..leaves.len() {
+        for j in (i + 1)..leaves.len() {
+            if let Ok((Some(d), _)) = tree.get_distance(&leaves[i], &leaves[j]) {
+                if d > max_dist {
+                    max_dist = d;
+                    far_a = leaves[i];
+                    far_b = leaves[j];
+                }
+            }
+        }
+    }
+
+    let target = max_dist / 2.0;
+
+    // Build the path far_a → LCA → far_b using the current (arbitrary) root.
+    let path_a = tree
+        .get_path_from_root(&far_a)
+        .map_err(|e| StrainError::Meta(e.to_string()))?;
+    let path_b = tree
+        .get_path_from_root(&far_b)
+        .map_err(|e| StrainError::Meta(e.to_string()))?;
+
+    let diverge = std::iter::zip(path_a.iter(), path_b.iter())
+        .enumerate()
+        .find(|(_, (a, b))| a != b)
+        .map(|(idx, _)| idx)
+        .unwrap_or_else(|| path_a.len().min(path_b.len()));
+
+    // full_path: [far_a, ..., lca, ..., far_b]
+    let mut full_path: Vec<NodeId> = path_a[diverge - 1..].iter().rev().cloned().collect();
+    full_path.extend_from_slice(&path_b[diverge..]);
+
+    // Walk from far_a to locate the edge that contains the midpoint.
+    let mut accumulated = 0.0f64;
+    let mut mid_before = full_path[0];
+    let mut mid_after = full_path[0];
+    let mut dist_from_before = 0.0f64;
+
+    for i in 1..full_path.len() {
+        let a = full_path[i - 1];
+        let b = full_path[i];
+        let edge_len = tree
+            .get_distance(&a, &b)
+            .map_err(|e| StrainError::Meta(e.to_string()))?
+            .0
+            .unwrap_or(0.0);
+
+        if accumulated + edge_len >= target - 1e-10 {
+            mid_before = a;
+            mid_after = b;
+            dist_from_before = target - accumulated;
+            break;
+        }
+        accumulated += edge_len;
+        mid_before = b;
+        mid_after = b;
+    }
+
+    let new_root = if mid_before == mid_after || dist_from_before.abs() < 1e-10 {
+        mid_before
+    } else {
+        insert_midpoint_node(tree, mid_before, mid_after, dist_from_before)?
+    };
+
+    reroot_tree(tree, new_root)
+}
+
+/// Splits the edge between `a` and `b` at `dist_from_a` from `a`, inserting a
+/// new internal node and returning its id.
+fn insert_midpoint_node(
+    tree: &mut Tree,
+    a: NodeId,
+    b: NodeId,
+    dist_from_a: f64,
+) -> Result<NodeId, StrainError> {
+    let b_parent = tree
+        .get(&b)
+        .map_err(|e| StrainError::Meta(e.to_string()))?
+        .parent;
+
+    let (parent_id, child_id, dist_from_parent) = if b_parent == Some(a) {
+        // a is the parent of b in the current tree
+        let edge = tree
+            .get(&b)
+            .map_err(|e| StrainError::Meta(e.to_string()))?
+            .parent_edge
+            .unwrap_or(0.0);
+        (a, b, dist_from_a.min(edge))
+    } else {
+        // b is the parent of a in the current tree
+        let edge = tree
+            .get(&a)
+            .map_err(|e| StrainError::Meta(e.to_string()))?
+            .parent_edge
+            .unwrap_or(0.0);
+        (b, a, (edge - dist_from_a).max(0.0))
+    };
+
+    let full_edge = tree
+        .get(&child_id)
+        .map_err(|e| StrainError::Meta(e.to_string()))?
+        .parent_edge
+        .unwrap_or(0.0);
+    let dist_from_child = (full_edge - dist_from_parent).max(0.0);
+
+    // Insert new node between parent_id and child_id.
+    let new_id = tree.add(Node::new());
+
+    tree.get_mut(&parent_id)
+        .map_err(|e| StrainError::Meta(e.to_string()))?
+        .remove_child(&child_id)
+        .map_err(|e| StrainError::Meta(e.to_string()))?;
+
+    tree.get_mut(&new_id)
+        .map_err(|e| StrainError::Meta(e.to_string()))?
+        .set_parent(parent_id, Some(dist_from_parent));
+    tree.get_mut(&parent_id)
+        .map_err(|e| StrainError::Meta(e.to_string()))?
+        .add_child(new_id, Some(dist_from_parent));
+
+    tree.get_mut(&child_id)
+        .map_err(|e| StrainError::Meta(e.to_string()))?
+        .set_parent(new_id, Some(dist_from_child));
+    tree.get_mut(&new_id)
+        .map_err(|e| StrainError::Meta(e.to_string()))?
+        .add_child(child_id, Some(dist_from_child));
+
+    Ok(new_id)
+}
+
+/// Reroots `tree` at `new_root` by reversing parent–child relationships along
+/// the path from the current root to `new_root`.
+fn reroot_tree(tree: &mut Tree, new_root: NodeId) -> Result<(), StrainError> {
+    let path = tree
+        .get_path_from_root(&new_root)
+        .map_err(|e| StrainError::Meta(e.to_string()))?;
+
+    if path.len() == 1 {
+        return Ok(());
+    }
+
+    // Collect the edge lengths before mutating the tree.
+    let edges: Vec<Option<f64>> = path[1..]
+        .iter()
+        .map(|&n| tree.get(&n).map(|node| node.parent_edge).unwrap_or(None))
+        .collect();
+
+    for i in 0..path.len() - 1 {
+        let parent = path[i];
+        let child = path[i + 1];
+        let edge = edges[i];
+
+        tree.get_mut(&parent)
+            .map_err(|e| StrainError::Meta(e.to_string()))?
+            .remove_child(&child)
+            .map_err(|e| StrainError::Meta(e.to_string()))?;
+
+        tree.get_mut(&child)
+            .map_err(|e| StrainError::Meta(e.to_string()))?
+            .add_child(parent, edge);
+
+        tree.get_mut(&parent)
+            .map_err(|e| StrainError::Meta(e.to_string()))?
+            .parent = Some(child);
+        tree.get_mut(&parent)
+            .map_err(|e| StrainError::Meta(e.to_string()))?
+            .parent_edge = edge;
+    }
+
+    tree.get_mut(&new_root)
+        .map_err(|e| StrainError::Meta(e.to_string()))?
+        .parent = None;
+    tree.get_mut(&new_root)
+        .map_err(|e| StrainError::Meta(e.to_string()))?
+        .parent_edge = None;
+
+    tree.reset_depths()
+        .map_err(|e| StrainError::Meta(e.to_string()))?;
+
+    Ok(())
+}
+
 fn normalize_header(name: &str) -> String {
     name.trim()
         .trim_start_matches('\u{feff}')
@@ -423,6 +711,7 @@ fn load_strain_jobs(path: &Path) -> Result<Vec<StrainJob>, StrainError> {
     })?;
 
     let msa_col = find_column_name(&df, StrainMetaColumns::MSA);
+    let partition_col = find_column_name(&df, StrainMetaColumns::PARTITION);
     let gold_msa_col = find_column_name(&df, StrainMetaColumns::GOLD_MSA);
 
     let ids = df.column(&id_col)?.str().map_err(StrainError::Polars)?;
@@ -457,6 +746,11 @@ fn load_strain_jobs(path: &Path) -> Result<Vec<StrainJob>, StrainError> {
             .and_then(|col| df.column(col).ok())
             .and_then(|s| s.str().ok().map(|ca| ca.get(row).map(PathBuf::from)))
             .flatten();
+        let partition_path = partition_col
+            .as_ref()
+            .and_then(|col| df.column(col).ok())
+            .and_then(|s| s.str().ok().map(|ca| ca.get(row).map(PathBuf::from)))
+            .flatten();
         let gold_msa_path = gold_msa_col
             .as_ref()
             .and_then(|col| df.column(col).ok())
@@ -469,6 +763,7 @@ fn load_strain_jobs(path: &Path) -> Result<Vec<StrainJob>, StrainError> {
             tree_path: PathBuf::from(tree_path),
             meta_path: PathBuf::from(meta_path),
             msa_path,
+            partition_path,
             gold_msa_path,
         });
     }
@@ -1003,9 +1298,319 @@ fn write_sample_error_output(
     Ok(())
 }
 
+fn parse_partition_file(path: &Path) -> Result<Vec<PartitionEntry>, StrainError> {
+    let content = fs::read_to_string(path)?;
+    let mut entries = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // Format: "DNA, geneName = start-end"
+        let Some((lhs, rhs)) = line.split_once('=') else {
+            warn!("Skipping malformed partition line: '{}'", line);
+            continue;
+        };
+        let name = match lhs.split_once(',') {
+            Some((_, after)) => after.trim().to_string(),
+            None => lhs.trim().to_string(),
+        };
+        let range = rhs.trim();
+        let Some((start_str, end_str)) = range.split_once('-') else {
+            warn!("Skipping malformed range in partition line: '{}'", line);
+            continue;
+        };
+        let start: usize = start_str.trim().parse().map_err(|e| {
+            StrainError::Meta(format!("Invalid partition start '{}': {}", start_str, e))
+        })?;
+        let end: usize = end_str.trim().parse().map_err(|e| {
+            StrainError::Meta(format!("Invalid partition end '{}': {}", end_str, e))
+        })?;
+        entries.push(PartitionEntry { name, start, end });
+    }
+    Ok(entries)
+}
+
+fn compute_msa_gene_error_rows(
+    job: &StrainJob,
+    msa_path: &Path,
+    partition_path: &Path,
+    genome_groups: &BTreeMap<String, Vec<SampleInfo>>,
+) -> Result<Vec<MsaGeneErrorRow>, StrainError> {
+    let partitions = parse_partition_file(partition_path)?;
+    if partitions.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let alignment = read_fasta_alignment(msa_path)?;
+    let sequences = &alignment.sequences;
+    let msa_len = alignment.length;
+
+    let mut rows = Vec::new();
+
+    for (_genome, samples) in genome_groups {
+        let group: Vec<(&SampleInfo, &Vec<u8>)> = samples
+            .iter()
+            .filter_map(|s| sequences.get(&s.id).map(|seq| (s, seq)))
+            .collect();
+
+        if group.len() < 2 {
+            continue;
+        }
+
+        for partition in &partitions {
+            let start = partition.start;
+            let end = partition.end.min(msa_len.saturating_sub(1));
+            let gene_length = (end - start + 1) as u64;
+
+            let mut error_counts = vec![0u64; group.len()];
+
+            for pos in start..=end {
+                let info_bases: Vec<Option<u8>> = group
+                    .iter()
+                    .map(|(_, seq)| {
+                        let b = seq[pos];
+                        if b != b'-' && b != b'N' { Some(b) } else { None }
+                    })
+                    .collect();
+
+                let distinct_count = info_bases
+                    .iter()
+                    .filter_map(|b| *b)
+                    .collect::<std::collections::HashSet<u8>>()
+                    .len();
+
+                if distinct_count > 1 {
+                    for (i, base_opt) in info_bases.iter().enumerate() {
+                        if base_opt.is_some() {
+                            error_counts[i] += 1;
+                        }
+                    }
+                }
+            }
+
+            for (i, (sample, seq_i)) in group.iter().enumerate() {
+                let mut overlaps: Vec<f64> = group
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != i)
+                    .map(|(_, (_, seq_j))| {
+                        (start..=end)
+                            .filter(|&pos| {
+                                seq_i[pos] != b'-' && seq_i[pos] != b'N'
+                                    && seq_j[pos] != b'-' && seq_j[pos] != b'N'
+                            })
+                            .count() as f64
+                    })
+                    .collect();
+
+                overlaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let median_overlap = median_f64(&overlaps);
+
+                let error_num = error_counts[i];
+                let error_rate = if median_overlap > 0.0 {
+                    error_num as f64 / median_overlap
+                } else {
+                    f64::NAN
+                };
+
+                rows.push(MsaGeneErrorRow {
+                    id: job.id.clone(),
+                    species: job.species.clone(),
+                    sample: sample.id.clone(),
+                    gene: partition.name.clone(),
+                    error_num,
+                    error_rate,
+                    gene_length,
+                });
+            }
+        }
+    }
+
+    Ok(rows)
+}
+
+fn compute_msa_error_rows_whole(
+    job: &StrainJob,
+    msa_path: &Path,
+    genome_groups: &BTreeMap<String, Vec<SampleInfo>>,
+) -> Result<Vec<MsaErrorRow>, StrainError> {
+    let alignment = read_fasta_alignment(msa_path)?;
+    let sequences = &alignment.sequences;
+    let msa_len = alignment.length;
+
+    let mut rows = Vec::new();
+
+    for (_genome, samples) in genome_groups {
+        let group: Vec<(&SampleInfo, &Vec<u8>)> = samples
+            .iter()
+            .filter_map(|s| sequences.get(&s.id).map(|seq| (s, seq)))
+            .collect();
+
+        if group.len() < 2 {
+            continue;
+        }
+
+        let mut error_counts = vec![0u64; group.len()];
+
+        for pos in 0..msa_len {
+            let info_bases: Vec<Option<u8>> = group
+                .iter()
+                .map(|(_, seq)| {
+                    let b = seq[pos];
+                    if b != b'-' && b != b'N' { Some(b) } else { None }
+                })
+                .collect();
+
+            let distinct_count = info_bases
+                .iter()
+                .filter_map(|b| *b)
+                .collect::<std::collections::HashSet<u8>>()
+                .len();
+
+            if distinct_count > 1 {
+                for (i, base_opt) in info_bases.iter().enumerate() {
+                    if base_opt.is_some() {
+                        error_counts[i] += 1;
+                    }
+                }
+            }
+        }
+
+        for (i, (sample, seq_i)) in group.iter().enumerate() {
+            let mut overlaps: Vec<f64> = group
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, (_, seq_j))| {
+                    (0..msa_len)
+                        .filter(|&pos| {
+                            seq_i[pos] != b'-' && seq_i[pos] != b'N'
+                                && seq_j[pos] != b'-' && seq_j[pos] != b'N'
+                        })
+                        .count() as f64
+                })
+                .collect();
+
+            overlaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let median_overlap = median_f64(&overlaps);
+
+            let error_num = error_counts[i];
+            let error_rate = if median_overlap > 0.0 {
+                error_num as f64 / median_overlap
+            } else {
+                f64::NAN
+            };
+
+            rows.push(MsaErrorRow {
+                id: job.id.clone(),
+                species: job.species.clone(),
+                sample: sample.id.clone(),
+                error_num,
+                error_rate,
+                sequence_length: msa_len as u64,
+            });
+        }
+    }
+
+    Ok(rows)
+}
+
+fn median_f64(sorted: &[f64]) -> f64 {
+    let n = sorted.len();
+    if n == 0 {
+        return f64::NAN;
+    }
+    if n % 2 == 0 {
+        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+    } else {
+        sorted[n / 2]
+    }
+}
+
+fn write_msa_gene_error_output(
+    rows: &[MsaGeneErrorRow],
+    output: &Path,
+) -> Result<(), StrainError> {
+    let mut ids = Vec::with_capacity(rows.len());
+    let mut species_col = Vec::with_capacity(rows.len());
+    let mut samples = Vec::with_capacity(rows.len());
+    let mut genes = Vec::with_capacity(rows.len());
+    let mut error_nums = Vec::with_capacity(rows.len());
+    let mut error_rates = Vec::with_capacity(rows.len());
+    let mut gene_lengths = Vec::with_capacity(rows.len());
+
+    for row in rows {
+        ids.push(row.id.clone());
+        species_col.push(row.species.clone());
+        samples.push(row.sample.clone());
+        genes.push(row.gene.clone());
+        error_nums.push(row.error_num);
+        error_rates.push(row.error_rate);
+        gene_lengths.push(row.gene_length);
+    }
+
+    let mut df = DataFrame::new(vec![
+        Series::new("ID".into(), ids),
+        Series::new("Species".into(), species_col),
+        Series::new("Sample".into(), samples),
+        Series::new("Gene".into(), genes),
+        Series::new("ErrorNum".into(), error_nums),
+        Series::new("ErrorRate".into(), error_rates),
+        Series::new("GeneLength".into(), gene_lengths),
+    ])
+    .map_err(StrainError::Polars)?;
+
+    let mut file = std::fs::File::create(output)?;
+    CsvWriter::new(&mut file)
+        .include_header(true)
+        .with_separator(b'\t')
+        .finish(&mut df)
+        .map_err(StrainError::Polars)?;
+
+    Ok(())
+}
+
+fn write_msa_error_output(rows: &[MsaErrorRow], output: &Path) -> Result<(), StrainError> {
+    let mut ids = Vec::with_capacity(rows.len());
+    let mut species_col = Vec::with_capacity(rows.len());
+    let mut samples = Vec::with_capacity(rows.len());
+    let mut error_nums = Vec::with_capacity(rows.len());
+    let mut error_rates = Vec::with_capacity(rows.len());
+    let mut seq_lengths = Vec::with_capacity(rows.len());
+
+    for row in rows {
+        ids.push(row.id.clone());
+        species_col.push(row.species.clone());
+        samples.push(row.sample.clone());
+        error_nums.push(row.error_num);
+        error_rates.push(row.error_rate);
+        seq_lengths.push(row.sequence_length);
+    }
+
+    let mut df = DataFrame::new(vec![
+        Series::new("ID".into(), ids),
+        Series::new("Species".into(), species_col),
+        Series::new("Sample".into(), samples),
+        Series::new("ErrorNum".into(), error_nums),
+        Series::new("ErrorRate".into(), error_rates),
+        Series::new("SequenceLength".into(), seq_lengths),
+    ])
+    .map_err(StrainError::Polars)?;
+
+    let mut file = std::fs::File::create(output)?;
+    CsvWriter::new(&mut file)
+        .include_header(true)
+        .with_separator(b'\t')
+        .finish(&mut df)
+        .map_err(StrainError::Polars)?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{compute_pairwise_distances, find_lca};
+    use super::{compute_pairwise_distances, find_lca, load_tree, midpoint_root};
     use phylotree::tree::Tree;
 
     fn sample_tree() -> Tree {
@@ -1068,6 +1673,73 @@ mod tests {
         let lca_leaves = tree.get_subtree_leaves(&lca).unwrap();
         let score = 2.0 / lca_leaves.len() as f64;
         assert!((score - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn midpoint_root_known_tree() {
+        // ((A:0.1,B:0.2):0.3,(C:0.4,D:0.5):0.6);
+        // Diameter: B-D = 0.2+0.3+0.6+0.5 = 1.6, midpoint = 0.8
+        // Walking from B: 0.2 (to AB), 0.3 (to root), 0.3 more puts us
+        // halfway along the root->CD edge (0.6), so a new node N is
+        // inserted 0.3 from root and 0.3 from CD.
+        // After rerooting at N: dist(N,B)=0.8, dist(N,D)=0.8
+        let mut tree =
+            Tree::from_newick("((A:0.1,B:0.2):0.3,(C:0.4,D:0.5):0.6);")
+                .unwrap();
+        midpoint_root(&mut tree).unwrap();
+        assert!(tree.is_rooted().unwrap(), "tree should be rooted");
+        let root = tree.get_root().unwrap();
+        assert_eq!(
+            tree.get(&root).unwrap().children.len(),
+            2,
+            "root should be bifurcating"
+        );
+        let b = tree.get_by_name("B").unwrap().id;
+        let d = tree.get_by_name("D").unwrap().id;
+        let (dist_b, _) = tree.get_distance(&root, &b).unwrap();
+        let (dist_d, _) = tree.get_distance(&root, &d).unwrap();
+        let dist_b = dist_b.unwrap();
+        let dist_d = dist_d.unwrap();
+        assert!(
+            (dist_b - 0.8).abs() < 1e-6,
+            "dist root->B should be 0.8, got {dist_b}"
+        );
+        assert!(
+            (dist_d - 0.8).abs() < 1e-6,
+            "dist root->D should be 0.8, got {dist_d}"
+        );
+    }
+
+    #[test]
+    fn midpoint_root_dump_ovatus() {
+        // Dumps the midpoint-rooted Newick next to the source file for
+        // comparison with the R/phangorn reference output.
+        let src = std::path::Path::new(
+            "data/test_data/strain/test1/prediction/protal051/tree/\
+             s__Bacteroides_ovatus.partitioned.nwk",
+        );
+        let out = src.with_extension("").with_extension("rust_midpoint.nwk");
+        let mut tree = load_tree(src).unwrap();
+        midpoint_root(&mut tree).unwrap();
+        let nwk = tree.to_newick().unwrap();
+        std::fs::write(&out, &nwk).unwrap();
+
+        let root = tree.get_root().unwrap();
+        assert_eq!(tree.get(&root).unwrap().children.len(), 2);
+        // All leaf-to-root distances should be within 1e-4 of the midpoint.
+        let leaves = tree.get_leaves();
+        let dists: Vec<f64> = leaves
+            .iter()
+            .map(|l| tree.get_distance(&root, l).unwrap().0.unwrap_or(0.0))
+            .collect();
+        let min = dists.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max = dists.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        println!(
+            "ovatus midpoint: min={min:.6}, max={max:.6}, \
+             spread={:.6}",
+            max - min
+        );
+        println!("written to {}", out.display());
     }
 
     #[test]

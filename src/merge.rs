@@ -748,7 +748,8 @@ mod tests {
     }
 
     #[test]
-    fn merges_genus_matrix_uses_full_lineage_and_aggregates_lower_ranks() -> Result<(), MergeError> {
+    fn merges_genus_matrix_uses_full_lineage_and_aggregates_lower_ranks() -> Result<(), MergeError>
+    {
         let profile = temp_path("profile_genus.tsv");
         let output = temp_path("abundance_genus.tsv");
 
@@ -854,9 +855,7 @@ mod tests {
         let mut alpha_values: Option<(f64, f64)> = None;
         for line in lines {
             let tokens = line.split('\t').collect::<Vec<_>>();
-            if tokens.first().copied()
-                == Some("d__Bacteria;p__Firmicutes;s__Alpha")
-            {
+            if tokens.first().copied() == Some("d__Bacteria;p__Firmicutes;s__Alpha") {
                 let a = tokens
                     .get(sample_a_col)
                     .expect("Missing profile_a alpha abundance")

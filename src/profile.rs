@@ -171,13 +171,27 @@ impl BCVectors {
 type TaxonEntryMap<'a, T> = HashMap<&'a Taxon, EntriesRef<'a, T>>;
 type NamesEntryMap<'a, T> = HashMap<String, EntriesRef<'a, T>>;
 
-fn is_prefix_only_taxon_name(name: &str) -> bool {
+/// Returns `true` for taxon names that should be excluded from FP/FN scoring.
+///
+/// This covers two cases for any rank:
+/// * bare rank prefix with no name (`s__`, `g__`, …)
+/// * rank prefix followed by UNCLASSIFIED (`s__UNCLASSIFIED`, …)
+/// * bare `UNCLASSIFIED` with no rank prefix
+fn is_unscored_taxon_name(name: &str) -> bool {
     let trimmed = name.trim();
+    if trimmed.eq_ignore_ascii_case("UNCLASSIFIED") {
+        return true;
+    }
     let Some((_, rest)) = trimmed.split_once("__") else {
         return false;
     };
+    let rest = rest.trim();
+    rest.is_empty() || rest.to_ascii_uppercase().contains("UNCLASSIFIED")
+}
 
-    rest.trim().is_empty()
+// Keep the old name as an alias so call sites that already use it continue to compile.
+fn is_prefix_only_taxon_name(name: &str) -> bool {
+    is_unscored_taxon_name(name)
 }
 
 fn filter_prefix_only_taxa_names<'a, T: Taxonomy>(
@@ -1070,7 +1084,9 @@ impl<T: Taxonomy> Profile<T> {
 
         for rank in ranks {
             debug!("----------{}-----------", rank.to_string());
-            let prediction_names = self.get_taxa_string_dict(rank);
+            let prediction_names = self
+                .get_taxa_string_dict(rank)
+                .map(filter_prefix_only_taxa_names);
             let gold_std_names = gold_std
                 .get_taxa_string_dict(rank)
                 .map(filter_prefix_only_taxa_names);
@@ -1092,7 +1108,7 @@ impl<T: Taxonomy> Profile<T> {
                 }
             }
 
-            let prediction_taxa = self.get_taxa_dict(rank);
+            let prediction_taxa = self.get_taxa_dict(rank).map(filter_prefix_only_taxa_refs);
             let gold_std_taxa = gold_std
                 .get_taxa_dict(rank)
                 .map(filter_prefix_only_taxa_refs);
@@ -1359,6 +1375,27 @@ mod tests {
         assert!(is_prefix_only_taxon_name("d__\t"));
         assert!(!is_prefix_only_taxon_name("s__Lactobacillus"));
         assert!(!is_prefix_only_taxon_name("Bacteria"));
+    }
+
+    #[test]
+    fn test_unscored_taxon_name_unclassified() {
+        // Rank-prefixed UNCLASSIFIED at every casing variant
+        assert!(is_unscored_taxon_name("s__UNCLASSIFIED"));
+        assert!(is_unscored_taxon_name("g__UNCLASSIFIED"));
+        assert!(is_unscored_taxon_name("d__unclassified"));
+        assert!(is_unscored_taxon_name("p__Unclassified"));
+        // Bare UNCLASSIFIED without rank prefix
+        assert!(is_unscored_taxon_name("UNCLASSIFIED"));
+        assert!(is_unscored_taxon_name("unclassified"));
+        // Bare rank prefix (existing behaviour preserved)
+        assert!(is_unscored_taxon_name("s__"));
+        assert!(is_unscored_taxon_name("g__ "));
+        // Any name containing UNCLASSIFIED after the rank prefix is also filtered
+        assert!(is_unscored_taxon_name("s__UNCLASSIFIED_something"));
+        assert!(is_unscored_taxon_name("g__unclassified_lineage"));
+        // Real taxa must not be filtered
+        assert!(!is_unscored_taxon_name("s__Lactobacillus"));
+        assert!(!is_unscored_taxon_name("Bacteria"));
     }
 
     #[test]
