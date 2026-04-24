@@ -2,6 +2,7 @@ set shell := ["bash", "-cu"]
 
 install-local:
     cargo install --path . --root ~/.local
+    install -m 755 scripts/benchpro_visualize_monophyly.R ~/.local/bin/benchpro_visualize_monophyly
 
 sylph-debug:
     mkdir -p sandbox/output
@@ -101,3 +102,8 @@ strain-test1:
     cargo run -- strain \
         --meta data/test_data/strain/test1/samplesheet/samplesheet.tsv \
         --outprefix data/test_data/strain/test1/output/test1
+
+plot-strain-test1:
+    Rscript scripts/benchpro_visualize_monophyly.R \
+        data/test_data/strain/test1/output/test1.genome_proximity.tsv \
+        data/test_data/strain/test1/output/test1.monophyly_plot.pdf

@@ -41,6 +41,8 @@ impl StrainMetaColumns {
     const MSA: &'static str = "MSA";
     const PARTITION: &'static str = "Partition";
     const GOLD_MSA: &'static str = "GoldMSA";
+    const GOLD_TREE: &'static str = "GoldTree";
+    const TOOL: &'static str = "Tool";
 }
 
 struct SampleMetaColumns;
@@ -58,11 +60,13 @@ struct SampleInfo {
 struct StrainJob {
     id: String,
     species: String,
+    tool: Option<String>,
     tree_path: PathBuf,
     meta_path: PathBuf,
     msa_path: Option<PathBuf>,
     partition_path: Option<PathBuf>,
     gold_msa_path: Option<PathBuf>,
+    gold_tree_path: Option<PathBuf>,
 }
 
 struct MonophylyRow {
@@ -118,6 +122,21 @@ struct MsaErrorRow {
     sequence_length: u64,
 }
 
+struct GenomeProximityRow {
+    id: String,
+    tool: String,
+    species: String,
+    genome: String,
+    tip_count: usize,
+    lca_tip_count: usize,
+    monophyly_score: f64,
+    closest_neighbor: String,
+    closest_neighbor_dist: f64,
+    closest_neighbor_similarity: f64,
+    rank: u64,
+    window_mean_monophyly: f64,
+}
+
 /// Minimum valid pairs needed to compute error scores for a sample.
 const MIN_PAIRS: usize = 2;
 
@@ -167,6 +186,7 @@ pub fn run_strain(args: &StrainArgs) -> Result<(), StrainError> {
     let mut sample_error_rows: Vec<SampleErrorRow> = Vec::new();
     let mut msa_gene_error_rows: Vec<MsaGeneErrorRow> = Vec::new();
     let mut msa_error_rows: Vec<MsaErrorRow> = Vec::new();
+    let mut proximity_rows: Vec<GenomeProximityRow> = Vec::new();
 
     for job in &jobs {
         info!(
@@ -208,6 +228,12 @@ pub fn run_strain(args: &StrainArgs) -> Result<(), StrainError> {
                 });
             }
             genome_groups.retain(|_, samples| !samples.is_empty());
+
+            let keep_ids: std::collections::HashSet<String> = genome_groups
+                .values()
+                .flat_map(|samples| samples.iter().map(|s| s.id.clone()))
+                .collect();
+            prune_tree_to_tips(&mut tree, &keep_ids)?;
         }
 
         let name2id: HashMap<String, NodeId> = tree
@@ -343,6 +369,27 @@ pub fn run_strain(args: &StrainArgs) -> Result<(), StrainError> {
             }
             (None, None) => {}
         }
+
+        if let Some(gold_tree_path) = &job.gold_tree_path {
+            info!("Computing genome proximity from gold standard tree for '{}'...", job.id);
+            match gold_tree_closest_neighbors(gold_tree_path) {
+                Ok(gold_closest) => {
+                    let job_rows = compute_genome_proximity(job, &gold_closest, &rows);
+                    if job_rows.is_empty() {
+                        warn!(
+                            "No genomes found in both prediction and gold tree for '{}'; \
+                             skipping proximity output.",
+                            job.id
+                        );
+                    }
+                    proximity_rows.extend(job_rows);
+                }
+                Err(e) => warn!(
+                    "Gold tree proximity computation failed for '{}': {}",
+                    job.id, e
+                ),
+            }
+        }
     }
 
     let output = PathBuf::from(format!("{}.monophyly.tsv", args.outprefix));
@@ -372,6 +419,44 @@ pub fn run_strain(args: &StrainArgs) -> Result<(), StrainError> {
         info!("Wrote MSA gene error stats to '{}'.", msa_gene_error_output.display());
     }
 
+    if !proximity_rows.is_empty() {
+        rank_and_window_proximity(&mut proximity_rows, 30);
+        let proximity_output =
+            PathBuf::from(format!("{}.genome_proximity.tsv", args.outprefix));
+        write_genome_proximity_output(&proximity_rows, &proximity_output)?;
+        info!("Wrote genome proximity stats to '{}'.", proximity_output.display());
+    }
+
+    Ok(())
+}
+
+fn prune_tree_to_tips(
+    tree: &mut Tree,
+    keep: &std::collections::HashSet<String>,
+) -> Result<(), StrainError> {
+    loop {
+        let leaves = tree.get_leaves();
+        let to_remove: Vec<NodeId> = leaves
+            .iter()
+            .filter(|id| {
+                tree.get(id)
+                    .ok()
+                    .and_then(|n| n.name.as_ref())
+                    .map(|name| !keep.contains(name))
+                    .unwrap_or(true)
+            })
+            .copied()
+            .collect();
+
+        if to_remove.is_empty() {
+            break;
+        }
+
+        for leaf_id in &to_remove {
+            tree.prune(leaf_id).map_err(|e| StrainError::Meta(e.to_string()))?;
+        }
+    }
+    tree.compress().map_err(|e| StrainError::Meta(e.to_string()))?;
     Ok(())
 }
 
@@ -713,6 +798,8 @@ fn load_strain_jobs(path: &Path) -> Result<Vec<StrainJob>, StrainError> {
     let msa_col = find_column_name(&df, StrainMetaColumns::MSA);
     let partition_col = find_column_name(&df, StrainMetaColumns::PARTITION);
     let gold_msa_col = find_column_name(&df, StrainMetaColumns::GOLD_MSA);
+    let gold_tree_col = find_column_name(&df, StrainMetaColumns::GOLD_TREE);
+    let tool_col = find_column_name(&df, StrainMetaColumns::TOOL);
 
     let ids = df.column(&id_col)?.str().map_err(StrainError::Polars)?;
     let species_vals = df
@@ -756,15 +843,27 @@ fn load_strain_jobs(path: &Path) -> Result<Vec<StrainJob>, StrainError> {
             .and_then(|col| df.column(col).ok())
             .and_then(|s| s.str().ok().map(|ca| ca.get(row).map(PathBuf::from)))
             .flatten();
+        let gold_tree_path = gold_tree_col
+            .as_ref()
+            .and_then(|col| df.column(col).ok())
+            .and_then(|s| s.str().ok().map(|ca| ca.get(row).map(PathBuf::from)))
+            .flatten();
+        let tool = tool_col
+            .as_ref()
+            .and_then(|col| df.column(col).ok())
+            .and_then(|s| s.str().ok().map(|ca| ca.get(row).map(str::to_string)))
+            .flatten();
 
         jobs.push(StrainJob {
             id,
             species,
+            tool,
             tree_path: PathBuf::from(tree_path),
             meta_path: PathBuf::from(meta_path),
             msa_path,
             partition_path,
             gold_msa_path,
+            gold_tree_path,
         });
     }
 
@@ -826,6 +925,196 @@ fn load_genome_groups(
     }
 
     Ok(groups)
+}
+
+/// Loads the gold standard tree, applies midpoint root if trifurcating, and returns
+/// a map from each genome name to `(closest_neighbor_name, cophenetic_distance)`.
+fn gold_tree_closest_neighbors(
+    path: &Path,
+) -> Result<HashMap<String, (String, f64)>, StrainError> {
+    let mut tree = load_tree(path)?;
+    let root_children = tree
+        .get_root()
+        .ok()
+        .and_then(|r| tree.get(&r).ok())
+        .map(|n| n.children.len())
+        .unwrap_or(0);
+    if root_children >= 3 {
+        midpoint_root(&mut tree)?;
+    }
+
+    let leaves = tree.get_leaves();
+    let names: Vec<String> = leaves
+        .iter()
+        .filter_map(|id| tree.get(id).ok().and_then(|n| n.name.clone()))
+        .collect();
+    let name_to_id: HashMap<String, phylotree::tree::NodeId> = leaves
+        .iter()
+        .filter_map(|id| {
+            tree.get(id)
+                .ok()
+                .and_then(|n| n.name.as_ref().map(|nm| (nm.clone(), *id)))
+        })
+        .collect();
+
+    // Compute all pairwise distances and find closest neighbor per genome.
+    let mut closest: HashMap<String, (String, f64)> = HashMap::new();
+    for i in 0..names.len() {
+        for j in (i + 1)..names.len() {
+            let a = &names[i];
+            let b = &names[j];
+            if let Ok((Some(dist), _)) =
+                tree.get_distance(&name_to_id[a], &name_to_id[b])
+            {
+                let entry_a = closest.entry(a.clone()).or_insert((b.clone(), f64::INFINITY));
+                if dist < entry_a.1 {
+                    *entry_a = (b.clone(), dist);
+                }
+                let entry_b = closest.entry(b.clone()).or_insert((a.clone(), f64::INFINITY));
+                if dist < entry_b.1 {
+                    *entry_b = (a.clone(), dist);
+                }
+            }
+        }
+    }
+    Ok(closest)
+}
+
+/// Computes genome proximity rows for a single job, using pre-computed gold-tree
+/// closest-neighbor distances.  Only genomes present in both the prediction analysis
+/// and the gold standard tree are included.
+fn compute_genome_proximity(
+    job: &StrainJob,
+    gold_closest: &HashMap<String, (String, f64)>,
+    monophyly_rows: &[MonophylyRow],
+) -> Vec<GenomeProximityRow> {
+    monophyly_rows
+        .iter()
+        .filter(|r| r.id == job.id)
+        .filter_map(|r| {
+            let (neighbor, dist) = gold_closest.get(&r.genome)?;
+            Some(GenomeProximityRow {
+                id: r.id.clone(),
+                tool: job.tool.clone().unwrap_or_else(|| r.id.clone()),
+                species: r.species.clone(),
+                genome: r.genome.clone(),
+                tip_count: r.tip_count,
+                lca_tip_count: r.lca_tip_count,
+                monophyly_score: r.monophyly_score,
+                closest_neighbor: neighbor.clone(),
+                closest_neighbor_dist: *dist,
+                closest_neighbor_similarity: 1.0 - dist,
+                rank: 0,
+                window_mean_monophyly: f64::NAN,
+            })
+        })
+        .collect()
+}
+
+/// Assigns ranks and sliding-window mean monophyly in-place across all proximity rows.
+///
+/// Within each `id` (tool), rows are sorted by `closest_neighbor_similarity` descending
+/// (most similar = rank 1, i.e., hardest to resolve).  The window mean uses a centered
+/// window of `window_size` rows, clipped at the boundaries.
+fn rank_and_window_proximity(rows: &mut Vec<GenomeProximityRow>, window_size: usize) {
+    // Collect distinct tool IDs.
+    let ids: Vec<String> = {
+        let mut seen = std::collections::HashSet::new();
+        rows.iter()
+            .filter(|r| seen.insert(r.id.clone()))
+            .map(|r| r.id.clone())
+            .collect()
+    };
+
+    for id in &ids {
+        // Collect indices belonging to this tool, sorted by similarity descending.
+        let mut indices: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| &r.id == id)
+            .map(|(i, _)| i)
+            .collect();
+        indices.sort_by(|&a, &b| {
+            rows[b]
+                .closest_neighbor_similarity
+                .partial_cmp(&rows[a].closest_neighbor_similarity)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let n = indices.len();
+        let half = window_size / 2;
+
+        // Assign ranks and collect monophyly scores in sorted order.
+        let scores: Vec<f64> = indices.iter().map(|&i| rows[i].monophyly_score).collect();
+
+        for (rank, &idx) in indices.iter().enumerate() {
+            rows[idx].rank = (rank + 1) as u64;
+
+            let lo = rank.saturating_sub(half);
+            let hi = (rank + half + 1).min(n);
+            let window_scores = &scores[lo..hi];
+            rows[idx].window_mean_monophyly =
+                window_scores.iter().sum::<f64>() / window_scores.len() as f64;
+        }
+    }
+}
+
+fn write_genome_proximity_output(
+    rows: &[GenomeProximityRow],
+    output: &Path,
+) -> Result<(), StrainError> {
+    let mut ids = Vec::with_capacity(rows.len());
+    let mut tools = Vec::with_capacity(rows.len());
+    let mut species = Vec::with_capacity(rows.len());
+    let mut genomes = Vec::with_capacity(rows.len());
+    let mut tip_counts = Vec::with_capacity(rows.len());
+    let mut lca_tip_counts = Vec::with_capacity(rows.len());
+    let mut monophyly_scores = Vec::with_capacity(rows.len());
+    let mut closest_neighbors = Vec::with_capacity(rows.len());
+    let mut closest_dists = Vec::with_capacity(rows.len());
+    let mut closest_sims = Vec::with_capacity(rows.len());
+    let mut ranks = Vec::with_capacity(rows.len());
+    let mut window_means = Vec::with_capacity(rows.len());
+
+    for r in rows {
+        ids.push(r.id.clone());
+        tools.push(r.tool.clone());
+        species.push(r.species.clone());
+        genomes.push(r.genome.clone());
+        tip_counts.push(r.tip_count as u64);
+        lca_tip_counts.push(r.lca_tip_count as u64);
+        monophyly_scores.push(r.monophyly_score);
+        closest_neighbors.push(r.closest_neighbor.clone());
+        closest_dists.push(r.closest_neighbor_dist);
+        closest_sims.push(r.closest_neighbor_similarity);
+        ranks.push(r.rank);
+        window_means.push(r.window_mean_monophyly);
+    }
+
+    let mut df = DataFrame::new(vec![
+        Series::new("ID".into(), ids),
+        Series::new("Tool".into(), tools),
+        Series::new("Species".into(), species),
+        Series::new("Genome".into(), genomes),
+        Series::new("TipCount".into(), tip_counts),
+        Series::new("LcaTipCount".into(), lca_tip_counts),
+        Series::new("MonophylyScore".into(), monophyly_scores),
+        Series::new("ClosestNeighbor".into(), closest_neighbors),
+        Series::new("ClosestNeighborDist".into(), closest_dists),
+        Series::new("ClosestNeighborSimilarity".into(), closest_sims),
+        Series::new("Rank".into(), ranks),
+        Series::new("WindowMeanMonophyly".into(), window_means),
+    ])
+    .map_err(StrainError::Polars)?;
+
+    let mut file = std::fs::File::create(output)?;
+    CsvWriter::new(&mut file)
+        .include_header(true)
+        .with_separator(b'\t')
+        .finish(&mut df)
+        .map_err(StrainError::Polars)?;
+
+    Ok(())
 }
 
 fn write_monophyly_output(rows: &[MonophylyRow], output: &Path) -> Result<(), StrainError> {
