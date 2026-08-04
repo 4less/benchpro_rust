@@ -40,6 +40,15 @@ use report::{SampleResult, TaggedVerdict};
 use sam::ParsedAlignment;
 use truth::Truth;
 
+/// Everything a loaded truth depends on: the file, and how its labels were written. Keying on the
+/// path alone would let two rows sharing a gold SAM silently inherit the first row's labelling.
+type TruthKey = (
+    PathBuf,
+    Option<PathBuf>,
+    crate::options::ScoringMode,
+    String,
+);
+
 /// Runs the alignment benchmark described by `args.meta`.
 ///
 /// # Arguments
@@ -118,7 +127,7 @@ pub fn run_align(args: &AlignArgs) -> AlignResult<()> {
         &output_path(prefix, "align_mapq.tsv"),
     )?;
     if let Some(writer) = reads_writer {
-        writer.finish();
+        writer.finish()?;
     }
 
     Ok(())
@@ -135,7 +144,7 @@ fn score_group(
     args: &AlignArgs,
 ) -> AlignResult<(Vec<SampleResult>, Vec<TaggedVerdict>)> {
     // One truth and one contig map per path, however many contenders share them.
-    let mut truths: HashMap<PathBuf, Truth> = HashMap::new();
+    let mut truths: HashMap<TruthKey, Truth> = HashMap::new();
     let mut maps: HashMap<PathBuf, HashMap<Box<str>, Box<str>>> = HashMap::new();
     let mut parsed: Vec<ParsedAlignment> = Vec::with_capacity(rows.len());
 
@@ -147,14 +156,24 @@ fn score_group(
                 maps.insert(path.clone(), truth::load_contig2genome(path)?);
             }
         }
-        if !truths.contains_key(&row.truth) {
+        // Keyed on everything the loaded truth depends on, not just the path: two rows can share a
+        // gold SAM and label it differently.
+        let truth_key = (
+            row.truth.clone(),
+            row.contig2genome.clone(),
+            row.scoring,
+            row.sep.clone(),
+        );
+        if let std::collections::hash_map::Entry::Vacant(slot) = truths.entry(truth_key) {
             let truth = truth::load_truth_any(
                 &row.truth,
                 row.contig2genome.as_ref().and_then(|p| maps.get(p)),
+                row.scoring,
+                &row.sep,
                 args.threads,
             )?;
             debug!("{}: {} truth reads", row.truth.display(), truth.len());
-            truths.insert(row.truth.clone(), truth);
+            slot.insert(truth);
         }
 
         let keep_seq = !args.no_replay && row.reference.is_some() && row.format.has_alignments();
@@ -188,7 +207,12 @@ fn score_group(
     let mut reads = Vec::new();
 
     for (index, (row, alignment)) in rows.iter().zip(parsed.iter()).enumerate() {
-        let truth = &truths[&row.truth];
+        let truth = &truths[&(
+            row.truth.clone(),
+            row.contig2genome.clone(),
+            row.scoring,
+            row.sep.clone(),
+        )];
         let context = ScoringContext {
             scoring: row.scoring,
             sep: &row.sep,

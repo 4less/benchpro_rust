@@ -84,6 +84,80 @@ pub struct MappingScore {
     /// Reads whose alignment is identical to the gold standard's; only when the truth is a
     /// gold-standard SAM.
     pub exact: Option<u64>,
+    /// Recovery of the reads whose gold alignment carries an indel; gold-standard SAM only.
+    pub indel: Option<ShapeScore>,
+    /// Recovery of the reads whose gold alignment is clipped; gold-standard SAM only.
+    pub clipped: Option<ShapeScore>,
+}
+
+/// Recovery of one hard subset of the truth.
+///
+/// Overall accuracy is dominated by the easy majority — ungapped, unclipped reads that almost
+/// anything places correctly. Whether a tool handles gapped or clipped reads is invisible in the
+/// total and obvious here.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ShapeScore {
+    /// Truth reads in this subset.
+    pub total: u64,
+    /// ...that the tool placed anywhere.
+    pub aligned: u64,
+    /// ...that it placed within `tolerance` of the true locus.
+    pub position: u64,
+    /// ...whose alignment it reproduced exactly.
+    pub exact: u64,
+}
+
+impl ShapeScore {
+    /// Share of the subset the tool placed anywhere.
+    ///
+    /// # Returns
+    ///
+    /// `100 * aligned / total`, or 0 for an empty subset.
+    pub fn aligned_pct(&self) -> f64 {
+        pct(self.aligned, self.total)
+    }
+
+    /// Share of the subset placed within tolerance of the true locus.
+    ///
+    /// # Returns
+    ///
+    /// `100 * position / total`, or 0 for an empty subset.
+    pub fn position_pct(&self) -> f64 {
+        pct(self.position, self.total)
+    }
+
+    /// Share of the subset whose alignment was reproduced exactly.
+    ///
+    /// # Returns
+    ///
+    /// `100 * exact / total`, or 0 for an empty subset.
+    pub fn exact_pct(&self) -> f64 {
+        pct(self.exact, self.total)
+    }
+
+    /// Folds another sample's counts in, for pooled aggregation.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The counts to add
+    pub fn add(&mut self, other: &ShapeScore) {
+        self.total += other.total;
+        self.aligned += other.aligned;
+        self.position += other.position;
+        self.exact += other.exact;
+    }
+}
+
+/// Sums two optional subset scores, keeping `None` only when neither side has one.
+fn add_shape(a: Option<ShapeScore>, b: Option<ShapeScore>) -> Option<ShapeScore> {
+    match (a, b) {
+        (None, None) => None,
+        (a, b) => {
+            let mut total = a.unwrap_or_default();
+            total.add(&b.unwrap_or_default());
+            Some(total)
+        }
+    }
 }
 
 impl MappingScore {
@@ -120,6 +194,8 @@ impl MappingScore {
         self.reference = add_option(self.reference, other.reference);
         self.position = add_option(self.position, other.position);
         self.exact = add_option(self.exact, other.exact);
+        self.indel = add_shape(self.indel, other.indel);
+        self.clipped = add_shape(self.clipped, other.clipped);
     }
 }
 
@@ -208,8 +284,10 @@ impl ScoringContext<'_> {
                 // alignment the simulator produced, base for base? Same start and same CIGAR is
                 // exactly that -- a shifted start or a different gap placement is a different
                 // alignment of the same read to the same locus.
-                match truth.cigar_fingerprint {
-                    Some(gold) if record.pos0 == truth.pos0 && record.cigar_fingerprint == gold => {
+                match (truth.cigar_fingerprint, record.cigar_fingerprint) {
+                    (Some(gold), Some(reported))
+                        if record.pos0 == truth.pos0 && reported == gold =>
+                    {
                         Verdict::Exact
                     }
                     _ => Verdict::Position,
@@ -249,13 +327,31 @@ pub fn score(
         score.reference = Some(0);
         score.position = Some(0);
     }
-    // The exact stratum exists only when the truth can express it.
+    // The exact stratum and the hard-read subsets exist only when the truth can express them.
     let gold_alignments = truth.values().any(|t| t.cigar_fingerprint.is_some());
     if stratified && gold_alignments {
         score.exact = Some(0);
     }
+    if gold_alignments {
+        score.indel = Some(ShapeScore::default());
+        score.clipped = Some(ShapeScore::default());
+    }
 
     for (key, entry) in truth {
+        // The hard subsets count every truth read in them, placed or not -- a read the tool never
+        // placed is precisely the kind of failure this is meant to surface.
+        let shape = entry.shape.unwrap_or_default();
+        if shape.indel {
+            if let Some(indel) = &mut score.indel {
+                indel.total += 1;
+            }
+        }
+        if shape.clipped {
+            if let Some(clipped) = &mut score.clipped {
+                clipped.total += 1;
+            }
+        }
+
         let Some(record) = records.get(key) else {
             continue;
         };
@@ -273,6 +369,23 @@ pub fn score(
             }
             if verdict >= Verdict::Exact {
                 score.exact = score.exact.map(|v| v + 1);
+            }
+        }
+
+        for (in_subset, subset) in [
+            (shape.indel, &mut score.indel),
+            (shape.clipped, &mut score.clipped),
+        ] {
+            if !in_subset {
+                continue;
+            }
+            let Some(subset) = subset else { continue };
+            subset.aligned += 1;
+            if verdict >= Verdict::Position {
+                subset.position += 1;
+            }
+            if verdict >= Verdict::Exact {
+                subset.exact += 1;
             }
         }
     }
@@ -365,7 +478,7 @@ mod tests {
                 ..Default::default()
             },
             clip_ends: (0, 0),
-            cigar_fingerprint: 0,
+            cigar_fingerprint: None,
             malformed: false,
             proper_pair: false,
             cigar: None,
@@ -388,6 +501,7 @@ mod tests {
             pos0,
             genome: genome.into(),
             cigar_fingerprint: None,
+            shape: None,
         }
     }
 
@@ -583,6 +697,8 @@ mod tests {
             reference: Some(20),
             position: Some(10),
             exact: None,
+            indel: None,
+            clipped: None,
         };
         a.add(&MappingScore {
             total: 100,
@@ -591,6 +707,8 @@ mod tests {
             reference: Some(70),
             position: Some(60),
             exact: None,
+            indel: None,
+            clipped: None,
         });
 
         assert_eq!(a.total, 200);

@@ -17,6 +17,9 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::options::ScoringMode;
+use log::warn;
+
 use super::error::{AlignError, AlignResult};
 use super::meta::AlignmentFormat;
 use super::sam::parse_alignment;
@@ -101,6 +104,22 @@ pub struct TruthEntry {
     /// Fingerprint of the gold-standard CIGAR, when the truth came from a SAM. `None` for a truth
     /// TSV, which records where a read came from but not how it should align.
     pub cigar_fingerprint: Option<u64>,
+    /// What the gold alignment looks like, when the truth came from a SAM. Lets recovery be
+    /// reported for the hard reads separately from the easy ones.
+    pub shape: Option<GoldShape>,
+}
+
+/// Properties of a gold-standard alignment that make a read harder to place.
+///
+/// A tool's overall accuracy is dominated by the easy majority — ungapped, unclipped reads that
+/// almost anything aligns correctly. Reporting recovery over these subsets separately is what
+/// shows whether a tool actually handles the hard cases or merely averages well.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GoldShape {
+    /// The true alignment contains an insertion or deletion.
+    pub indel: bool,
+    /// The true alignment is clipped at one or both ends.
+    pub clipped: bool,
 }
 
 /// The per-read truth of one sample.
@@ -169,6 +188,9 @@ pub fn load_truth(path: &Path) -> AlignResult<Truth> {
         let mate = match mate {
             b"1" => 1u8,
             b"2" => 2u8,
+            // A commented-out header (`# read_id<TAB>mate<TAB>...`) has five fields but no valid
+            // mate. It is still a comment, not a broken record.
+            _ if line[0] == b'#' => continue,
             other => {
                 return Err(AlignError::parse(
                     path,
@@ -177,7 +199,10 @@ pub fn load_truth(path: &Path) -> AlignResult<Truth> {
                 ))
             }
         };
-        let Some(pos) = parse_u64(pos) else {
+        let Some(parsed_pos) = parse_u64(pos) else {
+            if line[0] == b'#' {
+                continue;
+            }
             return Err(AlignError::parse(
                 path,
                 i + 1,
@@ -187,6 +212,7 @@ pub fn load_truth(path: &Path) -> AlignResult<Truth> {
                 ),
             ));
         };
+        let pos = parsed_pos;
 
         truth.insert(
             ReadKey {
@@ -195,6 +221,7 @@ pub fn load_truth(path: &Path) -> AlignResult<Truth> {
             },
             TruthEntry {
                 cigar_fingerprint: None,
+                shape: None,
                 contig: intern(&mut pool, contig),
                 // The file is 1-based; everything downstream is 0-based. A 0 means "no position",
                 // so it stays 0 rather than wrapping to u64::MAX.
@@ -242,15 +269,25 @@ fn parse_u64(bytes: &[u8]) -> Option<u64> {
 /// and it is what makes the third benchmark possible: not just "did the read land in the right
 /// place" but "is the reported alignment the one the simulator produced".
 ///
-/// The genome label comes from `contig2genome` when one is given, exactly as `build_truth.py`
-/// assigns it; without one, each contig stands for its own genome, so the genome and reference
-/// strata coincide.
+/// The genome label must be written in whatever vocabulary the scorer will compare against, or
+/// every read is judged wrong:
+///
+/// * `full` scoring maps the *predicted* contig through `contig2genome`, falling back to `"NA"`, so
+///   the truth label is that same lookup on the gold contig — which is exactly what
+///   `build_truth.py` writes. A contig missing from the map yields `"NA"` on both sides, so a read
+///   on an unmapped contig is scored as landing on the right genome rather than the wrong one.
+/// * `species` scoring compares the predicted contig's prefix before `sep`, so the label is the
+///   gold contig's prefix. A `contig2genome` is not consulted: the scorer never looks at one in
+///   this mode, and labelling the truth from a map the scorer ignores is how the two vocabularies
+///   drift apart.
 ///
 /// # Arguments
 ///
 /// * `path` - Gold-standard `.sam` or `.sam.gz`
 /// * `format` - Which parser to use
-/// * `contig2genome` - Optional contig-to-genome map
+/// * `contig2genome` - Optional contig-to-genome map, consulted only under `full` scoring
+/// * `scoring` - Which vocabulary the genome label must be written in
+/// * `sep` - Marker-contig separator, for `species` scoring
 /// * `threads` - Worker threads for parsing
 ///
 /// # Returns
@@ -264,17 +301,32 @@ pub fn load_truth_sam(
     path: &Path,
     format: AlignmentFormat,
     contig2genome: Option<&HashMap<Box<str>, Box<str>>>,
+    scoring: ScoringMode,
+    sep: &str,
     threads: usize,
 ) -> AlignResult<Truth> {
     let parsed = parse_alignment(path, format, false, 0, threads, 0)?;
+    if parsed.counters.unmapped > 0 || parsed.counters.no_cigar > 0 {
+        // build_truth.py keeps these; dropping them shrinks `total` and therefore every "of total"
+        // percentage, so it must not happen quietly.
+        warn!(
+            "{}: {} unmapped and {} CIGAR-less gold record(s) carry no true locus and are not part              of the truth",
+            path.display(),
+            parsed.counters.unmapped,
+            parsed.counters.no_cigar
+        );
+    }
     let mut truth = Truth::default();
     let mut pool: HashMap<Box<str>, Arc<str>> = HashMap::new();
 
     for (key, record) in parsed.records {
-        let genome = contig2genome
-            .and_then(|map| map.get(&record.target))
-            .map(|g| &**g)
-            .unwrap_or(&record.target);
+        let genome = match scoring {
+            ScoringMode::Species => record.target.split(sep).next().unwrap_or(&record.target),
+            ScoringMode::Full => contig2genome
+                .and_then(|map| map.get(&record.target))
+                .map(|g| &**g)
+                .unwrap_or("NA"),
+        };
         let genome = match pool.get(genome) {
             Some(shared) => shared.clone(),
             None => {
@@ -298,7 +350,11 @@ pub fn load_truth_sam(
                 contig,
                 pos0: record.pos0,
                 genome,
-                cigar_fingerprint: Some(record.cigar_fingerprint),
+                cigar_fingerprint: record.cigar_fingerprint,
+                shape: record.cigar_fingerprint.map(|_| GoldShape {
+                    indel: record.has_indel(),
+                    clipped: record.counts.clip() > 0,
+                }),
             },
         );
     }
@@ -312,6 +368,8 @@ pub fn load_truth_sam(
 ///
 /// * `path` - Truth TSV, or a gold-standard `.sam`/`.paf`
 /// * `contig2genome` - Optional contig-to-genome map, used only for a gold-standard SAM
+/// * `scoring` - Scoring mode, used only for a gold-standard SAM
+/// * `sep` - Marker-contig separator, used only for a gold-standard SAM
 /// * `threads` - Worker threads, used only for a gold-standard SAM
 ///
 /// # Returns
@@ -324,10 +382,12 @@ pub fn load_truth_sam(
 pub fn load_truth_any(
     path: &Path,
     contig2genome: Option<&HashMap<Box<str>, Box<str>>>,
+    scoring: ScoringMode,
+    sep: &str,
     threads: usize,
 ) -> AlignResult<Truth> {
     match AlignmentFormat::from_path(path) {
-        Some(format) => load_truth_sam(path, format, contig2genome, threads),
+        Some(format) => load_truth_sam(path, format, contig2genome, scoring, sep, threads),
         None => load_truth(path),
     }
 }
@@ -356,12 +416,13 @@ pub fn load_contig2genome(path: &Path) -> AlignResult<HashMap<Box<str>, Box<str>
         if line.is_empty() {
             continue;
         }
+        // A contig name never begins with '#', so here the first byte is decisive -- unlike the
+        // truth file, where a read id might.
+        if line.starts_with('#') {
+            continue;
+        }
         let mut fields = line.split('\t');
         let (Some(contig), Some(genome)) = (fields.next(), fields.next()) else {
-            // As in `load_truth`: shape decides whether a `#` line is a comment or a record.
-            if line.starts_with('#') {
-                continue;
-            }
             return Err(AlignError::parse(
                 path,
                 i + 1,
@@ -458,6 +519,18 @@ mod tests {
         let path = temp_file("short.tsv", "r1\t1\tctg1\t100\tgenomeA\nr2\t1\tctg1\n");
         let err = load_truth(&path).unwrap_err();
         assert!(err.to_string().contains(":2:"), "{err}");
+    }
+
+    #[test]
+    fn a_commented_out_header_is_not_a_broken_record() {
+        // Five fields, so shape alone would call it a record -- but its mate column is the word
+        // "mate", and erroring on an annotation someone added is not helpful.
+        let path = temp_file(
+            "commented_header.tsv",
+            "# read_id\tmate\tcontig\tpos\tgenome\nr1\t1\tctg1\t100\tgenomeA\n",
+        );
+        let truth = load_truth(&path).unwrap();
+        assert_eq!(truth.len(), 1);
     }
 
     #[test]

@@ -468,6 +468,126 @@ fn a_truth_tsv_leaves_the_exact_benchmark_undefined() {
 }
 
 #[test]
+fn a_contig_missing_from_the_map_is_not_scored_as_the_wrong_genome() {
+    // The scorer labels an unmapped contig "NA"; the gold-SAM loader must use the same word, or a
+    // reference with plasmids or decoys -- an incomplete map is the normal state -- scores 0%.
+    let dir = unique_temp_dir("benchpro_align_partial_map");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let map = dir.join("partial.tsv");
+    fs::write(&map, "2002_geneA\tgenomeB\n").expect("write map");
+
+    let meta = format!(
+        "ID\tSample\tTool\tAlignment\tTruth\tContig2Genome\tScoring\n\
+         ds\ts1\tself\t{gold}\t{gold}\t{map}\tfull\n",
+        gold = fixture("gold.sam"),
+        map = map.to_string_lossy(),
+    );
+    let prefix = run_align("partial_map", &meta, &[]);
+    let row_data = read_tsv(&prefix.with_extension("align_summary.tsv"));
+    let row = row_for(&row_data, "self");
+
+    assert_eq!(
+        number(row, "correct_pct"),
+        100.0,
+        "a file must score 100% against itself"
+    );
+    assert_eq!(number(row, "reference_pct"), 100.0);
+    assert_eq!(number(row, "exact_pct"), 100.0);
+}
+
+#[test]
+fn species_scoring_labels_a_gold_sam_with_the_species_prefix() {
+    // `species` never consults a contig map, so the truth label has to be written in the vocabulary
+    // the scorer uses: the contig's prefix. Labelling it with the full contig name scores 0%.
+    let meta = format!(
+        "ID\tSample\tTool\tAlignment\tTruth\tScoring\n\
+         ds\ts1\tself\t{gold}\t{gold}\tspecies\n",
+        gold = fixture("gold.sam"),
+    );
+    let prefix = run_align("species_gold", &meta, &[]);
+    let summary = read_tsv(&prefix.with_extension("align_summary.tsv"));
+    let row = row_for(&summary, "self");
+
+    assert_eq!(number(row, "correct_pct"), 100.0);
+    assert_eq!(number(row, "recall_pct"), 100.0);
+}
+
+#[test]
+fn a_paf_truth_leaves_the_exact_benchmark_undefined() {
+    // PAF carries no CIGAR, so "identical to the gold alignment" is unanswerable. Reporting 100%
+    // (neither side has one) or 0% (the tool never matches) would both be inventions.
+    let meta = format!(
+        "ID\tSample\tTool\tAlignment\tTruth\tContig2Genome\tScoring\n\
+         ds\ts1\tp\t{paf}\t{paf}\t{c2g}\tfull\n",
+        paf = fixture("mapper.paf"),
+        c2g = fixture("reference.contig2genome.tsv"),
+    );
+    let prefix = run_align("paf_truth", &meta, &[]);
+    let summary = read_tsv(&prefix.with_extension("align_summary.tsv"));
+    let row = row_for(&summary, "p");
+
+    assert_eq!(
+        row["exact_pct"], "",
+        "a PAF truth cannot answer benchmark (c)"
+    );
+    assert_eq!(
+        number(row, "position_pct"),
+        100.0,
+        "but it answers (a) and (b)"
+    );
+}
+
+#[test]
+fn the_per_read_table_has_a_header_even_when_no_sample_survives() {
+    // Two tools with disjoint samples: the intersection is empty, so nothing is scored. Every
+    // other table still gets its header, and a zero-byte file is not a table -- readers that
+    // return an empty frame for the others raise on it.
+    let meta = format!(
+        "ID\tSample\tTool\tAlignment\tTruth\tScoring\n\
+         ds\ts1\ta\t{good}\t{truth}\tspecies\n\
+         ds\ts2\tb\t{good}\t{truth}\tspecies\n",
+        good = fixture("good.sam"),
+        truth = fixture("reads.truth.tsv"),
+    );
+    let prefix = run_align("empty_per_read", &meta, &["--per-read"]);
+    let reads = prefix.with_extension("align_reads.tsv");
+
+    let text = fs::read_to_string(&reads).expect("read per-read table");
+    assert!(!text.is_empty(), "an empty file is not a table");
+    assert!(
+        text.starts_with("dataset\tsample\ttool\t"),
+        "header missing: {text:?}"
+    );
+    assert_eq!(text.lines().count(), 1, "header only, no rows");
+}
+
+#[test]
+fn indel_recovery_is_reported_separately_from_the_easy_majority() {
+    // approx.sam reproduces pairs 1-6 exactly and reshapes pairs 7-8. In gold.sam pair 9 carries a
+    // deletion and pair 10 a soft clip, so the hard subsets are small and distinct from the total.
+    let meta = format!(
+        "ID\tSample\tTool\tAlignment\tTruth\tContig2Genome\tScoring\n\
+         ds\ts1\tapprox\t{approx}\t{gold}\t{c2g}\tfull\n",
+        approx = fixture("approx.sam"),
+        gold = fixture("gold.sam"),
+        c2g = fixture("reference.contig2genome.tsv"),
+    );
+    let prefix = run_align("indel_recovery", &meta, &[]);
+    let summary = read_tsv(&prefix.with_extension("align_summary.tsv"));
+    let row = row_for(&summary, "approx");
+
+    // Pair 9 = 2 mates carry a deletion in the gold alignment; pair 10 = 2 mates are clipped.
+    assert_eq!(number(row, "indel_reads"), 2.0);
+    assert_eq!(number(row, "clipped_reads"), 2.0);
+    // approx puts pair 9 thirty bases out with a plain 20M, so it never reproduces the deletion.
+    assert_eq!(number(row, "indel_exact_pct"), 0.0);
+    // ...and pair 10 it places on the wrong genome entirely.
+    assert_eq!(number(row, "clipped_position_pct"), 0.0);
+    // The overall exact rate is far higher, which is exactly why the subsets are reported.
+    assert!(number(row, "exact_pct") > 50.0);
+}
+
+#[test]
 fn a_truth_that_shares_no_read_is_an_error_not_a_zero_score() {
     let dir = unique_temp_dir("benchpro_align_mismatch");
     fs::create_dir_all(&dir).expect("create temp dir");

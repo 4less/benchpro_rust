@@ -42,7 +42,7 @@ pub enum Command {
 }
 
 /// How an alignment's target is compared against the truth.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ValueEnum)]
 pub enum ScoringMode {
     /// Whole-genome reference: stratified genome -> reference -> position, needs `Contig2Genome`.
     Full,

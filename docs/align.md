@@ -53,8 +53,13 @@ source. Point `Truth` at that `.sam`/`.sam.gz` and Benchpro reads it directly; n
 step is needed.
 
 A gold SAM says not only *where* each read came from but *how it truly aligns*, which is what makes
-the third benchmark below possible. The genome label comes from `Contig2Genome` when one is given
-(exactly as `build_truth.py` assigns it); without one, each contig stands for its own genome.
+the third benchmark below possible — and what lets recovery be reported separately for the reads
+that were hard.
+
+The genome label is written in whichever vocabulary the scorer compares against: under `full`
+scoring the gold contig is looked up in `Contig2Genome` (falling back to `NA`, exactly as
+`build_truth.py` does, so a contig absent from the map is not counted as the wrong genome); under
+`species` scoring it is the contig's prefix before `--sep`, which is what that mode compares.
 
 ### Truth TSV
 
@@ -99,8 +104,27 @@ The last three are the three questions worth asking separately:
 alignments perturbed — some reshaped (same start, different CIGAR), some shifted 40 bp inside the
 100 bp window — `reference_pct` and `position_pct` both read 100% while `exact_pct` reads 66%.
 
-`exact_pct` is empty when the truth is a TSV: a TSV records where a read came from, not how it
-should align, so the question is undefined rather than failed.
+`exact_pct` is empty when the truth is a TSV or a PAF: neither records how a read should align, so
+the question is undefined rather than failed.
+
+### Recovery of the hard reads
+
+Overall accuracy is dominated by the easy majority — ungapped, unclipped reads that almost anything
+places correctly. A gold SAM says which reads were hard, so recovery is reported for those
+separately:
+
+| Column | Meaning |
+|---|---|
+| `indel_reads` | truth reads whose **true** alignment contains an indel |
+| `indel_aligned_pct` / `indel_position_pct` / `indel_exact_pct` | how many of those the tool placed / placed correctly / reproduced exactly |
+| `clipped_reads`, `clipped_position_pct`, `clipped_exact_pct` | the same for reads whose true alignment is clipped |
+
+The denominator is every truth read in the subset, placed or not — a gapped read the tool never
+placed is exactly the failure this is meant to surface. An empty subset reports no percentage
+rather than 0%.
+
+On a real ART SAM with a third of its alignments perturbed, the overall `exact_pct` was 66% while
+`indel_exact_pct` was 71% over the 7 gapped reads — the kind of split that is invisible in a total.
 
 **`--scoring species`** — a marker-gene reference, where a read may legitimately land on any of its
 species' markers. Correct iff the target's prefix before `--sep` is the truth genome. The reference
@@ -145,6 +169,7 @@ contenders therefore have every `aln_*` column empty: PAF carries no CIGAR, SEQ 
 | `recall_pct` | correct / **all truth reads** — comparable however permissive the tool is |
 | `reference_pct`, `position_pct` | strata, as shares of all truth reads (`full` only) |
 | `exact_pct` | alignments identical to the gold standard, of all truth reads (gold SAM only) |
+| `indel_*`, `clipped_*` | recovery of the reads that were hard (gold SAM only) |
 | `position_precision_pct` | position / placed (`full` only) |
 
 Both `correct_pct` and `recall_pct` are reported because neither alone is honest: a tool that places

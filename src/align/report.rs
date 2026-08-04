@@ -11,6 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use log::{info, warn};
@@ -25,7 +26,7 @@ use super::base::{BaseMetrics, HeadToHead};
 use super::clip::ClipGeometry;
 use super::error::{AlignError, AlignResult};
 use super::mapq::{self, MapqCount};
-use super::metrics::{pct, MappingScore, ReadVerdict};
+use super::metrics::{pct, MappingScore, ReadVerdict, ShapeScore};
 use super::sam::ParseCounters;
 
 /// A per-read verdict tagged with the run it came from.
@@ -458,6 +459,51 @@ pub fn summary_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
                 .map(|s| s.score.position.map(|v| pct(v, s.score.total)))
                 .collect::<Vec<_>>(),
         ));
+        // Recovery of the hard reads, reported separately because the total is dominated by the
+        // easy majority: a tool can look excellent overall and still lose most of the gapped
+        // reads, which are the ones an aligner is actually judged on.
+        let shape = |f: fn(&MappingScore) -> Option<ShapeScore>,
+                     g: fn(&ShapeScore) -> f64|
+         -> Vec<Option<f64>> {
+            summaries
+                .iter()
+                .map(|s| f(&s.score).filter(|sc| sc.total > 0).map(|sc| g(&sc)))
+                .collect()
+        };
+        columns.push(Series::new(
+            "indel_reads".into(),
+            summaries
+                .iter()
+                .map(|s| s.score.indel.map(|sc| sc.total))
+                .collect::<Vec<Option<u64>>>(),
+        ));
+        columns.push(Series::new(
+            "indel_aligned_pct".into(),
+            shape(|s| s.indel, ShapeScore::aligned_pct),
+        ));
+        columns.push(Series::new(
+            "indel_position_pct".into(),
+            shape(|s| s.indel, ShapeScore::position_pct),
+        ));
+        columns.push(Series::new(
+            "indel_exact_pct".into(),
+            shape(|s| s.indel, ShapeScore::exact_pct),
+        ));
+        columns.push(Series::new(
+            "clipped_reads".into(),
+            summaries
+                .iter()
+                .map(|s| s.score.clipped.map(|sc| sc.total))
+                .collect::<Vec<Option<u64>>>(),
+        ));
+        columns.push(Series::new(
+            "clipped_position_pct".into(),
+            shape(|s| s.clipped, ShapeScore::position_pct),
+        ));
+        columns.push(Series::new(
+            "clipped_exact_pct".into(),
+            shape(|s| s.clipped, ShapeScore::exact_pct),
+        ));
         // The third benchmark: identical to the gold standard's alignment, not merely near it.
         // Null unless the truth was a gold-standard SAM, which is the only source that says how a
         // read should align rather than only where it came from.
@@ -860,7 +906,8 @@ pub fn reads_frame(
 /// writing each `(dataset, sample)` group as it is scored bounds the cost to the largest group.
 pub struct ReadsWriter {
     path: PathBuf,
-    file: File,
+    scratch: PathBuf,
+    file: BufWriter<File>,
     header_written: bool,
     rows: usize,
 }
@@ -880,13 +927,19 @@ impl ReadsWriter {
     ///
     /// Returns [`AlignError::Output`] when the file cannot be created.
     pub fn create(path: &Path) -> AlignResult<Self> {
-        let file = File::create(path).map_err(|e| AlignError::Output {
-            path: path.to_path_buf(),
+        // Written under a scratch name and renamed on completion, so a run that dies partway
+        // leaves no half-table beside the summary that was never written.
+        let mut scratch = path.as_os_str().to_os_string();
+        scratch.push(".partial");
+        let scratch = PathBuf::from(scratch);
+        let file = File::create(&scratch).map_err(|e| AlignError::Output {
+            path: scratch.clone(),
             message: e.to_string(),
         })?;
         Ok(Self {
             path: path.to_path_buf(),
-            file,
+            scratch,
+            file: BufWriter::new(file),
             header_written: false,
             rows: 0,
         })
@@ -923,14 +976,42 @@ impl ReadsWriter {
         Ok(())
     }
 
-    /// Reports what was written.
+    /// Completes the table and moves it into place.
+    ///
+    /// A run in which no group produced a row still gets a header-only file: an empty file is not
+    /// a table, and every reader that copes with zero rows chokes on zero bytes.
     ///
     /// # Returns
     ///
     /// The path and the row count.
-    pub fn finish(self) -> (PathBuf, usize) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AlignError::Output`] when the header cannot be written or the file cannot be
+    /// moved into place.
+    pub fn finish(mut self) -> AlignResult<(PathBuf, usize)> {
+        if !self.header_written {
+            let mut empty = reads_frame(&[])?;
+            CsvWriter::new(&mut self.file)
+                .include_header(true)
+                .with_separator(b'\t')
+                .finish(&mut empty)
+                .map_err(|e| AlignError::Output {
+                    path: self.path.clone(),
+                    message: e.to_string(),
+                })?;
+        }
+        self.file.flush().map_err(|e| AlignError::Output {
+            path: self.scratch.clone(),
+            message: e.to_string(),
+        })?;
+        drop(self.file);
+        std::fs::rename(&self.scratch, &self.path).map_err(|e| AlignError::Output {
+            path: self.path.clone(),
+            message: e.to_string(),
+        })?;
         info!("Wrote {} ({} rows)", self.path.display(), self.rows);
-        (self.path, self.rows)
+        Ok((self.path, self.rows))
     }
 }
 
@@ -1004,6 +1085,8 @@ mod tests {
                 reference: None,
                 position: None,
                 exact: None,
+                indel: None,
+                clipped: None,
             },
             counters: ParseCounters::default(),
             mapq_counts: vec![MapqCount {

@@ -49,8 +49,10 @@ pub struct AlnRecord {
     /// which end was clipped and the CIGAR itself is only retained for a sample.
     pub clip_ends: (u64, u64),
     /// Fingerprint of the CIGAR, kept for every record so an alignment can be compared against a
-    /// gold standard without retaining the string. 0 when there is no CIGAR.
-    pub cigar_fingerprint: u64,
+    /// gold standard without retaining the string. `None` when the format carries no CIGAR at all
+    /// (PAF) — a sentinel value would make "no alignment to compare" indistinguishable from "an
+    /// alignment that happens to hash to it".
+    pub cigar_fingerprint: Option<u64>,
     /// SEQ length disagrees with what the CIGAR consumes: the record cannot be interpreted.
     pub malformed: bool,
     /// The record carries the proper-pair flag. Stored per record rather than counted as it is
@@ -509,7 +511,7 @@ fn consume_record(record: &RefSamRecord, offset: u64, keep_seq: bool, state: &mu
 
     let counts = cigar::count(cigar);
     let clip_ends = cigar::clip_ends(cigar);
-    let cigar_fingerprint = cigar::fingerprint(cigar);
+    let cigar_fingerprint = Some(cigar::fingerprint(cigar));
     let seq = record.seq();
     // SAM requires SEQ length to equal the CIGAR's query consumption (soft clips count, hard do
     // not). A mismatch means the record cannot be interpreted: emitted, but broken.
@@ -594,7 +596,7 @@ fn parse_paf(path: &Path) -> AlignResult<ParsedAlignment> {
                 nm: None,
                 counts: CigarCounts::default(),
                 clip_ends: (0, 0),
-                cigar_fingerprint: 0,
+                cigar_fingerprint: None,
                 malformed: false,
                 proper_pair: false,
                 cigar: None,
@@ -836,7 +838,7 @@ mod tests {
                 nm: Some(0),
                 counts: cigar::count(b"4M"),
                 clip_ends: (0, 0),
-                cigar_fingerprint: 0,
+                cigar_fingerprint: None,
                 malformed: false,
                 proper_pair: false,
                 cigar: Some("4M".into()),
