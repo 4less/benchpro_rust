@@ -13,8 +13,9 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
+use std::sync::Arc;
 
 use super::error::{AlignError, AlignResult};
 
@@ -83,14 +84,18 @@ fn strip_mate_suffix(qname: &[u8]) -> &[u8] {
 }
 
 /// Where a read truly came from.
+///
+/// `contig` and `genome` are shared rather than owned per row: a truth file names a few hundred
+/// distinct contigs and genomes across millions of reads, so interning them turns two allocations
+/// per row into two per distinct value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TruthEntry {
     /// Source contig (of the source genome, on a marker DB).
-    pub contig: Box<str>,
+    pub contig: Arc<str>,
     /// 0-based source position, converted from the file's 1-based column.
     pub pos0: u64,
     /// Source genome label — a genome accession, or a protal `TIID` on a marker DB.
-    pub genome: Box<str>,
+    pub genome: Arc<str>,
 }
 
 /// The per-read truth of one sample.
@@ -112,17 +117,27 @@ pub type Truth = HashMap<ReadKey, TruthEntry>;
 /// Returns [`AlignError::Io`] when the file cannot be read and [`AlignError::Parse`] naming the
 /// line when a row has the wrong number of fields or an unparseable position.
 pub fn load_truth(path: &Path) -> AlignResult<Truth> {
-    let file = File::open(path).map_err(|e| AlignError::io(path, e))?;
-    let mut truth = Truth::default();
+    // One read of the whole file, then byte slices into it. `BufReader::lines()` would allocate a
+    // String per line, which on a ten-million-read truth is ten million allocations that are all
+    // thrown away again.
+    let mut file = File::open(path).map_err(|e| AlignError::io(path, e))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|e| AlignError::io(path, e))?;
 
-    for (i, line) in BufReader::new(file).lines().enumerate() {
-        let line = line.map_err(|e| AlignError::io(path, e))?;
-        let line = line.trim_end_matches('\r');
-        if line.is_empty() || line.starts_with('#') {
+    let mut truth = Truth::default();
+    let mut pool: HashMap<&[u8], Arc<str>> = HashMap::new();
+
+    for (i, raw) in bytes.split(|b| *b == b'\n').enumerate() {
+        let line = match raw.split_last() {
+            Some((b'\r', head)) => head,
+            _ => raw,
+        };
+        if line.is_empty() || line[0] == b'#' {
             continue;
         }
 
-        let mut fields = line.split('\t');
+        let mut fields = line.split(|b| *b == b'\t');
         let (Some(id), Some(mate), Some(contig), Some(pos), Some(genome)) = (
             fields.next(),
             fields.next(),
@@ -135,41 +150,77 @@ pub fn load_truth(path: &Path) -> AlignResult<Truth> {
                 i + 1,
                 format!(
                     "expected 5 tab separated fields (read_id, mate, contig, pos, genome), found {}",
-                    line.split('\t').count()
+                    line.split(|b| *b == b'\t').count()
                 ),
             ));
         };
 
-        let mate: u8 = mate
-            .parse()
-            .map_err(|_| AlignError::parse(path, i + 1, format!("mate '{mate}' is not 1 or 2")))?;
-        if mate != 1 && mate != 2 {
+        let mate = match mate {
+            b"1" => 1u8,
+            b"2" => 2u8,
+            other => {
+                return Err(AlignError::parse(
+                    path,
+                    i + 1,
+                    format!("mate '{}' is not 1 or 2", String::from_utf8_lossy(other)),
+                ))
+            }
+        };
+        let Some(pos) = parse_u64(pos) else {
             return Err(AlignError::parse(
                 path,
                 i + 1,
-                format!("mate '{mate}' is not 1 or 2"),
+                format!(
+                    "position '{}' is not a number",
+                    String::from_utf8_lossy(pos)
+                ),
             ));
-        }
-        let pos: u64 = pos.parse().map_err(|_| {
-            AlignError::parse(path, i + 1, format!("position '{pos}' is not a number"))
-        })?;
+        };
 
         truth.insert(
             ReadKey {
-                id: id.into(),
+                id: String::from_utf8_lossy(id).into_owned().into(),
                 mate,
             },
             TruthEntry {
-                contig: contig.into(),
+                contig: intern(&mut pool, contig),
                 // The file is 1-based; everything downstream is 0-based. A 0 means "no position",
                 // so it stays 0 rather than wrapping to u64::MAX.
                 pos0: pos.saturating_sub(1),
-                genome: genome.into(),
+                genome: intern(&mut pool, genome),
             },
         );
     }
 
     Ok(truth)
+}
+
+/// Returns the shared copy of `value`, creating it on first sight.
+///
+/// The pool keys on the slice into the file buffer, so a repeat costs a lookup and an `Arc` clone
+/// rather than an allocation.
+fn intern<'a>(pool: &mut HashMap<&'a [u8], Arc<str>>, value: &'a [u8]) -> Arc<str> {
+    if let Some(shared) = pool.get(value) {
+        return shared.clone();
+    }
+    let shared: Arc<str> = String::from_utf8_lossy(value).into_owned().into();
+    pool.insert(value, shared);
+    pool[value].clone()
+}
+
+/// Parses an unsigned decimal, returning `None` on anything that is not all digits.
+fn parse_u64(bytes: &[u8]) -> Option<u64> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut value: u64 = 0;
+    for &byte in bytes {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        value = value.checked_mul(10)?.checked_add((byte - b'0') as u64)?;
+    }
+    Some(value)
 }
 
 /// Loads a `contig<TAB>genome` map.

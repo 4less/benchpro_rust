@@ -190,7 +190,7 @@ impl ScoringContext<'_> {
                 if genome != &*truth.genome {
                     return Verdict::Wrong;
                 }
-                if record.target != truth.contig {
+                if *record.target != *truth.contig {
                     return Verdict::Genome;
                 }
                 if record.pos0.abs_diff(truth.pos0) <= self.tolerance {
