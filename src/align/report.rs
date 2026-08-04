@@ -418,6 +418,10 @@ pub fn summary_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
 
     if has_strata {
         columns.push(Series::new(
+            "genome_pct".into(),
+            floats(summaries, |s| s.score.correct_pct()),
+        ));
+        columns.push(Series::new(
             "reference_pct".into(),
             summaries
                 .iter()
@@ -455,9 +459,16 @@ pub fn summary_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
     };
 
     columns.extend([
+        // Every aln_* column below comes from `base`, so they all share one denominator: the
+        // alignments the tool emitted. Deriving some of them from `score.aligned` instead -- the
+        // truth reads it placed -- silently mixes two denominators in one row, and produces
+        // percentages over 100 as soon as a tool places a read the truth does not know about.
         Series::new(
             "aln_records".into(),
-            numbers(summaries, |s| s.score.aligned),
+            summaries
+                .iter()
+                .map(|s| s.base.as_ref().map(|b| b.records))
+                .collect::<Vec<Option<u64>>>(),
         ),
         Series::new(
             "aln_unmapped".into(),
@@ -486,20 +497,8 @@ pub fn summary_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
         Series::new("aln_indel".into(), base_share(|b| b.indel)),
         Series::new("aln_malformed".into(), base_share(|b| b.malformed)),
         Series::new("aln_unknown_ref".into(), base(|b| b.unknown_ref)),
-        Series::new(
-            "aln_no_nm".into(),
-            summaries
-                .iter()
-                .map(|s| pct(s.counters.no_nm, s.score.aligned))
-                .collect::<Vec<_>>(),
-        ),
-        Series::new(
-            "aln_proper_pair".into(),
-            summaries
-                .iter()
-                .map(|s| pct(s.counters.proper_pair, s.score.aligned))
-                .collect::<Vec<_>>(),
-        ),
+        Series::new("aln_no_nm".into(), base_share(|b| b.no_nm)),
+        Series::new("aln_proper_pair".into(), base_share(|b| b.proper_pair)),
         Series::new(
             "h2h_peer".into(),
             summaries

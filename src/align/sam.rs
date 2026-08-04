@@ -13,7 +13,7 @@
 //!   `verify_limit` records — reservoir, not the first N, because SAM order follows read order,
 //!   which on simulated data is grouped by source genome.
 
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
@@ -50,6 +50,9 @@ pub struct AlnRecord {
     pub clip_ends: (u64, u64),
     /// SEQ length disagrees with what the CIGAR consumes: the record cannot be interpreted.
     pub malformed: bool,
+    /// The record carries the proper-pair flag. Stored per record rather than counted as it is
+    /// seen, because a record that loses the primary contest must not contribute to the totals.
+    pub proper_pair: bool,
     /// CIGAR, retained only for records selected for the reference replay.
     pub cigar: Option<Box<str>>,
     /// SEQ, retained only for records selected for the reference replay.
@@ -202,6 +205,9 @@ struct ParseState {
     seed: u64,
     /// The records currently holding a sequence, as a max-heap on the sampling hash.
     reservoir: BinaryHeap<Sampled>,
+    /// The keys currently in `reservoir`. The heap cannot answer "is this key already in?" in less
+    /// than linear time, and it has to: the same mate can reach `admit` twice (see it there).
+    sampled: HashSet<ReadKey>,
 }
 
 impl Merge for ParseState {
@@ -231,11 +237,25 @@ impl ParseState {
     /// records with the smallest hash — a pure function of the record set and the seed. That is
     /// what makes the sample independent of how batches happened to be split across workers.
     fn admit(&mut self, candidate: Sampled) {
-        if self.keep_limit == 0 {
-            self.reservoir.push(candidate);
+        // A mate can be offered twice: two workers each saw a primary record for it (a malformed or
+        // merged SAM), and both put it in their reservoir. Admitting it again would spend a second
+        // slot on the same read, and worse, losing the second round would strip the bases off the
+        // copy the heap is still holding -- so the record would sit in the sample unreplayable.
+        if self.sampled.contains(&candidate.key) {
             return;
         }
-        if self.reservoir.len() < self.keep_limit {
+        // The record this candidate speaks for may have lost the primary contest during the merge,
+        // in which case the surviving record is a different one that may already have been
+        // stripped. Sampling it would put an unreplayable entry in the heap and shrink the sample.
+        if !self
+            .records
+            .get(&candidate.key)
+            .is_some_and(|record| record.seq.is_some())
+        {
+            return;
+        }
+        if self.keep_limit == 0 || self.reservoir.len() < self.keep_limit {
+            self.sampled.insert(candidate.key.clone());
             self.reservoir.push(candidate);
             return;
         }
@@ -243,7 +263,9 @@ impl ParseState {
         match self.reservoir.peek() {
             Some(worst) if candidate < *worst => {
                 let evicted = self.reservoir.pop().expect("heap is non-empty");
+                self.sampled.remove(&evicted.key);
                 self.strip(&evicted.key);
+                self.sampled.insert(candidate.key.clone());
                 self.reservoir.push(candidate);
             }
             _ => self.strip(&candidate.key),
@@ -369,6 +391,24 @@ fn open(path: &Path) -> AlignResult<Box<dyn Read + Send>> {
     }
 }
 
+/// Fills in the counters that can only be known once the primary of every mate is settled.
+///
+/// `no_nm` and `proper_pair` describe the records that *won* the primary contest, so counting them
+/// as records stream past would count a duplicate that is later discarded — and which duplicate a
+/// worker sees depends on how batches were split, which is not deterministic.
+fn finish_counters(parsed: &mut ParsedAlignment) {
+    parsed.counters.no_nm = parsed
+        .records
+        .values()
+        .filter(|record| record.nm.is_none())
+        .count() as u64;
+    parsed.counters.proper_pair = parsed
+        .records
+        .values()
+        .filter(|record| record.proper_pair)
+        .count() as u64;
+}
+
 /// Resolves the requested thread count to the number of workers to spawn.
 ///
 /// `0` means "all available", which is what the CLI documents — taking `max(1)` of it instead would
@@ -427,10 +467,12 @@ fn parse_sam(
         state.counters.secondary
     );
 
-    Ok(ParsedAlignment {
+    let mut parsed = ParsedAlignment {
         records: state.records,
         counters: state.counters,
-    })
+    };
+    finish_counters(&mut parsed);
+    Ok(parsed)
 }
 
 /// Folds one SAM record into the worker's state.
@@ -469,13 +511,11 @@ fn consume_record(record: &RefSamRecord, offset: u64, keep_seq: bool, state: &mu
     // not). A mismatch means the record cannot be interpreted: emitted, but broken.
     let malformed = seq != b"*" && seq.len() as u64 != counts.query_consumed();
 
+    // `no_nm` and `proper_pair` are NOT counted here. This record may still lose the primary
+    // contest to a lower-offset duplicate -- in another worker, whose batch this one cannot see --
+    // and a counter incremented now could not be taken back. Both are derived from the surviving
+    // record set once every worker has merged (see `finish_counters`).
     let nm = record.tag(b"NM").and_then(|tag| tag.as_int());
-    if nm.is_none() {
-        state.counters.no_nm += 1;
-    }
-    if flag & 0x2 != 0 {
-        state.counters.proper_pair += 1;
-    }
 
     let mut aln = AlnRecord {
         target: String::from_utf8_lossy(record.rname()).into_owned().into(),
@@ -485,6 +525,7 @@ fn consume_record(record: &RefSamRecord, offset: u64, keep_seq: bool, state: &mu
         counts,
         clip_ends,
         malformed,
+        proper_pair: flag & 0x2 != 0,
         cigar: None,
         seq: None,
         vnm: None,
@@ -539,7 +580,6 @@ fn parse_paf(path: &Path) -> AlignResult<ParsedAlignment> {
             .and_then(|f| f.parse::<u8>().ok())
             .unwrap_or(0);
 
-        parsed.counters.no_nm += 1;
         parsed.records.insert(
             key,
             AlnRecord {
@@ -550,6 +590,7 @@ fn parse_paf(path: &Path) -> AlignResult<ParsedAlignment> {
                 counts: CigarCounts::default(),
                 clip_ends: (0, 0),
                 malformed: false,
+                proper_pair: false,
                 cigar: None,
                 seq: None,
                 vnm: None,
@@ -558,6 +599,7 @@ fn parse_paf(path: &Path) -> AlignResult<ParsedAlignment> {
         );
     }
 
+    finish_counters(&mut parsed);
     Ok(parsed)
 }
 
@@ -772,6 +814,34 @@ mod tests {
         assert_eq!(parsed.records.len(), 4);
     }
 
+    /// Inserts a record holding bases, then offers it to the sample -- the same order
+    /// `consume_record` uses, since `admit` only samples records that are present and unstripped.
+    fn insert_and_admit(state: &mut ParseState, id: &str, offset: u64) {
+        let key = ReadKey {
+            id: id.into(),
+            mate: 1,
+        };
+        state.records.insert(
+            key.clone(),
+            AlnRecord {
+                target: "ctg1".into(),
+                pos0: 0,
+                mapq: 60,
+                nm: Some(0),
+                counts: cigar::count(b"4M"),
+                clip_ends: (0, 0),
+                malformed: false,
+                proper_pair: false,
+                cigar: Some("4M".into()),
+                seq: Some("ACGT".into()),
+                vnm: None,
+                offset,
+            },
+        );
+        let hash = sample_hash(&key, state.seed);
+        state.admit(Sampled { hash, key });
+    }
+
     /// Runs `admit` over the given keys in the given order, returning the surviving sample.
     fn admit_all(order: &[u32], limit: usize) -> Vec<ReadKey> {
         let mut state = ParseState {
@@ -780,16 +850,63 @@ mod tests {
             ..Default::default()
         };
         for i in order {
-            let key = ReadKey {
-                id: format!("read{i}").into(),
-                mate: 1,
-            };
-            let hash = sample_hash(&key, state.seed);
-            state.admit(Sampled { hash, key });
+            insert_and_admit(&mut state, &format!("read{i}"), 0);
         }
         let mut kept: Vec<ReadKey> = state.reservoir.into_iter().map(|s| s.key).collect();
         kept.sort();
         kept
+    }
+
+    /// A state holding `keys` in its reservoir, each with a retained sequence.
+    fn state_with(keys: &[&str], limit: usize, offset: u64) -> ParseState {
+        let mut state = ParseState {
+            keep_limit: limit,
+            seed: 7,
+            ..Default::default()
+        };
+        for id in keys {
+            insert_and_admit(&mut state, id, offset);
+        }
+        state
+    }
+
+    #[test]
+    fn a_mate_seen_by_two_workers_keeps_its_sequence() {
+        // The same (id, mate) can appear as a primary twice in a malformed or merged SAM, and the
+        // two copies can land in different workers. The merged sample must still hold it exactly
+        // once, with its bases intact -- stripping it would silently shrink the replay set.
+        let mut left = state_with(&["dup", "a"], 4, 0);
+        let mut right = state_with(&["dup", "b"], 4, 100);
+
+        left.merge_from(&mut right);
+
+        let dup = ReadKey {
+            id: "dup".into(),
+            mate: 1,
+        };
+        assert!(
+            left.records[&dup].seq.is_some(),
+            "the duplicate lost its bases and can no longer be replayed"
+        );
+        let slots: Vec<&ReadKey> = left.reservoir.iter().map(|s| &s.key).collect();
+        assert_eq!(
+            slots.iter().filter(|k| ***k == dup).count(),
+            1,
+            "the duplicate occupies two of the {} sample slots",
+            left.keep_limit
+        );
+    }
+
+    #[test]
+    fn a_duplicate_does_not_evict_a_legitimate_sample_member() {
+        // keep_limit is 2 and there are only 2 distinct mates, so both must survive.
+        let mut left = state_with(&["dup", "a"], 2, 0);
+        let mut right = state_with(&["dup"], 2, 100);
+
+        left.merge_from(&mut right);
+
+        let retained = left.records.values().filter(|r| r.seq.is_some()).count();
+        assert_eq!(retained, 2, "a duplicate cost a distinct mate its place");
     }
 
     #[test]
@@ -829,19 +946,14 @@ mod tests {
 
     #[test]
     fn a_different_seed_selects_a_different_sample() {
-        let mut with_seed = |seed: u64| {
+        let with_seed = |seed: u64| {
             let mut state = ParseState {
                 keep_limit: 20,
                 seed,
                 ..Default::default()
             };
             for i in 0..200u32 {
-                let key = ReadKey {
-                    id: format!("read{i}").into(),
-                    mate: 1,
-                };
-                let hash = sample_hash(&key, seed);
-                state.admit(Sampled { hash, key });
+                insert_and_admit(&mut state, &format!("read{i}"), 0);
             }
             let mut kept: Vec<ReadKey> = state.reservoir.into_iter().map(|s| s.key).collect();
             kept.sort();
@@ -862,6 +974,39 @@ mod tests {
             mate: 2,
         };
         assert_ne!(sample_hash(&mate1, 0), sample_hash(&mate2, 0));
+    }
+
+    #[test]
+    fn a_discarded_duplicate_does_not_reach_the_counters() {
+        // The duplicate loses the primary contest, so its missing NM and its absent proper-pair
+        // flag must not appear in the totals. Counting as records stream past would include them,
+        // and which worker sees which copy is not deterministic.
+        let content = concat!(
+            "r1\t99\tctg1\t101\t60\t8M\t*\t0\t0\tACGTACGT\tIIIIIIII\tNM:i:0\n",
+            "r1\t0\tctg1\t201\t60\t8M\t*\t0\t0\tACGTACGT\tIIIIIIII\n",
+        );
+        let parsed = parse_named("dup_counters", content, 1);
+
+        assert_eq!(parsed.records.len(), 1);
+        assert_eq!(parsed.counters.no_nm, 0, "the winning record carries an NM");
+        assert_eq!(
+            parsed.counters.proper_pair, 1,
+            "the winning record is flagged 0x2; the duplicate is not"
+        );
+    }
+
+    #[test]
+    fn counters_describe_the_winning_records_only() {
+        // Same mates, opposite order in the file: the record that wins changes, so the counters
+        // must change with it rather than reflecting whatever streamed past.
+        let content = concat!(
+            "r1\t0\tctg1\t201\t60\t8M\t*\t0\t0\tACGTACGT\tIIIIIIII\n",
+            "r1\t99\tctg1\t101\t60\t8M\t*\t0\t0\tACGTACGT\tIIIIIIII\tNM:i:0\n",
+        );
+        let parsed = parse_named("dup_counters_rev", content, 1);
+
+        assert_eq!(parsed.counters.no_nm, 1, "now the NM-less record wins");
+        assert_eq!(parsed.counters.proper_pair, 0);
     }
 
     #[test]

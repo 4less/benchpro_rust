@@ -286,6 +286,55 @@ fn per_read_output_covers_every_truth_read_for_every_tool() {
 }
 
 #[test]
+fn base_level_columns_are_shares_of_emitted_alignments_not_of_truth_reads() {
+    // A tool routinely places reads the truth does not cover: a subsampled truth, a marker DB, a
+    // spike-in. `aln_*` must then divide by what the tool emitted (19 primaries here), not by the
+    // 4 truth reads it happened to place -- dividing by the latter yields percentages over 100.
+    let dir = unique_temp_dir("benchpro_align_denominator");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let truth = dir.join("four.truth.tsv");
+    let full = fs::read_to_string(fixture("reads.truth.tsv")).expect("read truth");
+    let head: String = full.lines().take(4).map(|l| format!("{l}\n")).collect();
+    fs::write(&truth, head).expect("write truth");
+
+    let meta = format!(
+        "ID\tSample\tTool\tAlignment\tTruth\tScoring\n\
+         ds\ts1\tsloppy\t{sloppy}\t{truth}\tspecies\n",
+        sloppy = fixture("sloppy.sam"),
+        truth = truth.to_string_lossy(),
+    );
+    let prefix = run_align("denominator", &meta, &[]);
+    let summary = read_tsv(&prefix.with_extension("align_summary.tsv"));
+    let row = row_for(&summary, "sloppy");
+
+    assert_eq!(
+        number(row, "aligned"),
+        4.0,
+        "only 4 truth reads were placed"
+    );
+    assert_eq!(
+        number(row, "aln_records"),
+        19.0,
+        "but 19 alignments were emitted"
+    );
+    // 10 of the 19 primaries carry no NM tag.
+    assert!((number(row, "aln_no_nm") - 100.0 * 10.0 / 19.0).abs() < 1e-9);
+
+    for column in [
+        "aln_no_nm",
+        "aln_proper_pair",
+        "aln_malformed",
+        "aln_coverage",
+    ] {
+        let value = number(row, column);
+        assert!(
+            (0.0..=100.0).contains(&value),
+            "{column} = {value} is not a percentage"
+        );
+    }
+}
+
+#[test]
 fn a_truth_that_shares_no_read_is_an_error_not_a_zero_score() {
     let dir = unique_temp_dir("benchpro_align_mismatch");
     fs::create_dir_all(&dir).expect("create temp dir");

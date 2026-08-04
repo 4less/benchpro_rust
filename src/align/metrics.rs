@@ -342,6 +342,7 @@ mod tests {
             },
             clip_ends: (0, 0),
             malformed: false,
+            proper_pair: false,
             cigar: None,
             seq: None,
             vnm: None,
