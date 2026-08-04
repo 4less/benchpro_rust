@@ -1,5 +1,20 @@
 # Installation
 
+## With `just`
+
+```bash
+just install          # builds release and installs into $CARGO_HOME/bin (default ~/.cargo/bin)
+just install-local    # installs into ~/.local/bin instead
+just prefix=/usr/local install
+just uninstall
+```
+
+`just install` also installs `benchpro_visualize_monophyly` (the R helper used by
+`benchpro strain` plots) when `scripts/` is present, and warns if the target `bin` directory is not
+on your `PATH`. `just` on its own lists every recipe; `just check` runs fmt, clippy and the tests as
+CI would.
+
+
 This is a CLI tool, so the goal is to build a binary and put it on your PATH. No admin rights are required.
 
 ## Option A: Build in place with Cargo

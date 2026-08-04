@@ -1,8 +1,49 @@
 set shell := ["bash", "-cu"]
 
+# Where `just install` puts things. The binary lands in {{prefix}}/bin.
+# Override for one run:  just prefix=/usr/local install
+prefix := env_var_or_default("CARGO_HOME", env_var("HOME") / ".cargo")
+
+# Default to showing what is available rather than running something.
+default:
+    @just --list
+
+# Build in release mode and install `benchpro` into {{prefix}}/bin.
+install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo install --path . --root "{{prefix}}" --force
+    # The R helper is not a cargo target, so cargo install does not know about it. It is only
+    # needed for `benchpro strain` plots; a checkout without it should still install the binary.
+    if [ -f scripts/benchpro_visualize_monophyly.R ]; then
+        install -m 755 scripts/benchpro_visualize_monophyly.R \
+            "{{prefix}}/bin/benchpro_visualize_monophyly"
+    fi
+    echo
+    echo "installed: {{prefix}}/bin/benchpro"
+    case ":${PATH}:" in
+        *":{{prefix}}/bin:"*) ;;
+        *) echo "note: {{prefix}}/bin is not on your PATH" ;;
+    esac
+
+# Remove what `just install` installed.
+uninstall:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo uninstall --root "{{prefix}}" benchpro || true
+    rm -f "{{prefix}}/bin/benchpro_visualize_monophyly"
+
+# Install into ~/.local instead of the cargo prefix.
 install-local:
-    cargo install --path . --root ~/.local
-    install -m 755 scripts/benchpro_visualize_monophyly.R ~/.local/bin/benchpro_visualize_monophyly
+    @just prefix="$HOME/.local" install
+
+# Build, lint and test as CI would.
+check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo fmt -- --check
+    cargo clippy --all-targets
+    cargo test --release
 
 sylph-debug:
     mkdir -p sandbox/output
