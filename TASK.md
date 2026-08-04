@@ -577,6 +577,16 @@ The lesson for any future parity work: **`aligned == records` on every test inpu
 denominators.** Inputs where a tool places reads the truth does not cover are now part of the
 fixture set.
 
+That lesson did not take the first time — checkpoint 20 found three more denominator defects in a
+new table, and again the fixture placed every read, so again the assertions could not tell the two
+quantities apart. `tests/integration_align.rs::the_fixture_set_can_distinguish_every_denominator`
+now asserts the *inputs* carry each distinction a metric could collapse: unplaced reads, wrong
+placements, alignments outside the truth, right-genome-wrong-locus, and right-locus-wrong-alignment.
+It guards the precondition the other tests depend on rather than detecting a bad metric itself —
+which is the failure that actually recurred. It found a real gap the moment it was written: no
+committed fixture placed reads outside the truth, the exact property whose absence caused
+checkpoint-15's C1.
+
 ### Resolved — `mappable_base`: both denominators are reported
 
 §8.5 specifies `mappable_base` (the most any one contender got right at MAPQ 0) as the MAPQ curve's

@@ -697,6 +697,98 @@ fn a_tsv_truth_row_gets_no_exact_column_value_even_beside_a_gold_row() {
     assert!(gold_rows.iter().any(|r| !r["exact_pct"].is_empty()));
 }
 
+/// Every distinction a metric could silently collapse, and the property a fixture needs to separate
+/// it.
+///
+/// This guards the *precondition* the other tests depend on; it does not itself detect a wrong
+/// metric. Twice a wrong denominator survived review because no fixture could tell the two
+/// quantities apart — at checkpoint 10 `aligned == records` held everywhere, and at checkpoint 20
+/// the per-genome fixture placed every read — and in both cases the assertions were fine, the
+/// inputs were not. So this fails when the fixture set *loses* the ability to discriminate, which
+/// is the failure that actually recurred.
+type Row = HashMap<String, String>;
+
+/// A named property a fixture must exhibit, and the predicate that tests one output row for it.
+type Discriminator = (&'static str, fn(&Row) -> bool);
+
+const DISCRIMINATORS: &[Discriminator] = &[
+    // total vs aligned: a tool that does not place every truth read.
+    ("some reads are never placed", |r| {
+        num(r, "aligned") < num(r, "total")
+    }),
+    // aligned vs correct: precision below 1, so correct/aligned differs from aligned/total.
+    ("some placements are wrong", |r| {
+        num(r, "correct") < num(r, "aligned")
+    }),
+    // aligned vs emitted: a tool that places reads the truth does not know about.
+    ("some alignments are outside the truth", |r| {
+        r.get("aln_records").is_some_and(|v| !v.is_empty())
+            && num(r, "aln_records") > num(r, "aligned")
+    }),
+    // correct vs position: the right genome at the wrong locus.
+    (
+        "some reads land on the right genome at the wrong locus",
+        |r| {
+            r.get("position_pct").is_some_and(|v| !v.is_empty())
+                && num(r, "position_pct") < num(r, "recall_pct")
+        },
+    ),
+    // position vs exact: the right locus with a different alignment.
+    (
+        "some reads land at the right locus with a different alignment",
+        |r| {
+            r.get("exact_pct").is_some_and(|v| !v.is_empty())
+                && num(r, "exact_pct") < num(r, "position_pct")
+        },
+    ),
+];
+
+/// A numeric cell, treating an empty cell as 0 for the purposes of a comparison.
+fn num(row: &Row, column: &str) -> f64 {
+    row.get(column)
+        .filter(|v| !v.is_empty())
+        .map_or(0.0, |v| v.parse().unwrap_or(0.0))
+}
+
+#[test]
+fn the_fixture_set_can_distinguish_every_denominator() {
+    // One run over every contender the fixtures offer, against both truth kinds.
+    let meta = format!(
+        "ID\tSample\tTool\tAlignment\tTruth\tContig2Genome\tReference\tScoring\tPeer\n\
+         tsv\ts1\tgood\t{good}\t{truth}\t{c2g}\t{reference}\tfull\tsloppy\n\
+         tsv\ts1\tsloppy\t{sloppy}\t{truth}\t{c2g}\t{reference}\tfull\t\n\
+         tsv\ts1\textra\t{extra}\t{truth}\t{c2g}\t{reference}\tfull\t\n\
+         gold\ts1\tapprox\t{approx}\t{gold}\t{c2g}\t{reference}\tfull\t\n\
+         gold\ts1\tlopsided\t{lop}\t{two}\t{c2g}\t{reference}\tfull\t\n",
+        good = fixture("good.sam"),
+        sloppy = fixture("sloppy.sam"),
+        extra = fixture("extra_reads.sam"),
+        approx = fixture("approx.sam"),
+        lop = fixture("two_genomes.pred.sam"),
+        truth = fixture("reads.truth.tsv"),
+        gold = fixture("gold.sam"),
+        two = fixture("two_genomes.gold.sam"),
+        c2g = fixture("reference.contig2genome.tsv"),
+        reference = fixture("reference.fna"),
+    );
+    let prefix = run_align("discriminators", &meta, &["--verify-sample", "0"]);
+    let summary = read_tsv(&prefix.with_extension("align_summary.tsv"));
+    let genomes = read_tsv(&prefix.with_extension("align_genomes.tsv"));
+    assert!(!summary.is_empty() && !genomes.is_empty());
+
+    let missing: Vec<&str> = DISCRIMINATORS
+        .iter()
+        .filter(|(_, holds)| !summary.iter().chain(genomes.iter()).any(holds))
+        .map(|(name, _)| *name)
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "no fixture exercises: {missing:?} -- a metric that swapped these denominators would pass \
+         every test in this file"
+    );
+}
+
 #[test]
 fn a_truth_that_shares_no_read_is_an_error_not_a_zero_score() {
     let dir = unique_temp_dir("benchpro_align_mismatch");
