@@ -435,25 +435,25 @@ Python tool prints and what makes the module usable standalone.
 
 ## 10. Implementation phases
 
-- [ ] **Phase 0 — wiring.** Branch `alignment` (done). Add `bioreader` to `Cargo.toml`, `pub mod
+- [x] **Phase 0 — wiring.** Branch `alignment` (done). Add `bioreader` to `Cargo.toml`, `pub mod
       align;`, `Command::Align`, `AlignArgs`, the `main.rs` arm, and an `align/mod.rs` whose
       `run_align` only parses the meta and logs it. `cargo build --release` must pass **before any
       logic is written** — the git dependency on a nightly crate is the one real integration risk.
-- [ ] **Phase 1 — inputs.** `align/meta.rs`, `align/truth.rs`, `align/error.rs`. Full up-front
+- [x] **Phase 1 — inputs.** `align/meta.rs`, `align/truth.rs`, `align/error.rs`. Full up-front
       validation with all errors reported at once. Unit tests on small fixtures.
-- [ ] **Phase 2 — SAM/PAF parsing.** `align/sam.rs` + `align/cigar.rs` on bioreader; counters;
+- [x] **Phase 2 — SAM/PAF parsing.** `align/sam.rs` + `align/cigar.rs` on bioreader; counters;
       deterministic primary selection; reservoir sampling; gzip via `MultiGzDecoder`. Unit-test the
       CIGAR arithmetic and the malformed check against hand-written records.
-- [ ] **Phase 3 — mapping score + MAPQ curve.** `align/metrics.rs`, `align/mapq.rs`, `align/report.rs`.
+- [x] **Phase 3 — mapping score + MAPQ curve.** `align/metrics.rs`, `align/mapq.rs`, `align/report.rs`.
       At the end of this phase `benchpro align` reproduces `bench.py`'s `align_pct`/`correct_pct`
       and the MAPQ curve for both scoring modes. **Cross-check against the Python output on a real
       SAM before moving on.**
-- [ ] **Phase 4 — base-level metrics + replay.** `align/reference.rs`, `.fai` build, `summarize`,
+- [x] **Phase 4 — base-level metrics + replay.** `align/reference.rs`, `.fai` build, `summarize`,
       head-to-head. Cross-check `aln_identity_v` and `h2h_nm_delta` against `align_metrics.py`.
-- [ ] **Phase 5 — aggregation & polish.** Pooled aggregation, `restrict_to_common_samples`, sd,
+- [x] **Phase 5 — aggregation & polish.** Pooled aggregation, `restrict_to_common_samples`, sd,
       `--per-read`, the stderr table, doc comments with examples on every public item, `cargo clippy`
       clean, `cargo fmt`.
-- [ ] **Phase 6 (optional) — clip geometry.** Port `clip_geometry.py`: classify a clipped alignment
+- [x] **Phase 6 — clip geometry.** Port `clip_geometry.py`: classify a clipped alignment
       as DOVETAIL (clip hangs off the contig end, so clipping is legitimate) vs CONTAINED (clip sits
       strictly inside, so those bases *could* have aligned and did not). Needs contig lengths, which
       the `.fai` and the SAM header both already provide. Gate behind `--clip-geometry`.
@@ -485,13 +485,53 @@ Python tool prints and what makes the module usable standalone.
 - Rayon across files/rows; the replay stays sequential per file for seek locality.
 - Determinism: identical inputs and `--seed` must give byte-identical outputs.
 
-## 13. Decisions to confirm before phase 3
+## 13. Outcome
 
-1. **Truth format.** Consume the existing headerless 5-column TSV as-is (assumed here), or also
-   accept a headered benchpro-style variant? Assumption: the existing format, so
-   `flexalign_benchmark`'s `build_truth.py` output works unchanged.
-2. **Does this replace the Python scorer?** The plan assumes `flexalign_benchmark` keeps
-   orchestrating and calls `benchpro align` in place of `report.py`/`align_metrics.py`. If instead
-   benchpro should also grow the timing/report side, that is a much larger scope and a separate task.
-3. **Read-pair handling.** Both mates are scored independently throughout (as in the Python), so a
-   pair contributes two rows. Pair-level metrics beyond the `proper_pair` flag are not ported.
+All six phases are implemented on branch `alignment`, one commit each.
+
+### Parity with the Python
+
+Checked against `align_metrics.py` / `report.py` on real data from
+`~/git/4less/flexalign_benchmark/SRR8797712.flexalign.sam`, not only on the fixture:
+
+| what | records | result |
+|---|---|---|
+| mapping score + MAPQ curve | 128,222 | exact — `correct_pct` 69.88738282042084, `mappable_base` 89611, 61 cutoffs, best-F1 82.27495374897285 |
+| base-level metrics, `--verify-sample 0` | 28,557 | all 16 metrics to 12+ significant digits, incl. `aln_nm_agree` 13.429281787302587 |
+| head-to-head vs a perturbed peer | 25,707 common | exact — `same_locus` 88.38059672462754, `better` 61.443661971830984, `nm_delta` -0.9726232394366198 |
+| clip geometry | 28,557 | exact — dovetail 0.46223342788%, contained 10.501803411%, mean clips 69.99242424 / 45.30076692 |
+
+Residual differences are 1 ulp, from float summation order (a `HashMap` iterates in a different
+order than a Python `dict`).
+
+### Divergences from the Python, deliberate
+
+1. **`recall_pct` uses `correct / total`**, matching `bench.py`'s summary. An earlier draft here
+   divided by `mappable_base`; that base belongs only to the MAPQ curve's recall axis. Corrected in
+   phase 5.
+2. **PAF rows carry no base-level columns at all.** The Python computes them anyway and gets a row
+   of zeroes; an empty cell is the honest rendering of "this format cannot answer that".
+3. **The primary alignment is chosen by byte offset**, not by whichever worker saw it first, so the
+   record set does not depend on the thread count. Asserted by a test.
+4. **No samtools dependency.** `.fai` is built by a plain scan; the Python shells out when samtools
+   is on `PATH`.
+
+### Answers to §13's open questions
+
+1. **Truth format** — the existing headerless 5-column TSV is consumed as-is, so
+   `build_truth.py` / `build_truth_protal.py` output works unchanged.
+2. **Scope** — scoring only, as planned. `flexalign_benchmark` keeps orchestrating and can call
+   `benchpro align` in place of `report.py` + `align_metrics.py`. Timing, index builds, cache
+   control and the HTML report are untouched.
+3. **Read pairs** — both mates are scored independently, as in the Python. Pair-level metrics
+   beyond the `proper_pair` flag are not ported.
+
+### Known issues, pre-existing and unrelated
+
+- `cargo test` reports 6 unit-test failures and 2 `integration_normalize` failures on a clean
+  checkout, because `data/profile_examples/` is referenced by `include_str!` in
+  `normalize_detect.rs` / `normalize_loader.rs` and by `tests/integration_normalize.rs` but was
+  never committed. One of the six (`merge::tests::merge_promotes_unclassified_to_species_bucket`)
+  fails on its own. None of this involves `align`.
+- `Cargo.lock` needed `ethnum` bumped to 1.5.3 before the crate would build at all on the current
+  nightly (committed separately, first commit on this branch).
