@@ -513,6 +513,15 @@ Checked against `align_metrics.py` / `report.py` on real data from
 Residual differences are 1 ulp, from float summation order (a `HashMap` iterates in a different
 order than a Python `dict`).
 
+**Re-verified at `648761f`**, after the replay semantics, three denominators, the metric set and the
+result cache had all changed — every number above still holds, and the Python side was re-derived
+rather than compared against these recorded values.
+
+One caveat the parity run does not cover: `aln_malformed` is 0.0 on this dataset, so divergence 4
+below (a short SEQ charged against the reference) is never exercised by it. That case is pinned by
+`cigar::tests::a_short_seq_is_not_charged_for_its_missing_bases` and by the `sloppy.sam` fixture
+instead.
+
 ### Where the time goes, and why there is no Rayon
 
 §12 lists "Rayon across files/rows". Measured on a 96 MB / 285,570-record SAM with a 1.28M-row
@@ -565,9 +574,13 @@ Extrapolating to a ten-million-read truth: ~9-10 GB, against the 93 GB the marke
    them depends on the thread count or on how batches were split. The Python samples in file order,
    which is single threaded and so never had to be order free. Verified byte-identical across runs
    and across `-t 1/2/8` on a 76 MB SAM in which every mate is duplicated.
-4. **No samtools dependency.** `.fai` is built by a plain scan; the Python shells out when samtools
+4. **A short SEQ is not charged for its missing bases.** The Python adds the query shortfall to the
+   replayed edit distance as well as the reference shortfall; a malformed record is already reported
+   by `aln_malformed`, and inflating its distance reports one defect twice. Not covered by the
+   parity dataset, which has none.
+5. **No samtools dependency.** `.fai` is built by a plain scan; the Python shells out when samtools
    is on `PATH`.
-5. **`genome_pct` is not emitted** although §9 lists it: of total it is `recall_pct`, of aligned it
+6. **`genome_pct` is not emitted** although §9 lists it: of total it is `recall_pct`, of aligned it
    is `correct_pct`, so it would be a third name for a number already in the row.
 
 ### Answers to §13's open questions
