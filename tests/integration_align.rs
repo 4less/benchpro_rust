@@ -589,9 +589,8 @@ fn indel_recovery_is_reported_separately_from_the_easy_majority() {
 
 #[test]
 fn the_per_genome_table_separates_a_uniform_tool_from_a_lopsided_one() {
-    // The contender is perfect on genomeA and 60 bp out on every genomeB read. Both genomes score
-    // 100% `correct` -- it never leaves the right genome -- so the headline hides the split
-    // entirely, and only the per-genome table shows that one organism is fine and one is not.
+    // genomeA: all 10 reads placed, all at the true locus. genomeB: only 4 of 10 placed, and those
+    // 60 bp out. The totals average to something unremarkable; the per-genome split does not.
     let meta = format!(
         "ID\tSample\tTool\tAlignment\tTruth\tContig2Genome\tScoring\n\
          ds\ts1\tlopsided\t{pred}\t{gold}\t{c2g}\tfull\n",
@@ -601,29 +600,101 @@ fn the_per_genome_table_separates_a_uniform_tool_from_a_lopsided_one() {
     );
     let prefix = run_align("per_genome", &meta, &["--tolerance", "10"]);
 
-    let summary = read_tsv(&prefix.with_extension("align_summary.tsv"));
-    let overall = row_for(&summary, "lopsided");
-    assert_eq!(
-        number(overall, "correct_pct"),
-        100.0,
-        "never the wrong genome"
-    );
-    assert_eq!(
-        number(overall, "position_pct"),
-        50.0,
-        "and the total says only 'half'"
-    );
-
     let genomes = read_tsv(&prefix.with_extension("align_genomes.tsv"));
     assert_eq!(genomes.len(), 2);
     // Sorted worst-first, so the genome a tool struggles with leads.
     assert_eq!(genomes[0]["genome"], "genomeB");
-    assert_eq!(number(&genomes[0], "position_pct"), 0.0);
     assert_eq!(genomes[1]["genome"], "genomeA");
-    assert_eq!(number(&genomes[1], "position_pct"), 100.0);
-    // Both are 100% correct at the genome level; the split is entirely positional.
-    assert_eq!(number(&genomes[0], "correct_pct"), 100.0);
+
+    // The two denominators genuinely differ here -- 4 of 10 reads placed -- so a column that
+    // silently swapped them would be caught.
     assert_eq!(number(&genomes[0], "reads"), 10.0);
+    assert_eq!(number(&genomes[0], "aligned"), 4.0);
+    assert_eq!(number(&genomes[0], "correct"), 4.0);
+    assert_eq!(
+        number(&genomes[0], "correct_pct"),
+        100.0,
+        "of the 4 it placed"
+    );
+    assert_eq!(
+        number(&genomes[0], "recall_pct"),
+        40.0,
+        "of all 10 from this genome"
+    );
+    assert_eq!(
+        number(&genomes[0], "position_pct"),
+        0.0,
+        "all 4 are 60 bp out"
+    );
+    assert_eq!(number(&genomes[1], "position_pct"), 100.0);
+
+    // ...and they carry the same meaning as the identically named summary columns.
+    let summary = read_tsv(&prefix.with_extension("align_summary.tsv"));
+    let overall = row_for(&summary, "lopsided");
+    assert_eq!(number(overall, "correct_pct"), 100.0);
+    assert_eq!(number(overall, "recall_pct"), 70.0);
+}
+
+#[test]
+fn species_scoring_leaves_the_positional_columns_out_of_the_genome_table() {
+    // `species` never computes a position stratum, so rendering it as 0.0 per genome would report
+    // a perfect tool as landing nothing near the true locus.
+    let meta = format!(
+        "ID\tSample\tTool\tAlignment\tTruth\tScoring\n\
+         ds\ts1\tlopsided\t{pred}\t{gold}\tspecies\n",
+        pred = fixture("two_genomes.pred.sam"),
+        gold = fixture("two_genomes.gold.sam"),
+    );
+    let prefix = run_align("per_genome_species", &meta, &[]);
+    let genomes = read_tsv(&prefix.with_extension("align_genomes.tsv"));
+
+    assert!(!genomes.is_empty());
+    for row in &genomes {
+        assert!(
+            !row.contains_key("position_pct"),
+            "species mode has no position stratum"
+        );
+        assert!(!row.contains_key("exact_pct"));
+    }
+    // The genome-level columns are still there and still right.
+    assert_eq!(number(&genomes[0], "correct_pct"), 100.0);
+}
+
+#[test]
+fn a_tsv_truth_row_gets_no_exact_column_value_even_beside_a_gold_row() {
+    // Two datasets in one run: one with a gold SAM, one with a TSV. The TSV row cannot answer the
+    // exact question, so its cell must be empty rather than 0.0 -- even though the column exists
+    // for the sake of the gold row.
+    let meta = format!(
+        "ID\tSample\tTool\tAlignment\tTruth\tContig2Genome\tScoring\n\
+         gold_ds\ts1\tt\t{pred}\t{gold}\t{c2g}\tfull\n\
+         tsv_ds\ts1\tt\t{good}\t{tsv}\t{c2g}\tfull\n",
+        pred = fixture("two_genomes.pred.sam"),
+        gold = fixture("two_genomes.gold.sam"),
+        good = fixture("good.sam"),
+        tsv = fixture("reads.truth.tsv"),
+        c2g = fixture("reference.contig2genome.tsv"),
+    );
+    let prefix = run_align("mixed_truth", &meta, &[]);
+    let genomes = read_tsv(&prefix.with_extension("align_genomes.tsv"));
+
+    let gold_rows: Vec<_> = genomes
+        .iter()
+        .filter(|r| r["dataset"] == "gold_ds")
+        .collect();
+    let tsv_rows: Vec<_> = genomes
+        .iter()
+        .filter(|r| r["dataset"] == "tsv_ds")
+        .collect();
+    assert!(!gold_rows.is_empty() && !tsv_rows.is_empty());
+
+    for row in tsv_rows {
+        assert_eq!(
+            row["exact_pct"], "",
+            "a TSV truth cannot answer the exact question"
+        );
+    }
+    assert!(gold_rows.iter().any(|r| !r["exact_pct"].is_empty()));
 }
 
 #[test]

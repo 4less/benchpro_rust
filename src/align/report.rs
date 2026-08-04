@@ -58,8 +58,6 @@ pub struct SampleResult {
     pub h2h: Option<HeadToHead>,
     /// Clip geometry, when `--clip-geometry` asked for it.
     pub clip: Option<ClipGeometry>,
-    /// Counts broken down by the truth's source genome.
-    pub per_genome: PerGenome,
 }
 
 impl SampleResult {
@@ -110,7 +108,9 @@ pub struct ToolSummary {
     pub h2h: Option<HeadToHead>,
     /// Clip geometry pooled over the samples that have it.
     pub clip: Option<ClipGeometry>,
-    /// Per-genome counts pooled over the samples.
+    /// Per-genome counts pooled over the samples. Filled in after `summarize`, from totals folded
+    /// together as each group finished — holding one map per (sample, tool) until the end would
+    /// cost `samples x tools x genomes` for a table that only ever shows the pooled form.
     pub per_genome: PerGenome,
     /// Note explaining any restriction applied to the sample set.
     pub note: Option<String>,
@@ -259,7 +259,7 @@ pub fn summarize(results: &[SampleResult], notes: &HashMap<String, String>) -> V
                 base: pool_base(group),
                 h2h: pool_h2h(group),
                 clip: pool_clip(group),
-                per_genome: pool_per_genome(group),
+                per_genome: PerGenome::new(),
                 note: notes.get(&key.0).cloned(),
             };
 
@@ -353,17 +353,6 @@ fn pool_h2h(group: &[&SampleResult]) -> Option<HeadToHead> {
         worse: weighted_by_common(|h| h.worse),
         nm_delta: weighted_by_common(|h| h.nm_delta),
     })
-}
-
-/// Pools per-genome counts across the samples of one contender.
-fn pool_per_genome(group: &[&SampleResult]) -> PerGenome {
-    let mut pooled = PerGenome::new();
-    for result in group {
-        for (genome, counts) in &result.per_genome {
-            pooled.entry(genome.clone()).or_default().add(counts);
-        }
-    }
-    pooled
 }
 
 /// Pools clip geometry across the samples that have it.
@@ -1038,6 +1027,9 @@ impl ReadsWriter {
 /// sorted by dataset, then tool, then worst-first across the strata, so the genomes a tool
 /// struggles with are the first thing on the page.
 ///
+/// `correct_pct` and `recall_pct` mean here exactly what they mean in the summary: of the reads the
+/// tool placed, and of every read from that genome.
+///
 /// # Arguments
 ///
 /// * `summaries` - Pooled per-contender results
@@ -1050,73 +1042,98 @@ impl ReadsWriter {
 ///
 /// Returns [`AlignError::Output`] when the frame cannot be assembled.
 pub fn genomes_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
-    let mut rows: Vec<(&str, &str, &str, SubsetScore)> = Vec::new();
+    let mut rows: Vec<(&ToolSummary, &str, SubsetScore)> = Vec::new();
     for summary in summaries {
         for (genome, counts) in &summary.per_genome {
-            rows.push((&summary.dataset, &summary.tool, genome, *counts));
+            rows.push((summary, genome, *counts));
         }
     }
     // Worst first, across the strata rather than only the first of them: a genome every read
     // reaches but none lands correctly on is a failure, and sorting on `correct_pct` alone would
     // file it beside the genomes that are fine.
     rows.sort_by(|a, b| {
-        a.0.cmp(b.0).then(a.1.cmp(b.1)).then_with(|| {
-            a.3.correct_pct()
-                .total_cmp(&b.3.correct_pct())
-                .then_with(|| pct(a.3.position, a.3.total).total_cmp(&pct(b.3.position, b.3.total)))
-                .then_with(|| pct(a.3.exact, a.3.total).total_cmp(&pct(b.3.exact, b.3.total)))
-                .then(a.2.cmp(b.2))
-        })
+        a.0.dataset
+            .cmp(&b.0.dataset)
+            .then(a.0.tool.cmp(&b.0.tool))
+            .then_with(|| {
+                a.2.correct_pct()
+                    .total_cmp(&b.2.correct_pct())
+                    .then_with(|| {
+                        pct(a.2.position, a.2.total).total_cmp(&pct(b.2.position, b.2.total))
+                    })
+                    .then_with(|| pct(a.2.exact, a.2.total).total_cmp(&pct(b.2.exact, b.2.total)))
+                    .then(a.1.cmp(b.1))
+            })
     });
 
-    let has_exact = rows.iter().any(|r| r.3.exact > 0);
+    // Column presence follows what is *measurable*, never what happened to be measured: deciding
+    // from a value makes the schema depend on how good the tool was, and renders an undefined
+    // quantity as a zero on the rows that cannot answer it.
+    let stratified = summaries.iter().any(|s| s.scoring == ScoringMode::Full);
+    let has_exact = summaries.iter().any(|s| s.score.exact.is_some());
+
+    // A stratum is `None` for a row whose mode does not define it, not 0.0.
+    let stratum =
+        |f: fn(&SubsetScore) -> u64, wanted: fn(&ToolSummary) -> bool| -> Vec<Option<f64>> {
+            rows.iter()
+                .map(|(summary, _, counts)| wanted(summary).then(|| pct(f(counts), counts.total)))
+                .collect()
+        };
 
     let mut columns = vec![
         Series::new(
             "dataset".into(),
-            rows.iter().map(|r| r.0.to_string()).collect::<Vec<_>>(),
+            rows.iter().map(|r| r.0.dataset.clone()).collect::<Vec<_>>(),
         ),
         Series::new(
             "tool".into(),
-            rows.iter().map(|r| r.1.to_string()).collect::<Vec<_>>(),
+            rows.iter().map(|r| r.0.tool.clone()).collect::<Vec<_>>(),
         ),
         Series::new(
             "genome".into(),
-            rows.iter().map(|r| r.2.to_string()).collect::<Vec<_>>(),
+            rows.iter().map(|r| r.1.to_string()).collect::<Vec<_>>(),
         ),
         Series::new(
             "reads".into(),
-            rows.iter().map(|r| r.3.total).collect::<Vec<_>>(),
+            rows.iter().map(|r| r.2.total).collect::<Vec<_>>(),
         ),
         Series::new(
             "aligned".into(),
-            rows.iter().map(|r| r.3.aligned).collect::<Vec<_>>(),
+            rows.iter().map(|r| r.2.aligned).collect::<Vec<_>>(),
         ),
         Series::new(
             "correct".into(),
-            rows.iter().map(|r| r.3.correct).collect::<Vec<_>>(),
+            rows.iter().map(|r| r.2.correct).collect::<Vec<_>>(),
         ),
         Series::new(
             "align_pct".into(),
-            rows.iter().map(|r| r.3.aligned_pct()).collect::<Vec<_>>(),
+            rows.iter().map(|r| r.2.aligned_pct()).collect::<Vec<_>>(),
         ),
+        // Both denominators, named as the summary names them: `correct_pct` is of what the tool
+        // placed and `recall_pct` of every read from this genome. One column carrying whichever
+        // meaning the table felt like is how two tables end up disagreeing about the same word.
         Series::new(
             "correct_pct".into(),
-            rows.iter().map(|r| r.3.correct_pct()).collect::<Vec<_>>(),
-        ),
-        Series::new(
-            "position_pct".into(),
             rows.iter()
-                .map(|r| pct(r.3.position, r.3.total))
+                .map(|r| pct(r.2.correct, r.2.aligned))
                 .collect::<Vec<_>>(),
         ),
+        Series::new(
+            "recall_pct".into(),
+            rows.iter().map(|r| r.2.correct_pct()).collect::<Vec<_>>(),
+        ),
     ];
+
+    if stratified {
+        columns.push(Series::new(
+            "position_pct".into(),
+            stratum(|c| c.position, |s| s.scoring == ScoringMode::Full),
+        ));
+    }
     if has_exact {
         columns.push(Series::new(
             "exact_pct".into(),
-            rows.iter()
-                .map(|r| pct(r.3.exact, r.3.total))
-                .collect::<Vec<_>>(),
+            stratum(|c| c.exact, |s| s.score.exact.is_some()),
         ));
     }
 
@@ -1209,7 +1226,6 @@ mod tests {
             base: None,
             h2h: None,
             clip: None,
-            per_genome: PerGenome::new(),
         }
     }
 

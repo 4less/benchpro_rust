@@ -421,7 +421,8 @@ mapq_best_cutoff, mapq_best_f1, note
 `sample`), so a total can be checked by hand.
 
 `<prefix>.align_genomes.tsv` — `dataset, tool, genome, reads, aligned, correct, align_pct,
-correct_pct, position_pct` (+ `exact_pct` for a gold-SAM truth), sorted worst-first. Not in the
+correct_pct, recall_pct` (+ `position_pct` under `full` scoring, + `exact_pct` for a gold-SAM
+truth), sorted worst-first. Both denominators are carried under the summary's own names. Not in the
 original plan: a total cannot say *which* organisms a tool loses reads on, and that is usually the
 question after "how many".
 

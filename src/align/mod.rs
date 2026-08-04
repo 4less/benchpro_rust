@@ -49,6 +49,14 @@ type TruthKey = (
     String,
 );
 
+/// What scoring one `(dataset, sample)` group produces: a result per contender, the per-read
+/// verdicts if they were asked for, and each contender's per-genome counts.
+type GroupScores = (
+    Vec<SampleResult>,
+    Vec<TaggedVerdict>,
+    Vec<(String, metrics::PerGenome)>,
+);
+
 /// Runs the alignment benchmark described by `args.meta`.
 ///
 /// # Arguments
@@ -84,6 +92,9 @@ pub fn run_align(args: &AlignArgs) -> AlignResult<()> {
     let (retained, notes) = report::common_samples(&meta.rows);
 
     let mut results: Vec<SampleResult> = Vec::new();
+    // Folded together as each group finishes rather than carried on every SampleResult: only the
+    // pooled form is ever rendered.
+    let mut per_genome: HashMap<(String, String), metrics::PerGenome> = HashMap::new();
     let mut reads_writer = args
         .per_read
         .then(|| report::ReadsWriter::create(&output_path(&args.outprefix, "align_reads.tsv")))
@@ -103,14 +114,26 @@ pub fn run_align(args: &AlignArgs) -> AlignResult<()> {
             sample,
             rows.len()
         );
-        let (group_results, group_reads) = score_group(dataset, sample, &rows, args)?;
+        let (group_results, group_reads, group_genomes) =
+            score_group(dataset, sample, &rows, args)?;
+        for (tool, counts) in group_genomes {
+            let totals = per_genome.entry((dataset.to_string(), tool)).or_default();
+            for (genome, subset) in counts {
+                totals.entry(genome).or_default().add(&subset);
+            }
+        }
         results.extend(group_results);
         if let Some(writer) = &mut reads_writer {
             writer.append(&group_reads)?;
         }
     }
 
-    let summaries = report::summarize(&results, &notes);
+    let mut summaries = report::summarize(&results, &notes);
+    for summary in &mut summaries {
+        summary.per_genome = per_genome
+            .remove(&(summary.dataset.clone(), summary.tool.clone()))
+            .unwrap_or_default();
+    }
     log_summary(&summaries);
 
     let prefix = &args.outprefix;
@@ -146,7 +169,7 @@ fn score_group(
     sample: &str,
     rows: &[&AlignRow],
     args: &AlignArgs,
-) -> AlignResult<(Vec<SampleResult>, Vec<TaggedVerdict>)> {
+) -> AlignResult<GroupScores> {
     // One truth and one contig map per path, however many contenders share them.
     let mut truths: HashMap<TruthKey, Truth> = HashMap::new();
     let mut maps: HashMap<PathBuf, HashMap<Box<str>, Box<str>>> = HashMap::new();
@@ -209,6 +232,7 @@ fn score_group(
     // Score each contender, then fill in the recall denominator once the whole field is known.
     let mut scored = Vec::with_capacity(rows.len());
     let mut reads = Vec::new();
+    let mut genomes = Vec::with_capacity(rows.len());
 
     for (index, (row, alignment)) in rows.iter().zip(parsed.iter()).enumerate() {
         let truth = &truths[&(
@@ -244,7 +268,8 @@ fn score_group(
             warn!("{}/{} {}: {}", dataset, sample, row.tool, problem);
         }
 
-        let (score, per_genome) = metrics::score_detailed(&alignment.records, truth, &context);
+        let (score, row_genomes) = metrics::score_detailed(&alignment.records, truth, &context);
+        genomes.push((row.tool.clone(), row_genomes));
         let mapq_counts = mapq::counts(&alignment.records, truth, &context);
 
         if args.per_read {
@@ -312,7 +337,6 @@ fn score_group(
             base,
             h2h,
             clip,
-            per_genome,
         });
     }
 
@@ -327,7 +351,7 @@ fn score_group(
         result.mappable = mappable;
     }
 
-    Ok((scored, reads))
+    Ok((scored, reads, genomes))
 }
 
 /// Replays each contender's retained alignments against its reference.

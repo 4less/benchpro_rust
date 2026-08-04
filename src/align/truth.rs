@@ -22,6 +22,7 @@ use log::warn;
 
 use super::error::{AlignError, AlignResult};
 use super::meta::AlignmentFormat;
+use super::metrics::ScoringContext;
 use super::sam::parse_alignment;
 
 /// A read mate: the join key between an alignment record and its truth.
@@ -305,6 +306,12 @@ pub fn load_truth_sam(
     sep: &str,
     threads: usize,
 ) -> AlignResult<Truth> {
+    let context = ScoringContext {
+        scoring,
+        sep,
+        contig2genome,
+        tolerance: 0,
+    };
     let parsed = parse_alignment(path, format, false, 0, threads, 0)?;
     if parsed.counters.unmapped > 0 || parsed.counters.no_cigar > 0 {
         // build_truth.py keeps these; dropping them shrinks `total` and therefore every "of total"
@@ -320,13 +327,9 @@ pub fn load_truth_sam(
     let mut pool: HashMap<Box<str>, Arc<str>> = HashMap::new();
 
     for (key, record) in parsed.records {
-        let genome = match scoring {
-            ScoringMode::Species => record.target.split(sep).next().unwrap_or(&record.target),
-            ScoringMode::Full => contig2genome
-                .and_then(|map| map.get(&record.target))
-                .map(|g| &**g)
-                .unwrap_or("NA"),
-        };
+        // The scorer's own derivation, not a copy of it: keeping a second copy here is exactly
+        // what let the truth and the scorer drift into different vocabularies before.
+        let genome = context.label_of(&record.target);
         let genome = match pool.get(genome) {
             Some(shared) => shared.clone(),
             None => {

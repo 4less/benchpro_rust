@@ -406,9 +406,6 @@ pub fn score_detailed(
             continue;
         };
         score.aligned += 1;
-        let genome = per_genome
-            .get_mut(&entry.genome)
-            .expect("inserted above for this entry");
         genome.aligned += 1;
         let verdict = context.verdict(record, entry);
         if verdict.is_correct() {
@@ -457,9 +454,6 @@ pub fn score_detailed(
     (score, per_genome)
 }
 
-/// How many records and truth entries to sample when checking label vocabularies.
-const VOCABULARY_SAMPLE: usize = 2000;
-
 /// Checks that the truth's genome labels and the labels the scorer derives from predictions are
 /// drawn from the same vocabulary.
 ///
@@ -470,7 +464,8 @@ const VOCABULARY_SAMPLE: usize = 2000;
 ///
 /// Only a warning, and only when the two sets are *entirely* disjoint: a tool that places every
 /// read on the wrong genome would also produce disjoint sets, and it is not this function's job to
-/// call that a misconfiguration.
+/// call that a misconfiguration. The check short-circuits on the first record whose label the truth
+/// knows, so the full scan happens only in the case it is about.
 ///
 /// # Arguments
 ///
@@ -487,27 +482,33 @@ pub fn vocabulary_mismatch(
     truth: &Truth,
     context: &ScoringContext,
 ) -> Option<String> {
-    let predicted: HashSet<&str> = records
-        .values()
-        .take(VOCABULARY_SAMPLE)
-        .map(|record| context.label_of(&record.target))
-        .collect();
-    let expected: HashSet<&str> = truth
-        .values()
-        .take(VOCABULARY_SAMPLE)
-        .map(|entry| &*entry.genome)
-        .collect();
-
-    if predicted.is_empty() || expected.is_empty() || !predicted.is_disjoint(&expected) {
+    if records.is_empty() || truth.is_empty() {
         return None;
     }
 
-    let example = |set: &HashSet<&str>| {
-        let mut names: Vec<&str> = set.iter().copied().collect();
-        names.sort_unstable();
-        names.truncate(3);
-        names.join(", ")
-    };
+    // Every truth label, not a sample of them: the distinct set is small (it is the interning
+    // pool), and sampling a hash map picks a different subset each run -- so with almost all
+    // records on one label the warning would appear on some runs and not others for the same
+    // input.
+    let expected: HashSet<&str> = truth.values().map(|entry| &*entry.genome).collect();
+    if records
+        .values()
+        .any(|record| expected.contains(context.label_of(&record.target)))
+    {
+        return None;
+    }
+
+    let mut predicted: Vec<&str> = records
+        .values()
+        .map(|record| context.label_of(&record.target))
+        .collect();
+    predicted.sort_unstable();
+    predicted.dedup();
+
+    let example = |names: &[&str]| names.iter().take(3).copied().collect::<Vec<_>>().join(", ");
+    let mut expected: Vec<&str> = expected.into_iter().collect();
+    expected.sort_unstable();
+
     Some(format!(
         "no genome label the alignments imply appears in the truth at all (alignments give {}; \
          truth has {}). Every read will be scored wrong. Check that Scoring matches how the truth \

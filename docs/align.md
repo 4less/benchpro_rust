@@ -121,19 +121,21 @@ the question is undefined rather than failed.
 ### Per-genome accuracy
 
 `align_genomes.tsv` breaks every count down by the truth's source genome, sorted worst-first, so the
-organisms a tool struggles with lead the table. A total cannot show this. On a two-genome sample
-where a contender is perfect on one and 60 bp out on every read of the other:
+organisms a tool struggles with lead the table. A total cannot show this — here a contender places
+every read of one genome perfectly and only 4 of 10 from the other, 60 bp out:
 
 ```
-overall:   correct_pct 100.0   position_pct 50.0        <- "right genome, mediocre positions"
-
-genome     reads  correct_pct  position_pct
-genomeB    10     100.0        0.0                      <- actually: one organism is broken
-genomeA    10     100.0        100.0                    <- and the other is perfect
+genome   reads  aligned  correct  align_pct  correct_pct  recall_pct  position_pct
+genomeB  10     4        4        40.0       100.0        40.0        0.0
+genomeA  10     10       10       100.0      100.0        100.0       100.0
 ```
 
-Columns: `reads`, `aligned`, `correct`, `align_pct`, `correct_pct`, `position_pct`, and `exact_pct`
-when the truth is a gold SAM.
+`correct_pct` and `recall_pct` mean exactly what they mean in the summary — of the reads the tool
+*placed*, and of *every* read from that genome. `genomeB` reads 100% on one and 40% on the other,
+which is the whole difference between "never wrong when it commits" and "finds most of them".
+
+`position_pct` appears only under `full` scoring and `exact_pct` only for a gold-SAM truth; a row
+that cannot answer one gets an empty cell rather than a zero.
 
 ### Recovery of the hard reads
 
