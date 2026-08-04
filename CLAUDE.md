@@ -26,7 +26,7 @@ just install-local
 
 ## Architecture
 
-The tool is structured as a pipeline with five subcommands: `profile`, `strain`, `merge`, `msa`, and `normalize`. The main entry point is [src/main.rs](src/main.rs), which dispatches to [src/benchpro.rs](src/benchpro.rs) (core logic) or the dedicated subcommand modules.
+The tool is structured as a pipeline with six subcommands: `profile`, `strain`, `merge`, `msa`, `normalize`, and `align`. The main entry point is [src/main.rs](src/main.rs), which dispatches to [src/benchpro.rs](src/benchpro.rs) (core logic) or the dedicated subcommand modules.
 
 ### Core Data Flow (profile/strain)
 
@@ -60,6 +60,7 @@ Meta file (.xlsx/.csv/.tsv)
 | `common.rs` | `TaxonomicRank`, `Lineage<T>`, `Taxonomy` trait + GTDB/NCBI/ChocoPhlAn impls |
 | `merge.rs` | Merges multiple profiles into abundance matrices; sample regex extraction |
 | `tree_handler.rs` / `tree_adjusted_benchmarks.rs` | Phylogeny-aware matching (alternative names via tree) |
+| `align/` | Read-alignment benchmark (`align`): scores SAM/PAF against per-read truth. Independent of the taxonomic machinery |
 | `utils.rs` | Stats helpers: Pearson/Spearman, F1, Bray-Curtis, L2 |
 | `ncbi_taxdump.rs` | Loads lineages from NCBI taxdump files |
 
@@ -74,7 +75,11 @@ Meta file (.xlsx/.csv/.tsv)
 
 ## Testing
 
-Integration tests live in [tests/](tests/) (`integration_profile.rs`, `integration_matrix.rs`, `integration_normalize.rs`). Test data is under [data/test_data/](data/test_data/). Unit tests are co-located in each module.
+Integration tests live in [tests/](tests/) (`integration_profile.rs`, `integration_matrix.rs`, `integration_normalize.rs`, `integration_align.rs`). Test data is under [data/test_data/](data/test_data/). Unit tests are co-located in each module.
+
+Note: `normalize_detect.rs`, `normalize_loader.rs` and `integration_normalize.rs` reference
+`data/profile_examples/`, which is not in the repository — those tests fail on a fresh checkout
+until the fixtures are supplied.
 
 ## Documentation
 

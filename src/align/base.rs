@@ -259,15 +259,24 @@ pub fn head_to_head(
     result
 }
 
+/// Fixed-point scale for [`mean`]. 2^52 keeps ~15 significant digits for the [0, 1] ratios these
+/// means are taken over, which is f64's own precision there.
+const MEAN_SCALE: f64 = (1u64 << 52) as f64;
+
 /// Mean of an iterator, or `None` when it is empty.
+///
+/// Accumulates in fixed point rather than f64. These means are taken over `records.values()`, and a
+/// `HashMap` iterates in an order seeded per process, so a floating-point sum would give a slightly
+/// different answer on every run — f64 addition is not associative. Integer addition is, so the
+/// result depends only on the multiset of values, which is what makes a run reproducible.
 fn mean(values: impl Iterator<Item = f64>) -> Option<f64> {
-    let mut sum = 0.0;
+    let mut sum: i128 = 0;
     let mut count = 0u64;
     for value in values {
-        sum += value;
+        sum += (value * MEAN_SCALE) as i128;
         count += 1;
     }
-    (count > 0).then(|| sum / count as f64)
+    (count > 0).then(|| sum as f64 / MEAN_SCALE / count as f64)
 }
 
 /// Share of values at or above a threshold, as a percentage; `None` for an empty slice.
@@ -324,6 +333,35 @@ mod tests {
             contig2genome: None,
             tolerance: 100,
         }
+    }
+
+    #[test]
+    fn mean_does_not_depend_on_summation_order() {
+        // The values a HashMap hands out come in a per-process order, so the same multiset summed
+        // two ways must still give bit-identical answers.
+        let values: Vec<f64> = (0..1000).map(|i| 0.5 + i as f64 / 3000.0).collect();
+        let forward = mean(values.iter().copied()).unwrap();
+        let backward = mean(values.iter().rev().copied()).unwrap();
+        let shuffled: Vec<f64> = values
+            .iter()
+            .skip(377)
+            .chain(values.iter().take(377))
+            .copied()
+            .collect();
+
+        assert_eq!(forward.to_bits(), backward.to_bits());
+        assert_eq!(
+            forward.to_bits(),
+            mean(shuffled.into_iter()).unwrap().to_bits()
+        );
+        // ...and it is still the right answer.
+        let naive: f64 = values.iter().sum::<f64>() / values.len() as f64;
+        assert!((forward - naive).abs() < 1e-12);
+    }
+
+    #[test]
+    fn mean_of_nothing_is_none() {
+        assert_eq!(mean(std::iter::empty()), None);
     }
 
     #[test]

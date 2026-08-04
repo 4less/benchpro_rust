@@ -13,7 +13,7 @@
 //!   `verify_limit` records — reservoir, not the first N, because SAM order follows read order,
 //!   which on simulated data is grouped by source genome.
 
-use std::collections::HashMap;
+use std::collections::{BinaryHeap, HashMap};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
@@ -166,17 +166,42 @@ pub struct ParsedAlignment {
     pub counters: ParseCounters,
 }
 
+/// A record admitted to the replay sample, ordered by its hash so the worst is evicted first.
+///
+/// `Ord` is by hash alone descending is not needed: [`BinaryHeap`] is a max-heap, so the entry with
+/// the *largest* hash sits on top and is the one a better candidate displaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Sampled {
+    hash: u64,
+    key: ReadKey,
+}
+
+impl Ord for Sampled {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // The key breaks ties so the ordering is total and does not depend on insertion order.
+        self.hash
+            .cmp(&other.hash)
+            .then_with(|| self.key.cmp(&other.key))
+    }
+}
+
+impl PartialOrd for Sampled {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// Worker-local parse state. `Merge` folds the workers together at the end.
 #[derive(Debug, Clone, Default)]
 struct ParseState {
     records: HashMap<ReadKey, AlnRecord>,
     counters: ParseCounters,
-    /// Retained-sequence budget, and the count of candidates seen so far, for the reservoir.
+    /// How many records may retain a sequence; 0 means all of them.
     keep_limit: usize,
-    seen_kept: u64,
-    /// Keys currently holding a sequence, in reservoir slot order.
-    reservoir: Vec<ReadKey>,
-    rng: SplitMix64,
+    /// Seed mixed into the sampling hash.
+    seed: u64,
+    /// The records currently holding a sequence, as a max-heap on the sampling hash.
+    reservoir: BinaryHeap<Sampled>,
 }
 
 impl Merge for ParseState {
@@ -192,56 +217,67 @@ impl Merge for ParseState {
                 }
             }
         }
-        // Merging two reservoirs exactly would need the full population; concatenating and
-        // trimming keeps the budget and stays deterministic, which is what the metrics need.
-        self.seen_kept += other.seen_kept;
-        self.reservoir.append(&mut other.reservoir);
-        self.trim_reservoir();
+        // Records merge first, so an eviction here always finds the record it must strip.
+        for candidate in std::mem::take(&mut other.reservoir) {
+            self.admit(candidate);
+        }
     }
 }
 
 impl ParseState {
-    fn trim_reservoir(&mut self) {
+    /// Offers a record to the replay sample, evicting the current worst if it is beaten.
+    ///
+    /// Admission is decided by [`sample_hash`] alone, so the surviving set is the `keep_limit`
+    /// records with the smallest hash — a pure function of the record set and the seed. That is
+    /// what makes the sample independent of how batches happened to be split across workers.
+    fn admit(&mut self, candidate: Sampled) {
         if self.keep_limit == 0 {
+            self.reservoir.push(candidate);
             return;
         }
-        while self.reservoir.len() > self.keep_limit {
-            let victim = self.reservoir.pop().expect("non-empty");
-            if let Some(record) = self.records.get_mut(&victim) {
-                record.cigar = None;
-                record.seq = None;
+        if self.reservoir.len() < self.keep_limit {
+            self.reservoir.push(candidate);
+            return;
+        }
+        // The heap is full: keep the candidate only if it beats the current worst.
+        match self.reservoir.peek() {
+            Some(worst) if candidate < *worst => {
+                let evicted = self.reservoir.pop().expect("heap is non-empty");
+                self.strip(&evicted.key);
+                self.reservoir.push(candidate);
             }
+            _ => self.strip(&candidate.key),
+        }
+    }
+
+    /// Drops a record's retained sequence, keeping its metrics.
+    fn strip(&mut self, key: &ReadKey) {
+        if let Some(record) = self.records.get_mut(key) {
+            record.cigar = None;
+            record.seq = None;
         }
     }
 }
 
-/// A small deterministic PRNG, so reservoir sampling is reproducible without a rand dependency.
-#[derive(Debug, Clone, Default)]
-struct SplitMix64 {
-    state: u64,
+/// The sampling hash of a read mate.
+///
+/// A pure function of the key and the seed — never of arrival order, worker id or thread count.
+/// Uses a fixed mixing function rather than [`std::collections::hash_map::DefaultHasher`], whose
+/// `RandomState` is seeded per process and would vary run to run.
+fn sample_hash(key: &ReadKey, seed: u64) -> u64 {
+    let mut state = seed ^ 0x9E37_79B9_7F4A_7C15;
+    for &byte in key.id.as_bytes() {
+        state = mix(state ^ byte as u64);
+    }
+    mix(state ^ (key.mate as u64) << 56)
 }
 
-impl SplitMix64 {
-    fn new(seed: u64) -> Self {
-        Self { state: seed }
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    /// Uniform value in `[0, n)`.
-    fn below(&mut self, n: u64) -> u64 {
-        if n == 0 {
-            0
-        } else {
-            self.next_u64() % n
-        }
-    }
+/// One round of the SplitMix64 finaliser.
+fn mix(value: u64) -> u64 {
+    let mut z = value.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 /// Reads the `@SQ` reference-sequence lengths from a SAM header.
@@ -333,6 +369,28 @@ fn open(path: &Path) -> AlignResult<Box<dyn Read + Send>> {
     }
 }
 
+/// Resolves the requested thread count to the number of workers to spawn.
+///
+/// `0` means "all available", which is what the CLI documents — taking `max(1)` of it instead would
+/// silently make the *default* single threaded, which is the one setting nobody passes explicitly
+/// and therefore the one nobody would notice.
+///
+/// # Arguments
+///
+/// * `requested` - Threads asked for; 0 means all available
+///
+/// # Returns
+///
+/// At least 1, falling back to 1 when the available parallelism cannot be determined.
+fn worker_threads(requested: usize) -> u32 {
+    if requested > 0 {
+        return requested as u32;
+    }
+    std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1)
+}
+
 /// Parses a SAM file through bioreader's multithreaded reader.
 fn parse_sam(
     path: &Path,
@@ -342,11 +400,11 @@ fn parse_sam(
     seed: u64,
 ) -> AlignResult<ParsedAlignment> {
     let reader = open(path)?;
-    let num_threads = threads.max(1) as u32;
+    let num_threads = worker_threads(threads);
 
     let initial = ParseState {
         keep_limit: if keep_seq { keep_limit } else { 0 },
-        rng: SplitMix64::new(seed),
+        seed,
         ..Default::default()
     };
 
@@ -433,33 +491,15 @@ fn consume_record(record: &RefSamRecord, offset: u64, keep_seq: bool, state: &mu
         offset,
     };
 
+    // Retain the bases optimistically; `admit` strips them again if this record does not make the
+    // sample. The record must already be in the map when that happens, so insert first.
     if keep_seq && seq != b"*" {
-        let under_budget = state.keep_limit == 0 || state.reservoir.len() < state.keep_limit;
-        let retain = if under_budget {
-            true
-        } else {
-            // Standard reservoir step: the evicted record drops its sequence, not its metrics.
-            let slot = state.rng.below(state.seen_kept + 1);
-            if slot < state.keep_limit as u64 {
-                let victim = std::mem::replace(&mut state.reservoir[slot as usize], key.clone());
-                if let Some(previous) = state.records.get_mut(&victim) {
-                    previous.cigar = None;
-                    previous.seq = None;
-                }
-                aln.cigar = Some(String::from_utf8_lossy(cigar).into_owned().into());
-                aln.seq = Some(String::from_utf8_lossy(seq).into_owned().into());
-                state.seen_kept += 1;
-                state.records.insert(key, aln);
-                return;
-            }
-            false
-        };
-        state.seen_kept += 1;
-        if retain {
-            aln.cigar = Some(String::from_utf8_lossy(cigar).into_owned().into());
-            aln.seq = Some(String::from_utf8_lossy(seq).into_owned().into());
-            state.reservoir.push(key.clone());
-        }
+        aln.cigar = Some(String::from_utf8_lossy(cigar).into_owned().into());
+        aln.seq = Some(String::from_utf8_lossy(seq).into_owned().into());
+        let hash = sample_hash(&key, state.seed);
+        state.records.insert(key.clone(), aln);
+        state.admit(Sampled { hash, key });
+        return;
     }
 
     state.records.insert(key, aln);
@@ -730,6 +770,108 @@ mod tests {
 
         let parsed = parse_alignment(&path, AlignmentFormat::Sam, true, 0, 1, 0).unwrap();
         assert_eq!(parsed.records.len(), 4);
+    }
+
+    /// Runs `admit` over the given keys in the given order, returning the surviving sample.
+    fn admit_all(order: &[u32], limit: usize) -> Vec<ReadKey> {
+        let mut state = ParseState {
+            keep_limit: limit,
+            seed: 7,
+            ..Default::default()
+        };
+        for i in order {
+            let key = ReadKey {
+                id: format!("read{i}").into(),
+                mate: 1,
+            };
+            let hash = sample_hash(&key, state.seed);
+            state.admit(Sampled { hash, key });
+        }
+        let mut kept: Vec<ReadKey> = state.reservoir.into_iter().map(|s| s.key).collect();
+        kept.sort();
+        kept
+    }
+
+    #[test]
+    fn the_replay_sample_does_not_depend_on_arrival_order() {
+        // Which worker sees a record, and in what order, is decided by batch scheduling -- so the
+        // sample has to be a function of the records alone, or the replayed metrics wobble between
+        // runs at the same seed.
+        let forward: Vec<u32> = (0..500).collect();
+        let backward: Vec<u32> = (0..500).rev().collect();
+        let interleaved: Vec<u32> = (0..500).map(|i| (i * 37) % 500).collect();
+
+        let expected = admit_all(&forward, 50);
+        assert_eq!(expected.len(), 50);
+        assert_eq!(admit_all(&backward, 50), expected);
+        assert_eq!(admit_all(&interleaved, 50), expected);
+    }
+
+    #[test]
+    fn the_sample_is_the_lowest_hashing_records() {
+        // Admission is bottom-k on the hash, which is what makes it order independent.
+        let kept = admit_all(&(0..200).collect::<Vec<_>>(), 20);
+        let threshold = kept
+            .iter()
+            .map(|k| sample_hash(k, 7))
+            .max()
+            .expect("non-empty");
+        for i in 0..200u32 {
+            let key = ReadKey {
+                id: format!("read{i}").into(),
+                mate: 1,
+            };
+            if sample_hash(&key, 7) < threshold {
+                assert!(kept.contains(&key), "read{i} hashes low but was not kept");
+            }
+        }
+    }
+
+    #[test]
+    fn a_different_seed_selects_a_different_sample() {
+        let mut with_seed = |seed: u64| {
+            let mut state = ParseState {
+                keep_limit: 20,
+                seed,
+                ..Default::default()
+            };
+            for i in 0..200u32 {
+                let key = ReadKey {
+                    id: format!("read{i}").into(),
+                    mate: 1,
+                };
+                let hash = sample_hash(&key, seed);
+                state.admit(Sampled { hash, key });
+            }
+            let mut kept: Vec<ReadKey> = state.reservoir.into_iter().map(|s| s.key).collect();
+            kept.sort();
+            kept
+        };
+        assert_ne!(with_seed(1), with_seed(2));
+        assert_eq!(with_seed(1), with_seed(1));
+    }
+
+    #[test]
+    fn mates_of_one_read_hash_independently() {
+        let mate1 = ReadKey {
+            id: "r1".into(),
+            mate: 1,
+        };
+        let mate2 = ReadKey {
+            id: "r1".into(),
+            mate: 2,
+        };
+        assert_ne!(sample_hash(&mate1, 0), sample_hash(&mate2, 0));
+    }
+
+    #[test]
+    fn thread_zero_means_all_available_not_one() {
+        let available = std::thread::available_parallelism()
+            .map(|n| n.get() as u32)
+            .unwrap_or(1);
+        assert_eq!(worker_threads(0), available);
+        assert_eq!(worker_threads(1), 1);
+        assert_eq!(worker_threads(8), 8);
     }
 
     #[test]
