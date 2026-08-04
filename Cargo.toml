@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 atty = "0.2.14"
+bioreader = { git = "https://github.com/4less/bioreader" }
 calamine = "0.26.1"
 clap = { version = "4.5.3", features = ["derive", "wrap_help"] }
 clap_derive = "4.5.3"

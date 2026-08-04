@@ -2,6 +2,7 @@
 #![feature(iter_collect_into)]
 #[macro_use]
 pub mod common;
+pub mod align;
 pub mod benchpro;
 pub mod format;
 pub mod merge;
@@ -80,6 +81,12 @@ fn main() {
         }
         Command::Normalize(normalize_args) => {
             normalize::run(normalize_args);
+        }
+        Command::Align(align_args) => {
+            if let Err(err) = align::run_align(align_args) {
+                error!("Alignment benchmarking failed: {}", err);
+                std::process::exit(1);
+            }
         }
     });
 

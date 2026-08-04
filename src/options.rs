@@ -37,6 +37,67 @@ pub enum Command {
     Msa(MsaArgs),
     /// Normalize bacterial profiles to a standard format.
     Normalize(NormalizeArgs),
+    /// Benchmark read aligners against per-read ground truth.
+    Align(AlignArgs),
+}
+
+/// How an alignment's target is compared against the truth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ScoringMode {
+    /// Whole-genome reference: stratified genome -> reference -> position, needs `Contig2Genome`.
+    Full,
+    /// Marker-gene reference: correct iff the target's prefix before `--sep` is the truth genome.
+    Species,
+}
+
+/// CLI arguments for the `align` subcommand.
+#[derive(ClapArgs, Debug, Clone)]
+pub struct AlignArgs {
+    /// Samplesheet (.xlsx/.csv/.tsv) with columns: ID, Sample, Tool, Alignment, Truth (required);
+    /// Reference, Contig2Genome, Peer, Scoring, Sep (optional).
+    #[arg(short = 'm', long, required = true, value_name = "PATH")]
+    pub meta: PathBuf,
+
+    /// Output prefix. Writes `<prefix>.align_summary.tsv`, `<prefix>.align_samples.tsv`,
+    /// `<prefix>.align_mapq.tsv` and, with `--per-read`, `<prefix>.align_reads.tsv`.
+    #[arg(short = 'o', long, required = true, value_name = "PREFIX")]
+    pub outprefix: String,
+
+    /// Scoring mode for rows whose `Scoring` column is empty.
+    #[arg(long, value_enum, default_value_t = ScoringMode::Full)]
+    pub scoring: ScoringMode,
+
+    /// Separator splitting a marker contig into `<species-prefix><sep><gene>` for `species` scoring.
+    #[arg(long, default_value = "_", value_name = "STR")]
+    pub sep: String,
+
+    /// Slack in bp for the position stratum and for "same locus" in the head-to-head.
+    #[arg(long, default_value_t = 100, value_name = "INT")]
+    pub tolerance: u64,
+
+    /// Replay at most this many alignments per file against the reference (0 = all).
+    #[arg(long, default_value_t = 100_000, value_name = "INT")]
+    pub verify_sample: usize,
+
+    /// Skip the reference replay even where a `Reference` column is given.
+    #[arg(long, default_value_t = false)]
+    pub no_replay: bool,
+
+    /// Worker threads for SAM parsing (0 = all available).
+    #[arg(short = 't', long, default_value_t = 0, value_name = "INT")]
+    pub threads: usize,
+
+    /// Also write the per-read verdict table (one row per truth read per tool).
+    #[arg(long, default_value_t = false)]
+    pub per_read: bool,
+
+    /// Seed for reservoir and replay sampling, so runs are reproducible.
+    #[arg(long, default_value_t = 0, value_name = "INT")]
+    pub seed: u64,
+
+    /// Validate the meta file (columns and file paths) and exit.
+    #[arg(long, default_value_t = false)]
+    pub validate_meta: bool,
 }
 
 /// CLI arguments for the `profile` subcommand.
@@ -173,7 +234,7 @@ pub struct MsaArgs {
 
 #[cfg(test)]
 mod tests {
-    use super::{Args, Command, NormalizeOutputFormat};
+    use super::{Args, Command, NormalizeOutputFormat, ScoringMode};
     use clap::Parser;
 
     #[test]
@@ -196,6 +257,7 @@ mod tests {
             Command::Merge(_) => panic!("Expected profile subcommand"),
             Command::Msa(_) => panic!("Expected profile subcommand"),
             Command::Normalize(_) => panic!("Expected profile subcommand"),
+            Command::Align(_) => panic!("Expected profile subcommand"),
         }
     }
 
@@ -223,6 +285,7 @@ mod tests {
             Command::Merge(_) => panic!("Expected strain subcommand"),
             Command::Msa(_) => panic!("Expected strain subcommand"),
             Command::Normalize(_) => panic!("Expected strain subcommand"),
+            Command::Align(_) => panic!("Expected strain subcommand"),
         }
     }
 
@@ -340,6 +403,61 @@ mod tests {
                 assert_eq!(normalize_args.output_format, NormalizeOutputFormat::Cami);
             }
             _ => panic!("Expected normalize subcommand"),
+        }
+    }
+
+    #[test]
+    fn parses_align_subcommand_with_defaults() {
+        let args = Args::parse_from([
+            "benchpro",
+            "align",
+            "--meta",
+            "align_meta.tsv",
+            "--outprefix",
+            "out",
+        ]);
+
+        match args.command {
+            Command::Align(align_args) => {
+                assert_eq!(align_args.meta.to_string_lossy(), "align_meta.tsv");
+                assert_eq!(align_args.outprefix, "out");
+                assert_eq!(align_args.scoring, ScoringMode::Full);
+                assert_eq!(align_args.sep, "_");
+                assert_eq!(align_args.tolerance, 100);
+                assert_eq!(align_args.verify_sample, 100_000);
+                assert!(!align_args.no_replay);
+                assert!(!align_args.per_read);
+            }
+            _ => panic!("Expected align subcommand"),
+        }
+    }
+
+    #[test]
+    fn parses_align_species_scoring() {
+        let args = Args::parse_from([
+            "benchpro",
+            "align",
+            "--meta",
+            "align_meta.tsv",
+            "--outprefix",
+            "out",
+            "--scoring",
+            "species",
+            "--sep",
+            "|",
+            "--verify-sample",
+            "0",
+            "--per-read",
+        ]);
+
+        match args.command {
+            Command::Align(align_args) => {
+                assert_eq!(align_args.scoring, ScoringMode::Species);
+                assert_eq!(align_args.sep, "|");
+                assert_eq!(align_args.verify_sample, 0);
+                assert!(align_args.per_read);
+            }
+            _ => panic!("Expected align subcommand"),
         }
     }
 }
