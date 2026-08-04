@@ -50,7 +50,7 @@ pub struct ProfileArgs {
 /// CLI arguments for the `strain` subcommand.
 #[derive(ClapArgs, Debug, Clone)]
 pub struct StrainArgs {
-    /// Samplesheet meta file with columns: ID, Species, MSA, Tree, Meta.
+    /// Samplesheet meta file with columns: ID, Species, Meta (required); Tree, MSA, Partition, GoldMSA, GoldTree, Tool (optional).
     #[arg(short = 'm', long, required = true, value_name = "PATH")]
     pub meta: std::path::PathBuf,
 

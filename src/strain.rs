@@ -61,7 +61,7 @@ struct StrainJob {
     id: String,
     species: String,
     tool: Option<String>,
-    tree_path: PathBuf,
+    tree_path: Option<PathBuf>,
     meta_path: PathBuf,
     msa_path: Option<PathBuf>,
     partition_path: Option<PathBuf>,
@@ -189,31 +189,10 @@ pub fn run_strain(args: &StrainArgs) -> Result<(), StrainError> {
     let mut proximity_rows: Vec<GenomeProximityRow> = Vec::new();
 
     for job in &jobs {
-        info!(
-            "Processing '{}' (tree: {})",
-            job.id,
-            job.tree_path.display()
-        );
-        let mut tree = load_tree(&job.tree_path)?;
-        let root_children = tree
-            .get_root()
-            .ok()
-            .and_then(|r| tree.get(&r).ok())
-            .map(|n| n.children.len())
-            .unwrap_or(0);
-        let is_unrooted = root_children >= 3;
-        if args.midpoint_root || is_unrooted {
-            if is_unrooted && !args.midpoint_root {
-                info!(
-                    "Tree '{}' has a trifurcating root (unrooted IQ-TREE/RAxML format); \
-                     applying midpoint root automatically.",
-                    job.tree_path.display()
-                );
-            }
-            midpoint_root(&mut tree)?;
-        }
+        info!("Processing '{}'", job.id);
         let mut genome_groups = load_genome_groups(&job.meta_path)?;
-        if let Some(min_cov) = args.cov_filter {
+
+        let keep_ids_for_pruning = if let Some(min_cov) = args.cov_filter {
             for samples in genome_groups.values_mut() {
                 samples.retain(|s| {
                     if s.coverage < min_cov {
@@ -228,12 +207,37 @@ pub fn run_strain(args: &StrainArgs) -> Result<(), StrainError> {
                 });
             }
             genome_groups.retain(|_, samples| !samples.is_empty());
-
             let keep_ids: std::collections::HashSet<String> = genome_groups
                 .values()
                 .flat_map(|samples| samples.iter().map(|s| s.id.clone()))
                 .collect();
-            prune_tree_to_tips(&mut tree, &keep_ids)?;
+            Some(keep_ids)
+        } else {
+            None
+        };
+
+        if let Some(tree_file) = &job.tree_path {
+        info!("Computing monophyly from tree '{}'...", tree_file.display());
+        let mut tree = load_tree(tree_file)?;
+        let root_children = tree
+            .get_root()
+            .ok()
+            .and_then(|r| tree.get(&r).ok())
+            .map(|n| n.children.len())
+            .unwrap_or(0);
+        let is_unrooted = root_children >= 3;
+        if args.midpoint_root || is_unrooted {
+            if is_unrooted && !args.midpoint_root {
+                info!(
+                    "Tree '{}' has a trifurcating root (unrooted IQ-TREE/RAxML format); \
+                     applying midpoint root automatically.",
+                    tree_file.display()
+                );
+            }
+            midpoint_root(&mut tree)?;
+        }
+        if let Some(ref keep_ids) = keep_ids_for_pruning {
+            prune_tree_to_tips(&mut tree, keep_ids)?;
         }
 
         let name2id: HashMap<String, NodeId> = tree
@@ -256,7 +260,7 @@ pub fn run_strain(args: &StrainArgs) -> Result<(), StrainError> {
                         warn!(
                             "Sample '{}' not found as tip in tree '{}'",
                             s.id,
-                            job.tree_path.display()
+                            tree_file.display()
                         );
                     }
                     node_id.map(|nid| (s, *nid))
@@ -268,7 +272,7 @@ pub fn run_strain(args: &StrainArgs) -> Result<(), StrainError> {
                 warn!(
                     "No tree tips found for genome '{}' in '{}', skipping.",
                     genome,
-                    job.tree_path.display()
+                    tree_file.display()
                 );
                 continue;
             }
@@ -333,6 +337,7 @@ pub fn run_strain(args: &StrainArgs) -> Result<(), StrainError> {
                 });
             }
         }
+        } // end if let Some(tree_file)
 
         if let Some(msa_path) = &job.msa_path {
             info!("Computing MSA sequence errors for '{}'...", job.id);
@@ -780,13 +785,7 @@ fn load_strain_jobs(path: &Path) -> Result<Vec<StrainJob>, StrainError> {
             path.display()
         ))
     })?;
-    let tree_col = find_column_name(&df, StrainMetaColumns::TREE).ok_or_else(|| {
-        StrainError::Meta(format!(
-            "Missing column '{}' in '{}'",
-            StrainMetaColumns::TREE,
-            path.display()
-        ))
-    })?;
+    let tree_col = find_column_name(&df, StrainMetaColumns::TREE);
     let meta_col = find_column_name(&df, StrainMetaColumns::META).ok_or_else(|| {
         StrainError::Meta(format!(
             "Missing column '{}' in '{}'",
@@ -806,7 +805,6 @@ fn load_strain_jobs(path: &Path) -> Result<Vec<StrainJob>, StrainError> {
         .column(&species_col)?
         .str()
         .map_err(StrainError::Polars)?;
-    let trees = df.column(&tree_col)?.str().map_err(StrainError::Polars)?;
     let metas = df.column(&meta_col)?.str().map_err(StrainError::Polars)?;
 
     let mut jobs = Vec::with_capacity(df.height());
@@ -819,15 +817,16 @@ fn load_strain_jobs(path: &Path) -> Result<Vec<StrainJob>, StrainError> {
             .get(row)
             .ok_or_else(|| StrainError::Meta("Missing Species value".to_string()))?
             .to_string();
-        let tree_path = trees
-            .get(row)
-            .ok_or_else(|| StrainError::Meta("Missing Tree value".to_string()))?
-            .to_string();
         let meta_path = metas
             .get(row)
             .ok_or_else(|| StrainError::Meta("Missing Meta value".to_string()))?
             .to_string();
 
+        let tree_path = tree_col
+            .as_ref()
+            .and_then(|col| df.column(col).ok())
+            .and_then(|s| s.str().ok().map(|ca| ca.get(row).map(PathBuf::from)))
+            .flatten();
         let msa_path = msa_col
             .as_ref()
             .and_then(|col| df.column(col).ok())
@@ -858,7 +857,7 @@ fn load_strain_jobs(path: &Path) -> Result<Vec<StrainJob>, StrainError> {
             id,
             species,
             tool,
-            tree_path: PathBuf::from(tree_path),
+            tree_path,
             meta_path: PathBuf::from(meta_path),
             msa_path,
             partition_path,
