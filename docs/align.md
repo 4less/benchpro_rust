@@ -118,6 +118,23 @@ alignments perturbed — some reshaped (same start, different CIGAR), some shift
 `exact_pct` is empty when the truth is a TSV or a PAF: neither records how a read should align, so
 the question is undefined rather than failed.
 
+### Per-genome accuracy
+
+`align_genomes.tsv` breaks every count down by the truth's source genome, sorted worst-first, so the
+organisms a tool struggles with lead the table. A total cannot show this. On a two-genome sample
+where a contender is perfect on one and 60 bp out on every read of the other:
+
+```
+overall:   correct_pct 100.0   position_pct 50.0        <- "right genome, mediocre positions"
+
+genome     reads  correct_pct  position_pct
+genomeB    10     100.0        0.0                      <- actually: one organism is broken
+genomeA    10     100.0        100.0                    <- and the other is perfect
+```
+
+Columns: `reads`, `aligned`, `correct`, `align_pct`, `correct_pct`, `position_pct`, and `exact_pct`
+when the truth is a gold SAM.
+
 ### Recovery of the hard reads
 
 Overall accuracy is dominated by the easy majority — ungapped, unclipped reads that almost anything
@@ -165,6 +182,7 @@ and position strata are not defined and are omitted.
 | `<prefix>.align_summary.tsv` | `(dataset, tool)` — the headline table |
 | `<prefix>.align_samples.tsv` | `(dataset, sample, tool)` — the rows behind every aggregate |
 | `<prefix>.align_mapq.tsv` | `(dataset, tool, mapq)` — the precision/recall curve |
+| `<prefix>.align_genomes.tsv` | `(dataset, tool, genome)` — accuracy per source organism |
 | `<prefix>.align_reads.tsv` | `(dataset, sample, tool, read)` — only with `--per-read` |
 
 A missing value is an **empty cell, never `0`** — a tool that emits no `NM` tag has no reported

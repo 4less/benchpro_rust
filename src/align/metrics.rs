@@ -85,29 +85,33 @@ pub struct MappingScore {
     /// gold-standard SAM.
     pub exact: Option<u64>,
     /// Recovery of the reads whose gold alignment carries an indel; gold-standard SAM only.
-    pub indel: Option<ShapeScore>,
+    pub indel: Option<SubsetScore>,
     /// Recovery of the reads whose gold alignment is clipped; gold-standard SAM only.
-    pub clipped: Option<ShapeScore>,
+    pub clipped: Option<SubsetScore>,
 }
 
-/// Recovery of one hard subset of the truth.
+/// Counts over one subset of the truth — reads sharing a source genome, or a property of their
+/// gold alignment.
 ///
-/// Overall accuracy is dominated by the easy majority — ungapped, unclipped reads that almost
-/// anything places correctly. Whether a tool handles gapped or clipped reads is invisible in the
-/// total and obvious here.
+/// A total hides both of the things a subset shows. Overall accuracy is dominated by the easy
+/// majority, so whether a tool handles gapped reads is invisible in it; and a tool that is 95%
+/// correct may be 100% correct on most genomes and 0% on one, which is a different problem from
+/// being uniformly slightly wrong.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ShapeScore {
+pub struct SubsetScore {
     /// Truth reads in this subset.
     pub total: u64,
     /// ...that the tool placed anywhere.
     pub aligned: u64,
+    /// ...that it placed on the right genome.
+    pub correct: u64,
     /// ...that it placed within `tolerance` of the true locus.
     pub position: u64,
     /// ...whose alignment it reproduced exactly.
     pub exact: u64,
 }
 
-impl ShapeScore {
+impl SubsetScore {
     /// Share of the subset the tool placed anywhere.
     ///
     /// # Returns
@@ -115,6 +119,15 @@ impl ShapeScore {
     /// `100 * aligned / total`, or 0 for an empty subset.
     pub fn aligned_pct(&self) -> f64 {
         pct(self.aligned, self.total)
+    }
+
+    /// Share of the subset placed on the right genome.
+    ///
+    /// # Returns
+    ///
+    /// `100 * correct / total`, or 0 for an empty subset.
+    pub fn correct_pct(&self) -> f64 {
+        pct(self.correct, self.total)
     }
 
     /// Share of the subset placed within tolerance of the true locus.
@@ -140,16 +153,17 @@ impl ShapeScore {
     /// # Arguments
     ///
     /// * `other` - The counts to add
-    pub fn add(&mut self, other: &ShapeScore) {
+    pub fn add(&mut self, other: &SubsetScore) {
         self.total += other.total;
         self.aligned += other.aligned;
+        self.correct += other.correct;
         self.position += other.position;
         self.exact += other.exact;
     }
 }
 
 /// Sums two optional subset scores, keeping `None` only when neither side has one.
-fn add_shape(a: Option<ShapeScore>, b: Option<ShapeScore>) -> Option<ShapeScore> {
+fn add_shape(a: Option<SubsetScore>, b: Option<SubsetScore>) -> Option<SubsetScore> {
     match (a, b) {
         (None, None) => None,
         (a, b) => {
@@ -307,6 +321,9 @@ impl ScoringContext<'_> {
     }
 }
 
+/// Per-genome counts, keyed by the truth's genome label.
+pub type PerGenome = HashMap<std::sync::Arc<str>, SubsetScore>;
+
 /// Scores one contender's alignments against one sample's truth.
 ///
 /// Iteration is over the *truth*, not over the alignments: a read the tool placed but the truth
@@ -328,6 +345,25 @@ pub fn score(
     truth: &Truth,
     context: &ScoringContext,
 ) -> MappingScore {
+    score_detailed(records, truth, context).0
+}
+
+/// Scores one contender, and additionally breaks the counts down by source genome.
+///
+/// # Arguments
+///
+/// * `records` - Primary alignments, keyed by read mate
+/// * `truth` - The sample's per-read truth
+/// * `context` - Correctness definition and its parameters
+///
+/// # Returns
+///
+/// The mapping score, and one [`SubsetScore`] per genome the truth names.
+pub fn score_detailed(
+    records: &HashMap<ReadKey, AlnRecord>,
+    truth: &Truth,
+    context: &ScoringContext,
+) -> (MappingScore, PerGenome) {
     let mut score = MappingScore {
         total: truth.len() as u64,
         ..Default::default()
@@ -343,13 +379,17 @@ pub fn score(
         score.exact = Some(0);
     }
     if gold_alignments {
-        score.indel = Some(ShapeScore::default());
-        score.clipped = Some(ShapeScore::default());
+        score.indel = Some(SubsetScore::default());
+        score.clipped = Some(SubsetScore::default());
     }
 
+    let mut per_genome: PerGenome = HashMap::new();
+
     for (key, entry) in truth {
-        // The hard subsets count every truth read in them, placed or not -- a read the tool never
-        // placed is precisely the kind of failure this is meant to surface.
+        // Every subset counts each truth read, placed or not: a read the tool never placed is
+        // precisely the kind of failure these are meant to surface.
+        let genome = per_genome.entry(entry.genome.clone()).or_default();
+        genome.total += 1;
         let shape = entry.shape.unwrap_or_default();
         if shape.indel {
             if let Some(indel) = &mut score.indel {
@@ -366,9 +406,20 @@ pub fn score(
             continue;
         };
         score.aligned += 1;
+        let genome = per_genome
+            .get_mut(&entry.genome)
+            .expect("inserted above for this entry");
+        genome.aligned += 1;
         let verdict = context.verdict(record, entry);
         if verdict.is_correct() {
             score.correct += 1;
+            genome.correct += 1;
+        }
+        if verdict >= Verdict::Position {
+            genome.position += 1;
+        }
+        if verdict >= Verdict::Exact {
+            genome.exact += 1;
         }
         if stratified {
             if verdict >= Verdict::Reference {
@@ -391,6 +442,9 @@ pub fn score(
             }
             let Some(subset) = subset else { continue };
             subset.aligned += 1;
+            if verdict.is_correct() {
+                subset.correct += 1;
+            }
             if verdict >= Verdict::Position {
                 subset.position += 1;
             }
@@ -400,7 +454,7 @@ pub fn score(
         }
     }
 
-    score
+    (score, per_genome)
 }
 
 /// How many records and truth entries to sample when checking label vocabularies.

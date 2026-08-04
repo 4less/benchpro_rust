@@ -420,6 +420,11 @@ mapq_best_cutoff, mapq_best_f1, note
 `<prefix>.align_samples.tsv` — the per-sample rows behind every aggregate (same columns plus
 `sample`), so a total can be checked by hand.
 
+`<prefix>.align_genomes.tsv` — `dataset, tool, genome, reads, aligned, correct, align_pct,
+correct_pct, position_pct` (+ `exact_pct` for a gold-SAM truth), sorted worst-first. Not in the
+original plan: a total cannot say *which* organisms a tool loses reads on, and that is usually the
+question after "how many".
+
 `<prefix>.align_mapq.tsv` — `dataset, tool, mapq, correct, kept, precision_pct,
 recall_mappable_pct, recall_total_pct, f1_mappable, f1_total`. No `sample` column: the curve is
 pooled across a dataset's samples, as `bench.py` plots it — a per-sample curve would be a different

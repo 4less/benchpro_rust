@@ -26,7 +26,7 @@ use super::base::{BaseMetrics, HeadToHead};
 use super::clip::ClipGeometry;
 use super::error::{AlignError, AlignResult};
 use super::mapq::{self, MapqCount};
-use super::metrics::{pct, MappingScore, ReadVerdict, ShapeScore};
+use super::metrics::{pct, MappingScore, PerGenome, ReadVerdict, SubsetScore};
 use super::sam::ParseCounters;
 
 /// A per-read verdict tagged with the run it came from.
@@ -58,6 +58,8 @@ pub struct SampleResult {
     pub h2h: Option<HeadToHead>,
     /// Clip geometry, when `--clip-geometry` asked for it.
     pub clip: Option<ClipGeometry>,
+    /// Counts broken down by the truth's source genome.
+    pub per_genome: PerGenome,
 }
 
 impl SampleResult {
@@ -108,6 +110,8 @@ pub struct ToolSummary {
     pub h2h: Option<HeadToHead>,
     /// Clip geometry pooled over the samples that have it.
     pub clip: Option<ClipGeometry>,
+    /// Per-genome counts pooled over the samples.
+    pub per_genome: PerGenome,
     /// Note explaining any restriction applied to the sample set.
     pub note: Option<String>,
 }
@@ -255,6 +259,7 @@ pub fn summarize(results: &[SampleResult], notes: &HashMap<String, String>) -> V
                 base: pool_base(group),
                 h2h: pool_h2h(group),
                 clip: pool_clip(group),
+                per_genome: pool_per_genome(group),
                 note: notes.get(&key.0).cloned(),
             };
 
@@ -348,6 +353,17 @@ fn pool_h2h(group: &[&SampleResult]) -> Option<HeadToHead> {
         worse: weighted_by_common(|h| h.worse),
         nm_delta: weighted_by_common(|h| h.nm_delta),
     })
+}
+
+/// Pools per-genome counts across the samples of one contender.
+fn pool_per_genome(group: &[&SampleResult]) -> PerGenome {
+    let mut pooled = PerGenome::new();
+    for result in group {
+        for (genome, counts) in &result.per_genome {
+            pooled.entry(genome.clone()).or_default().add(counts);
+        }
+    }
+    pooled
 }
 
 /// Pools clip geometry across the samples that have it.
@@ -462,8 +478,8 @@ pub fn summary_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
         // Recovery of the hard reads, reported separately because the total is dominated by the
         // easy majority: a tool can look excellent overall and still lose most of the gapped
         // reads, which are the ones an aligner is actually judged on.
-        let shape = |f: fn(&MappingScore) -> Option<ShapeScore>,
-                     g: fn(&ShapeScore) -> f64|
+        let shape = |f: fn(&MappingScore) -> Option<SubsetScore>,
+                     g: fn(&SubsetScore) -> f64|
          -> Vec<Option<f64>> {
             summaries
                 .iter()
@@ -479,15 +495,15 @@ pub fn summary_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
         ));
         columns.push(Series::new(
             "indel_aligned_pct".into(),
-            shape(|s| s.indel, ShapeScore::aligned_pct),
+            shape(|s| s.indel, SubsetScore::aligned_pct),
         ));
         columns.push(Series::new(
             "indel_position_pct".into(),
-            shape(|s| s.indel, ShapeScore::position_pct),
+            shape(|s| s.indel, SubsetScore::position_pct),
         ));
         columns.push(Series::new(
             "indel_exact_pct".into(),
-            shape(|s| s.indel, ShapeScore::exact_pct),
+            shape(|s| s.indel, SubsetScore::exact_pct),
         ));
         columns.push(Series::new(
             "clipped_reads".into(),
@@ -498,11 +514,11 @@ pub fn summary_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
         ));
         columns.push(Series::new(
             "clipped_position_pct".into(),
-            shape(|s| s.clipped, ShapeScore::position_pct),
+            shape(|s| s.clipped, SubsetScore::position_pct),
         ));
         columns.push(Series::new(
             "clipped_exact_pct".into(),
-            shape(|s| s.clipped, ShapeScore::exact_pct),
+            shape(|s| s.clipped, SubsetScore::exact_pct),
         ));
         // The third benchmark: identical to the gold standard's alignment, not merely near it.
         // Null unless the truth was a gold-standard SAM, which is the only source that says how a
@@ -1015,6 +1031,101 @@ impl ReadsWriter {
     }
 }
 
+/// Builds the `<prefix>.align_genomes.tsv` frame: accuracy per source genome.
+///
+/// A tool that is 95% correct overall may be perfect on most genomes and useless on one — a
+/// different problem from being uniformly slightly wrong, and invisible in any total. Rows are
+/// sorted by dataset, then tool, then worst-first across the strata, so the genomes a tool
+/// struggles with are the first thing on the page.
+///
+/// # Arguments
+///
+/// * `summaries` - Pooled per-contender results
+///
+/// # Returns
+///
+/// One row per `(dataset, tool, genome)`.
+///
+/// # Errors
+///
+/// Returns [`AlignError::Output`] when the frame cannot be assembled.
+pub fn genomes_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
+    let mut rows: Vec<(&str, &str, &str, SubsetScore)> = Vec::new();
+    for summary in summaries {
+        for (genome, counts) in &summary.per_genome {
+            rows.push((&summary.dataset, &summary.tool, genome, *counts));
+        }
+    }
+    // Worst first, across the strata rather than only the first of them: a genome every read
+    // reaches but none lands correctly on is a failure, and sorting on `correct_pct` alone would
+    // file it beside the genomes that are fine.
+    rows.sort_by(|a, b| {
+        a.0.cmp(b.0).then(a.1.cmp(b.1)).then_with(|| {
+            a.3.correct_pct()
+                .total_cmp(&b.3.correct_pct())
+                .then_with(|| pct(a.3.position, a.3.total).total_cmp(&pct(b.3.position, b.3.total)))
+                .then_with(|| pct(a.3.exact, a.3.total).total_cmp(&pct(b.3.exact, b.3.total)))
+                .then(a.2.cmp(b.2))
+        })
+    });
+
+    let has_exact = rows.iter().any(|r| r.3.exact > 0);
+
+    let mut columns = vec![
+        Series::new(
+            "dataset".into(),
+            rows.iter().map(|r| r.0.to_string()).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "tool".into(),
+            rows.iter().map(|r| r.1.to_string()).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "genome".into(),
+            rows.iter().map(|r| r.2.to_string()).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "reads".into(),
+            rows.iter().map(|r| r.3.total).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "aligned".into(),
+            rows.iter().map(|r| r.3.aligned).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "correct".into(),
+            rows.iter().map(|r| r.3.correct).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "align_pct".into(),
+            rows.iter().map(|r| r.3.aligned_pct()).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "correct_pct".into(),
+            rows.iter().map(|r| r.3.correct_pct()).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "position_pct".into(),
+            rows.iter()
+                .map(|r| pct(r.3.position, r.3.total))
+                .collect::<Vec<_>>(),
+        ),
+    ];
+    if has_exact {
+        columns.push(Series::new(
+            "exact_pct".into(),
+            rows.iter()
+                .map(|r| pct(r.3.exact, r.3.total))
+                .collect::<Vec<_>>(),
+        ));
+    }
+
+    DataFrame::new(columns).map_err(|e| AlignError::Output {
+        path: "align_genomes.tsv".into(),
+        message: e.to_string(),
+    })
+}
+
 /// Writes a frame as a TSV.
 ///
 /// # Arguments
@@ -1098,6 +1209,7 @@ mod tests {
             base: None,
             h2h: None,
             clip: None,
+            per_genome: PerGenome::new(),
         }
     }
 

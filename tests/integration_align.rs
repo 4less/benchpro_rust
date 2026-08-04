@@ -588,6 +588,45 @@ fn indel_recovery_is_reported_separately_from_the_easy_majority() {
 }
 
 #[test]
+fn the_per_genome_table_separates_a_uniform_tool_from_a_lopsided_one() {
+    // The contender is perfect on genomeA and 60 bp out on every genomeB read. Both genomes score
+    // 100% `correct` -- it never leaves the right genome -- so the headline hides the split
+    // entirely, and only the per-genome table shows that one organism is fine and one is not.
+    let meta = format!(
+        "ID\tSample\tTool\tAlignment\tTruth\tContig2Genome\tScoring\n\
+         ds\ts1\tlopsided\t{pred}\t{gold}\t{c2g}\tfull\n",
+        pred = fixture("two_genomes.pred.sam"),
+        gold = fixture("two_genomes.gold.sam"),
+        c2g = fixture("reference.contig2genome.tsv"),
+    );
+    let prefix = run_align("per_genome", &meta, &["--tolerance", "10"]);
+
+    let summary = read_tsv(&prefix.with_extension("align_summary.tsv"));
+    let overall = row_for(&summary, "lopsided");
+    assert_eq!(
+        number(overall, "correct_pct"),
+        100.0,
+        "never the wrong genome"
+    );
+    assert_eq!(
+        number(overall, "position_pct"),
+        50.0,
+        "and the total says only 'half'"
+    );
+
+    let genomes = read_tsv(&prefix.with_extension("align_genomes.tsv"));
+    assert_eq!(genomes.len(), 2);
+    // Sorted worst-first, so the genome a tool struggles with leads.
+    assert_eq!(genomes[0]["genome"], "genomeB");
+    assert_eq!(number(&genomes[0], "position_pct"), 0.0);
+    assert_eq!(genomes[1]["genome"], "genomeA");
+    assert_eq!(number(&genomes[1], "position_pct"), 100.0);
+    // Both are 100% correct at the genome level; the split is entirely positional.
+    assert_eq!(number(&genomes[0], "correct_pct"), 100.0);
+    assert_eq!(number(&genomes[0], "reads"), 10.0);
+}
+
+#[test]
 fn a_truth_that_shares_no_read_is_an_error_not_a_zero_score() {
     let dir = unique_temp_dir("benchpro_align_mismatch");
     fs::create_dir_all(&dir).expect("create temp dir");

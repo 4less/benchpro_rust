@@ -126,6 +126,10 @@ pub fn run_align(args: &AlignArgs) -> AlignResult<()> {
         &mut report::mapq_frame(&summaries)?,
         &output_path(prefix, "align_mapq.tsv"),
     )?;
+    report::write(
+        &mut report::genomes_frame(&summaries)?,
+        &output_path(prefix, "align_genomes.tsv"),
+    )?;
     if let Some(writer) = reads_writer {
         writer.finish()?;
     }
@@ -240,7 +244,7 @@ fn score_group(
             warn!("{}/{} {}: {}", dataset, sample, row.tool, problem);
         }
 
-        let score = metrics::score(&alignment.records, truth, &context);
+        let (score, per_genome) = metrics::score_detailed(&alignment.records, truth, &context);
         let mapq_counts = mapq::counts(&alignment.records, truth, &context);
 
         if args.per_read {
@@ -308,6 +312,7 @@ fn score_group(
             base,
             h2h,
             clip,
+            per_genome,
         });
     }
 
