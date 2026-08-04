@@ -220,6 +220,8 @@ dependencies = [
  "polars",
  "rayon",
  "regex",
+ "serde 1.0.228",
+ "serde_json",
  "strum",
  "thiserror",
 ]

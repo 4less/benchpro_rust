@@ -15,6 +15,7 @@
 //! base-level head-to-head both need every contender on a sample in memory at once.
 
 pub mod base;
+pub mod cache;
 pub mod cigar;
 pub mod clip;
 pub mod error;
@@ -95,6 +96,21 @@ pub fn run_align(args: &AlignArgs) -> AlignResult<()> {
     // per-read table be written group by group instead of accumulated.
     let (retained, notes) = report::common_samples(&meta.rows);
 
+    // `--per-read` writes one row per truth read per contender, and a cached result cannot produce
+    // them -- the verdicts need the parsed alignments. Reusing anything would silently emit a
+    // per-read table missing the reused contenders, so the cache is bypassed entirely.
+    let use_cache = !args.force && !args.per_read;
+    let mut cache = if use_cache {
+        cache::Cache::load(&args.outprefix)
+    } else {
+        if args.per_read && !args.force {
+            info!(
+                "--per-read regenerates every contender: a cached result carries no per-read rows"
+            );
+        }
+        cache::Cache::empty()
+    };
+
     let mut results: Vec<SampleResult> = Vec::new();
     // Folded together as each group finishes rather than carried on every SampleResult: only the
     // pooled form is ever rendered.
@@ -118,8 +134,15 @@ pub fn run_align(args: &AlignArgs) -> AlignResult<()> {
             sample,
             rows.len()
         );
-        let (group_results, group_genomes) =
-            score_group(dataset, sample, &rows, args, &mut reads_writer)?;
+        let (group_results, group_genomes) = score_group(
+            dataset,
+            sample,
+            &rows,
+            args,
+            &mut reads_writer,
+            &mut cache,
+            use_cache,
+        )?;
         for (tool, counts) in group_genomes {
             let totals = per_genome.entry((dataset.to_string(), tool)).or_default();
             for (genome, subset) in counts {
@@ -157,6 +180,9 @@ pub fn run_align(args: &AlignArgs) -> AlignResult<()> {
     if let Some(writer) = reads_writer {
         writer.finish()?;
     }
+    if use_cache {
+        cache.save(&args.outprefix)?;
+    }
 
     Ok(())
 }
@@ -171,13 +197,75 @@ fn score_group(
     rows: &[&AlignRow],
     args: &AlignArgs,
     reads_writer: &mut Option<report::ReadsWriter>,
+    cache: &mut cache::Cache,
+    use_cache: bool,
 ) -> AlignResult<GroupScores> {
     // One truth and one contig map per path, however many contenders share them.
     let mut truths: HashMap<TruthKey, Truth> = HashMap::new();
     let mut maps: HashMap<PathBuf, HashMap<Box<str>, Box<str>>> = HashMap::new();
     let mut parsed: Vec<ParsedAlignment> = Vec::with_capacity(rows.len());
 
-    for row in rows {
+    // Which contenders still need computing. A row whose inputs are unchanged is reused -- but a
+    // stale row that names a Peer needs that peer's PARSED ALIGNMENTS to compare against, which no
+    // cached result carries, so the peer is re-read even when its own result is still good.
+    let fingerprints: Vec<Option<cache::Fingerprint>> = rows
+        .iter()
+        .map(|row| {
+            let peer = row.peer.as_ref().and_then(|peer| {
+                rows.iter()
+                    .find(|candidate| &candidate.tool == peer)
+                    .map(|candidate| candidate.alignment.as_path())
+            });
+            use_cache
+                .then(|| cache::Fingerprint::of(row, args, peer))
+                .flatten()
+        })
+        .collect();
+    let reused: Vec<Option<(SampleResult, metrics::PerGenome)>> = rows
+        .iter()
+        .zip(fingerprints.iter())
+        .map(|(row, fingerprint)| {
+            fingerprint
+                .as_ref()
+                .and_then(|fingerprint| cache.reuse(row, fingerprint))
+        })
+        .collect();
+
+    let mut needs_parse: Vec<bool> = reused.iter().map(Option::is_none).collect();
+    for (index, row) in rows.iter().enumerate() {
+        if !needs_parse[index] {
+            continue;
+        }
+        if let Some(peer) = &row.peer {
+            if let Some(position) = rows.iter().position(|candidate| &candidate.tool == peer) {
+                needs_parse[position] = true;
+            }
+        }
+    }
+
+    if needs_parse.iter().all(|needed| !needed) {
+        // Nothing to read at all: not the truth, not one alignment file.
+        info!(
+            "  all {} contender(s) unchanged, reusing cached results",
+            rows.len()
+        );
+        let mut scored = Vec::with_capacity(rows.len());
+        let mut genomes = Vec::with_capacity(rows.len());
+        for (row, entry) in rows.iter().zip(reused) {
+            let (result, per_genome) = entry.expect("every row was reused");
+            genomes.push((row.tool.clone(), per_genome));
+            scored.push(result);
+        }
+        fill_mappable(&mut scored, dataset, sample);
+        return Ok((scored, genomes));
+    }
+
+    for (index, row) in rows.iter().enumerate() {
+        if !needs_parse[index] {
+            debug!("  {}: unchanged, reusing cached result", row.tool);
+            parsed.push(ParsedAlignment::default());
+            continue;
+        }
         // The contig map is loaded first: a gold-standard SAM truth needs it to label each read's
         // genome, exactly as build_truth.py does when it turns one into a truth TSV.
         if let Some(path) = &row.contig2genome {
@@ -236,6 +324,13 @@ fn score_group(
     let mut genomes = Vec::with_capacity(rows.len());
 
     for (index, (row, alignment)) in rows.iter().zip(parsed.iter()).enumerate() {
+        // Reused: its inputs are unchanged, so its numbers cannot have moved. It may still have
+        // been parsed above, as some stale contender's peer.
+        if let Some((result, per_genome)) = reused[index].clone() {
+            genomes.push((row.tool.clone(), per_genome));
+            scored.push(result);
+            continue;
+        }
         let truth = &truths[&(
             row.truth.clone(),
             row.contig2genome.clone(),
@@ -337,7 +432,7 @@ fn score_group(
             })
             .flatten();
 
-        scored.push(SampleResult {
+        let result = SampleResult {
             dataset: dataset.to_string(),
             sample: sample.to_string(),
             tool: row.tool.clone(),
@@ -349,9 +444,24 @@ fn score_group(
             base,
             h2h,
             clip,
-        });
+        };
+        if let Some(fingerprint) = fingerprints[index].clone() {
+            cache.store(row, fingerprint, &result, &genomes[genomes.len() - 1].1);
+        }
+        scored.push(result);
     }
 
+    fill_mappable(&mut scored, dataset, sample);
+
+    Ok((scored, genomes))
+}
+
+/// Fills in the group's recall denominator.
+///
+/// Always recomputed, never taken from a cached result: the base is the *field's* best result on
+/// this sample, so it moves when a contender joins or leaves the samplesheet even though nothing
+/// about the reused rows changed.
+fn fill_mappable(scored: &mut [SampleResult], dataset: &str, sample: &str) {
     let mappable = mapq::mappable_base(scored.iter().map(|s| s.mapq_counts.as_slice()));
     if mappable == 0 {
         warn!(
@@ -359,11 +469,9 @@ fn score_group(
             dataset, sample
         );
     }
-    for result in &mut scored {
+    for result in scored {
         result.mappable = mappable;
     }
-
-    Ok((scored, genomes))
 }
 
 /// Replays each contender's retained alignments against its reference.

@@ -272,6 +272,38 @@ Contig lengths come from the reference's `.fai` where there is one and from the 
 otherwise. Alignments on a contig of unknown length are counted in `clip_unknown_contig` and left
 out of the percentages.
 
+## Incremental re-runs
+
+A run reuses the previous run's result for any contender whose inputs are unchanged, and writes a
+cache beside the outputs (`<outprefix>.align_cache.json`). Change one tool's SAM and only that tool
+is re-read:
+
+```bash
+benchpro align --meta meta.tsv --outprefix out          # scores everything, writes the cache
+benchpro align --meta meta.tsv --outprefix out          # "all N contender(s) unchanged, reusing"
+touch s1/minibwa.sam
+benchpro align --meta meta.tsv --outprefix out          # re-reads minibwa only
+benchpro align --meta meta.tsv --outprefix out --force  # re-scores everything
+```
+
+A contender is re-scored when its alignment, truth, `Contig2Genome` or `Reference` changes, when an
+option that affects the numbers changes (`--scoring`, `--sep`, `--tolerance`, `--verify-sample`,
+`--no-replay`, `--seed`, `--clip-geometry`), **or when its `Peer`'s alignment changes** — the
+head-to-head is computed against the peer's records, so this row's numbers move even though its own
+inputs did not.
+
+Two things it deliberately does not reuse:
+
+- **The recall denominator.** `mappable` is the best result any contender achieved on that sample,
+  so it is recomputed every run: remove a contender and everyone else's curve rescales, cached
+  results included.
+- **Anything, under `--per-read`.** Those rows cannot be reconstructed from a stored result, so the
+  cache is bypassed rather than silently writing a per-read table missing the reused contenders.
+
+Change detection is by size and modification time, not a content hash — hashing gigabyte SAMs every
+run would cost exactly what the cache saves. A file edited in place to the same length within the
+filesystem's timestamp granularity will look unchanged; `--force` is the answer when that matters.
+
 ## Reproducibility
 
 Identical inputs and `--seed` give **byte-identical** output, independent of `--threads`:

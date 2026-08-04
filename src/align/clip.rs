@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use super::metrics::pct;
 use super::sam::AlnRecord;
 use super::truth::ReadKey;
+use serde::{Deserialize, Serialize};
 
 /// Bases of tolerance when calling an alignment "flush" with a contig edge.
 pub const EDGE_SLACK: u64 = 5;
@@ -34,7 +35,7 @@ pub enum ClipKind {
 }
 
 /// Distribution of clip explanations across a contender's alignments.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ClipGeometry {
     /// Alignments whose geometry could be judged: everything except [`ClipKind::Unknown`].
     pub judged: u64,
@@ -47,8 +48,10 @@ pub struct ClipGeometry {
     /// Clipped alignments on a contig of unknown length.
     pub unknown: u64,
     /// Mean clipped bases of the dovetailing alignments.
+    #[serde(with = "crate::align::cache::opt_f64_bits")]
     pub dovetail_mean_bases: Option<f64>,
     /// Mean clipped bases of the contained alignments.
+    #[serde(with = "crate::align::cache::opt_f64_bits")]
     pub contained_mean_bases: Option<f64>,
 }
 

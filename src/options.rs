@@ -1,4 +1,5 @@
 use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// ASCII logo shown at startup and in help output.
@@ -42,7 +43,7 @@ pub enum Command {
 }
 
 /// How an alignment's target is compared against the truth.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ValueEnum, Serialize, Deserialize)]
 pub enum ScoringMode {
     /// Whole-genome reference: stratified genome -> reference -> position, needs `Contig2Genome`.
     Full,
@@ -103,6 +104,11 @@ pub struct AlignArgs {
     /// Validate the meta file (columns and file paths) and exit.
     #[arg(long, default_value_t = false)]
     pub validate_meta: bool,
+
+    /// Re-score every contender, ignoring results cached from a previous run. Without it, a
+    /// contender whose inputs and options are unchanged is reused.
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
 }
 
 /// CLI arguments for the `profile` subcommand.

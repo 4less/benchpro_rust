@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use super::metrics::{pct, ScoringContext};
 use super::sam::{AlnRecord, ParseCounters};
 use super::truth::{ReadKey, Truth};
+use serde::{Deserialize, Serialize};
 
 /// Identity at or above which an alignment counts as near-perfect.
 pub const IDENTITY_HIGH: f64 = 0.95;
@@ -27,39 +28,53 @@ pub const IDENTITY_HIGH: f64 = 0.95;
 /// Every field is a mean or a share over the emitted primary alignments, except the counts. `None`
 /// means the quantity is not defined for this tool — a tool that emits no `NM` has no reported
 /// identity, and that must not be rendered as zero.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BaseMetrics {
     /// Primary alignments emitted.
     pub records: u64,
     /// Alignments replayed against the reference.
     pub verified: u64,
     /// Mean identity as the tool reports it.
+    #[serde(with = "crate::align::cache::opt_f64_bits")]
     pub identity: Option<f64>,
     /// Share of reported identities at or above [`IDENTITY_HIGH`].
+    #[serde(with = "crate::align::cache::opt_f64_bits")]
     pub identity_high: Option<f64>,
     /// Mean identity from the replayed edit distance.
+    #[serde(with = "crate::align::cache::opt_f64_bits")]
     pub identity_v: Option<f64>,
     /// Share of replayed identities at or above [`IDENTITY_HIGH`].
+    #[serde(with = "crate::align::cache::opt_f64_bits")]
     pub identity_high_v: Option<f64>,
     /// Share of replayed records whose `NM` tag matches the replayed distance.
+    #[serde(with = "crate::align::cache::opt_f64_bits")]
     pub nm_agree: Option<f64>,
     /// Mean identity of alignments on the right target.
+    #[serde(with = "crate::align::cache::opt_f64_bits")]
     pub identity_correct: Option<f64>,
     /// Mean identity of alignments on the wrong target.
+    #[serde(with = "crate::align::cache::opt_f64_bits")]
     pub identity_wrong: Option<f64>,
     /// Mean query coverage.
+    #[serde(with = "crate::align::cache::f64_bits")]
     pub coverage: f64,
     /// Share of unclipped alignments.
+    #[serde(with = "crate::align::cache::f64_bits")]
     pub full_length: f64,
     /// Share of alignments containing an indel.
+    #[serde(with = "crate::align::cache::f64_bits")]
     pub indel: f64,
     /// Share of malformed records (CIGAR does not match SEQ length).
+    #[serde(with = "crate::align::cache::f64_bits")]
     pub malformed: f64,
     /// Share whose target is absent from the reference.
+    #[serde(with = "crate::align::cache::opt_f64_bits")]
     pub unknown_ref: Option<f64>,
     /// Share missing an `NM` tag.
+    #[serde(with = "crate::align::cache::f64_bits")]
     pub no_nm: f64,
     /// Share flagged as a proper pair.
+    #[serde(with = "crate::align::cache::f64_bits")]
     pub proper_pair: f64,
 }
 
@@ -164,7 +179,7 @@ pub fn summarize(
 }
 
 /// Base-level comparison against a peer aligner on the loci both tools found.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HeadToHead {
     /// The peer's name.
     pub peer: String,
@@ -175,14 +190,19 @@ pub struct HeadToHead {
     /// Mates only the peer placed.
     pub only_peer: u64,
     /// Share of shared mates placed at the same locus.
+    #[serde(with = "crate::align::cache::opt_f64_bits")]
     pub same_locus: Option<f64>,
     /// Share where this tool reached the lower edit distance.
+    #[serde(with = "crate::align::cache::opt_f64_bits")]
     pub better: Option<f64>,
     /// Share where the two tied.
+    #[serde(with = "crate::align::cache::opt_f64_bits")]
     pub equal: Option<f64>,
     /// Share where this tool was worse.
+    #[serde(with = "crate::align::cache::opt_f64_bits")]
     pub worse: Option<f64>,
     /// Mean `self_nm - peer_nm`; negative means this tool aligns better.
+    #[serde(with = "crate::align::cache::opt_f64_bits")]
     pub nm_delta: Option<f64>,
 }
 

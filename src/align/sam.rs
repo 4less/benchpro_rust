@@ -28,6 +28,7 @@ use super::cigar::{self, CigarCounts};
 use super::error::{AlignError, AlignResult};
 use super::meta::{is_gzipped, AlignmentFormat};
 use super::truth::ReadKey;
+use serde::{Deserialize, Serialize};
 
 /// Batch size handed to each bioreader worker.
 const BUFFER_SIZE: usize = 1 << 24;
@@ -130,7 +131,7 @@ impl AlnRecord {
 }
 
 /// Counts of everything seen while parsing, including what was skipped.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ParseCounters {
     /// Records read, header lines excluded.
     pub records: u64,

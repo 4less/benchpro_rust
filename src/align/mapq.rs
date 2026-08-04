@@ -13,9 +13,10 @@ use std::collections::HashMap;
 use super::metrics::{pct, ScoringContext};
 use super::sam::AlnRecord;
 use super::truth::{ReadKey, Truth};
+use serde::{Deserialize, Serialize};
 
 /// Cumulative counts at one MAPQ cutoff: how many alignments survive it, and how many are right.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MapqCount {
     /// The cutoff.
     pub mapq: u8,

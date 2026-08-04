@@ -28,12 +28,13 @@ use super::error::{AlignError, AlignResult};
 use super::mapq::{self, MapqCount};
 use super::metrics::{pct, MappingScore, PerGenome, ReadVerdict, SubsetScore};
 use super::sam::ParseCounters;
+use serde::{Deserialize, Serialize};
 
 /// A per-read verdict tagged with the run it came from.
 pub type TaggedVerdict = (String, String, String, ScoringMode, ReadVerdict);
 
 /// Everything scored for one contender on one sample.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SampleResult {
     /// Dataset label.
     pub dataset: String,

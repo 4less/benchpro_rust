@@ -15,6 +15,7 @@ use crate::options::ScoringMode;
 
 use super::sam::AlnRecord;
 use super::truth::{ReadKey, Truth, TruthEntry};
+use serde::{Deserialize, Serialize};
 
 /// How well a read was placed. Each level implies every level below it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -69,7 +70,7 @@ impl Verdict {
 }
 
 /// The mapping score of one contender on one sample.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MappingScore {
     /// Reads in the truth. The denominator of `align_pct`.
     pub total: u64,
@@ -97,7 +98,7 @@ pub struct MappingScore {
 /// majority, so whether a tool handles gapped reads is invisible in it; and a tool that is 95%
 /// correct may be 100% correct on most genomes and 0% on one, which is a different problem from
 /// being uniformly slightly wrong.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubsetScore {
     /// Truth reads in this subset.
     pub total: u64,

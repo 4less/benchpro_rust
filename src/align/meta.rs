@@ -520,6 +520,7 @@ mod tests {
             clip_geometry: false,
             seed: 0,
             validate_meta: false,
+            force: false,
         }
     }
 

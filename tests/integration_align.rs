@@ -13,7 +13,11 @@
 //! | `mapper` (PAF) | pairs 1-9 at the true locus, keeping the `/1`,`/2` suffix SAM tools strip |
 
 use std::collections::HashMap;
-use std::{fs, path::PathBuf, process::Command};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 mod common;
 
@@ -786,6 +790,207 @@ fn the_fixture_set_can_distinguish_every_denominator() {
         missing.is_empty(),
         "no fixture exercises: {missing:?} -- a metric that swapped these denominators would pass \
          every test in this file"
+    );
+}
+
+/// Copies the fixtures a caching test needs into `dir`, so it can touch them without disturbing
+/// the committed set, and returns a samplesheet naming them.
+fn caching_workspace(dir: &Path, peer: bool) -> String {
+    for name in [
+        "good.sam",
+        "sloppy.sam",
+        "reads.truth.tsv",
+        "reference.contig2genome.tsv",
+    ] {
+        fs::copy(fixture(name), dir.join(name)).expect("copy fixture");
+    }
+    let meta = dir.join("meta.tsv");
+    fs::write(
+        &meta,
+        format!(
+            "ID\tSample\tTool\tAlignment\tTruth\tContig2Genome\tPeer\n\
+             ds\ts1\tgood\t{d}/good.sam\t{d}/reads.truth.tsv\t{d}/reference.contig2genome.tsv\t{p}\n\
+             ds\ts1\tsloppy\t{d}/sloppy.sam\t{d}/reads.truth.tsv\t{d}/reference.contig2genome.tsv\t\n",
+            d = dir.to_string_lossy(),
+            p = if peer { "sloppy" } else { "" },
+        ),
+    )
+    .expect("write meta");
+    meta.to_string_lossy().into_owned()
+}
+
+/// Runs `benchpro align` on an existing samplesheet path, returning its stderr.
+fn run_on(meta: &str, prefix: &Path, extra: &[&str]) -> String {
+    let mut args = vec![
+        "--log-level".to_string(),
+        "info".to_string(),
+        "align".to_string(),
+        "--meta".to_string(),
+        meta.to_string(),
+        "--outprefix".to_string(),
+        prefix.to_string_lossy().into_owned(),
+    ];
+    args.extend(extra.iter().map(|a| a.to_string()));
+    let output = Command::new(benchpro_bin())
+        .args(&args)
+        .output()
+        .expect("run benchpro align");
+    assert!(
+        output.status.success(),
+        "failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+#[test]
+fn an_unchanged_contender_is_not_re_scored() {
+    let dir = unique_temp_dir("benchpro_align_cache_reuse");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let meta = caching_workspace(&dir, false);
+    let prefix = dir.join("out");
+
+    let cold = run_on(&meta, &prefix, &[]);
+    assert!(
+        cold.contains("good: 18 primary"),
+        "first run must score everything"
+    );
+
+    let warm = run_on(&meta, &prefix, &[]);
+    assert!(warm.contains("unchanged, reusing cached results"), "{warm}");
+    assert!(
+        !warm.contains("primary alignment"),
+        "nothing should be re-read: {warm}"
+    );
+
+    // --force ignores the cache.
+    let forced = run_on(&meta, &prefix, &["--force"]);
+    assert!(forced.contains("good: 18 primary"), "{forced}");
+}
+
+#[test]
+fn only_the_contender_whose_input_changed_is_re_scored() {
+    let dir = unique_temp_dir("benchpro_align_cache_partial");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let meta = caching_workspace(&dir, false);
+    let prefix = dir.join("out");
+    run_on(&meta, &prefix, &[]);
+
+    // Rewrite one alignment: same tool, different content.
+    let sloppy = dir.join("sloppy.sam");
+    let text = fs::read_to_string(&sloppy).expect("read");
+    let trimmed: String = text
+        .lines()
+        .filter(|l| l.starts_with('@'))
+        .chain(text.lines().filter(|l| !l.starts_with('@')).take(6))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    fs::write(&sloppy, trimmed).expect("write");
+
+    let warm = run_on(&meta, &prefix, &[]);
+    assert!(
+        warm.contains("sloppy:"),
+        "the changed contender must be re-scored: {warm}"
+    );
+    assert!(
+        !warm.contains("good:"),
+        "the unchanged one must not be: {warm}"
+    );
+}
+
+#[test]
+fn a_reused_run_produces_byte_identical_output() {
+    let dir = unique_temp_dir("benchpro_align_cache_identical");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let meta = caching_workspace(&dir, true);
+
+    let forced = dir.join("forced");
+    run_on(&meta, &forced, &["--force", "--clip-geometry"]);
+
+    let cached = dir.join("cached");
+    run_on(&meta, &cached, &["--clip-geometry"]);
+    run_on(&meta, &cached, &["--clip-geometry"]);
+
+    for table in [
+        "align_summary.tsv",
+        "align_samples.tsv",
+        "align_genomes.tsv",
+        "align_mapq.tsv",
+    ] {
+        let a = fs::read(forced.with_extension(table)).expect("read forced");
+        let b = fs::read(cached.with_extension(table)).expect("read cached");
+        assert_eq!(a, b, "{table} differs between a forced and a reused run");
+    }
+}
+
+#[test]
+fn a_contender_is_re_scored_when_its_peer_changes() {
+    // The head-to-head is computed against the peer's records, so this row's numbers move when the
+    // peer's file does -- even though none of its own inputs did.
+    let dir = unique_temp_dir("benchpro_align_cache_peer");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let meta = caching_workspace(&dir, true);
+    let prefix = dir.join("out");
+    run_on(&meta, &prefix, &[]);
+
+    let before = read_tsv(&prefix.with_extension("align_summary.tsv"));
+    let common_before = number(row_for(&before, "good"), "h2h_common");
+
+    let sloppy = dir.join("sloppy.sam");
+    let text = fs::read_to_string(&sloppy).expect("read");
+    let trimmed: String = text
+        .lines()
+        .filter(|l| l.starts_with('@'))
+        .chain(text.lines().filter(|l| !l.starts_with('@')).take(6))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    fs::write(&sloppy, trimmed).expect("write");
+
+    let warm = run_on(&meta, &prefix, &[]);
+    assert!(
+        warm.contains("good:"),
+        "the dependent contender must be re-scored: {warm}"
+    );
+
+    let after = read_tsv(&prefix.with_extension("align_summary.tsv"));
+    let common_after = number(row_for(&after, "good"), "h2h_common");
+    assert!(
+        common_after < common_before,
+        "h2h_common stayed {common_before} after the peer shrank -- a stale comparison"
+    );
+}
+
+#[test]
+fn the_recall_denominator_follows_the_field_not_the_cache() {
+    // `mappable` is the best result any contender achieved on the sample, so it moves when the
+    // field changes even though every row was reused.
+    let dir = unique_temp_dir("benchpro_align_cache_mappable");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let both = caching_workspace(&dir, false);
+    let prefix = dir.join("out");
+    run_on(&both, &prefix, &[]);
+
+    let with_field = read_tsv(&prefix.with_extension("align_summary.tsv"));
+    let paired = number(row_for(&with_field, "sloppy"), "mappable");
+
+    // Same sheet minus the stronger contender.
+    let alone = dir.join("alone.tsv");
+    let text = fs::read_to_string(&both).expect("read meta");
+    let kept: String = text
+        .lines()
+        .filter(|l| !l.contains("\tgood\t"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    fs::write(&alone, kept).expect("write");
+
+    let warm = run_on(&alone.to_string_lossy(), &prefix, &[]);
+    assert!(warm.contains("unchanged, reusing"), "{warm}");
+
+    let solo = read_tsv(&prefix.with_extension("align_summary.tsv"));
+    let single = number(row_for(&solo, "sloppy"), "mappable");
+    assert!(
+        single < paired,
+        "mappable stayed {paired} after the better contender left -- a cached denominator"
     );
 }
 
