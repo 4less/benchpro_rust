@@ -992,11 +992,19 @@ d__Bacteria;p__Firmicutes;s__Foo\t97.5
         merge_profiles(&[profile], &output, &TaxonomicRank::Species)?;
 
         let output_content = fs::read_to_string(output).expect("Failed to read output");
+        // The matrix keys every row by its full lineage -- `d__Bacteria;p__Firmicutes;s__Foo` --
+        // and the unclassified mass follows that convention, so match the row by its species
+        // suffix as the other tests here do rather than by a bare `s__` key at line start, which
+        // the format never emits for any taxon.
+        let unclassified = output_content
+            .lines()
+            .find(|line| line.contains("s__UNCLASSIFIED"))
+            .unwrap_or_else(|| {
+                panic!("Expected an s__UNCLASSIFIED row in merged matrix, got:\n{output_content}")
+            });
         assert!(
-            output_content.contains("\ns__UNCLASSIFIED\t2.5")
-                || output_content.contains("\ns__UNCLASSIFIED\t2.500000"),
-            "Expected s__UNCLASSIFIED row in merged matrix, got:\n{}",
-            output_content
+            unclassified.contains("\t2.5"),
+            "Expected the unclassified mass to be 2.5, got:\n{unclassified}"
         );
 
         Ok(())

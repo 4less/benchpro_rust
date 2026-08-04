@@ -1,0 +1,20 @@
+#mpa_vJan21_CHOCOPhlAnSGB_202103
+#/opt/micromamba/envs/metaphlan4/bin/metaphlan reads.fq --input_type fastq --bowtie2db /db/MetaPhlAn4 --index mpa_vJan21_CHOCOPhlAnSGB_202103 -o profile.tsv
+#4185432 reads processed
+#SampleID	Metaphlan_Analysis
+#clade_name	relative_abundance
+k__Bacteria	100.0
+k__Bacteria|p__Bacteroidetes	52.31
+k__Bacteria|p__Bacteroidetes|c__Bacteroidia	52.31
+k__Bacteria|p__Bacteroidetes|c__Bacteroidia|o__Bacteroidales	52.31
+k__Bacteria|p__Bacteroidetes|c__Bacteroidia|o__Bacteroidales|f__Bacteroidaceae	52.31
+k__Bacteria|p__Bacteroidetes|c__Bacteroidia|o__Bacteroidales|f__Bacteroidaceae|g__Bacteroides	52.31
+k__Bacteria|p__Bacteroidetes|c__Bacteroidia|o__Bacteroidales|f__Bacteroidaceae|g__Bacteroides|s__Bacteroides_fragilis	52.31
+k__Bacteria|p__Bacteroidetes|c__Bacteroidia|o__Bacteroidales|f__Bacteroidaceae|g__Bacteroides|s__Bacteroides_fragilis|t__SGB1855	52.31
+k__Bacteria|p__Proteobacteria	47.69
+k__Bacteria|p__Proteobacteria|c__Gammaproteobacteria	47.69
+k__Bacteria|p__Proteobacteria|c__Gammaproteobacteria|o__Enterobacterales	47.69
+k__Bacteria|p__Proteobacteria|c__Gammaproteobacteria|o__Enterobacterales|f__Enterobacteriaceae	47.69
+k__Bacteria|p__Proteobacteria|c__Gammaproteobacteria|o__Enterobacterales|f__Enterobacteriaceae|g__Escherichia	47.69
+k__Bacteria|p__Proteobacteria|c__Gammaproteobacteria|o__Enterobacterales|f__Enterobacteriaceae|g__Escherichia|s__Escherichia_coli	47.69
+k__Bacteria|p__Proteobacteria|c__Gammaproteobacteria|o__Enterobacterales|f__Enterobacteriaceae|g__Escherichia|s__Escherichia_coli|t__SGB10068	47.69
