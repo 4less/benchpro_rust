@@ -11,8 +11,11 @@
 //! Orchestration (building indexes, timing runs, cache control) belongs to the harness that calls
 //! it.
 
+pub mod cigar;
 pub mod error;
 pub mod meta;
+pub mod sam;
+pub mod truth;
 
 use log::info;
 
