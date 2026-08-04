@@ -128,11 +128,27 @@ pub fn ensure_fai(fasta: &Path) -> AlignResult<PathBuf> {
         ));
     }
 
-    // Every build gets its own scratch file: the process id separates concurrent runs, and the
-    // counter separates concurrent threads within one run. Sharing a name means the second rename
-    // finds the file already consumed by the first and the run dies on a path it never wrote.
-    // `rename` is atomic, so whichever build finishes last simply wins, and the loser's work is
-    // discarded rather than half-visible.
+    let tmp = scratch_path(&fai);
+    std::fs::write(&tmp, index).map_err(|e| AlignError::io(&tmp, e))?;
+    std::fs::rename(&tmp, &fai).map_err(|e| AlignError::io(&fai, e))?;
+    Ok(fai)
+}
+
+/// A scratch path for one index build, distinct from every other build's.
+///
+/// The process id separates concurrent runs and the counter separates concurrent threads within
+/// one run. Sharing a name means the second `rename` finds the file already consumed by the first
+/// and the run dies on a path it never wrote. `rename` is atomic, so whichever build finishes last
+/// simply wins and the loser's work is discarded rather than left half-visible.
+///
+/// # Arguments
+///
+/// * `fai` - The index path this build will produce
+///
+/// # Returns
+///
+/// A path no concurrent build will also choose.
+fn scratch_path(fai: &Path) -> PathBuf {
     static BUILD: AtomicU64 = AtomicU64::new(0);
     let mut tmp = fai.as_os_str().to_os_string();
     tmp.push(format!(
@@ -140,10 +156,7 @@ pub fn ensure_fai(fasta: &Path) -> AlignResult<PathBuf> {
         std::process::id(),
         BUILD.fetch_add(1, Ordering::Relaxed)
     ));
-    let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, index).map_err(|e| AlignError::io(&tmp, e))?;
-    std::fs::rename(&tmp, &fai).map_err(|e| AlignError::io(&fai, e))?;
-    Ok(fai)
+    PathBuf::from(tmp)
 }
 
 /// Is an existing index at least as new as the FASTA it indexes?
@@ -602,16 +615,42 @@ mod tests {
     }
 
     #[test]
+    fn every_index_build_gets_its_own_scratch_path() {
+        // The property the fix actually provides, asserted directly. The threaded test below
+        // cannot do this job on its own: whether two builds ever overlap is a matter of timing, so
+        // it can pass against a broken implementation that simply got lucky.
+        let paths: HashSet<PathBuf> = (0..64)
+            .map(|_| scratch_path(Path::new("/tmp/ref.fna.fai")))
+            .collect();
+        assert_eq!(paths.len(), 64, "two builds would share a scratch file");
+
+        // ...and every one of them is beside the index it will become, not somewhere else.
+        for path in &paths {
+            let name = path.file_name().unwrap().to_string_lossy();
+            assert!(
+                name.starts_with("ref.fna.fai.tmp."),
+                "stray scratch path: {name}"
+            );
+        }
+    }
+
+    #[test]
     fn concurrent_index_builds_do_not_collide() {
-        // Two runs can index the same reference at once -- and after `--threads`, two threads of
-        // one run could too. Each needs its own scratch file: sharing one means the second rename
-        // finds it already consumed by the first, and the run dies on a file it never wrote.
+        // A smoke test over the real thing. Threads are released together so they genuinely
+        // overlap, but the guarantee is asserted by the test above -- this one only demonstrates
+        // that nothing else in the build path minds being run concurrently.
         let dir = temp_dir("concurrent");
         let fasta = write_fasta(&dir, WRAPPED);
+        let gate = std::sync::Barrier::new(8);
 
         let results: Vec<_> = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..8)
-                .map(|_| scope.spawn(|| ensure_fai(&fasta).map(|p| p.exists())))
+                .map(|_| {
+                    scope.spawn(|| {
+                        gate.wait();
+                        ensure_fai(&fasta).map(|p| p.exists())
+                    })
+                })
                 .collect();
             handles.into_iter().map(|h| h.join().unwrap()).collect()
         });
@@ -622,13 +661,12 @@ mod tests {
                 "a concurrent index build failed: {result:?}"
             );
         }
-        // ...and the index that survives is complete, not a half-written one.
+        // The index that survives is complete, not a half-written one.
         let mut reference = Reference::open(&fasta, None).unwrap();
         assert_eq!(reference.len(), 2);
         assert_eq!(reference.fetch("ctg1", 0, 4).unwrap(), b"ACGT");
         assert_eq!(reference.length_of("ctg2"), Some(10));
 
-        // No scratch files left behind.
         let leftovers: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| e.ok())

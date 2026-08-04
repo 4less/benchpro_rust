@@ -220,8 +220,8 @@ pub fn common_samples(rows: &[AlignRow]) -> (HashSet<(String, String)>, HashMap<
 ///
 /// # Arguments
 ///
-/// * `results` - Per-sample results, already restricted to the common sample set
-/// * `notes` - Per-dataset restriction notes from [`restrict_to_common_samples`]
+/// * `results` - Per-sample results; only the retained samples were scored in the first place
+/// * `notes` - Per-dataset restriction notes from [`common_samples`]
 ///
 /// # Returns
 ///

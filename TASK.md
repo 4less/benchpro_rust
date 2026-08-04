@@ -420,7 +420,10 @@ mapq_best_cutoff, mapq_best_f1, note
 `<prefix>.align_samples.tsv` — the per-sample rows behind every aggregate (same columns plus
 `sample`), so a total can be checked by hand.
 
-`<prefix>.align_mapq.tsv` — `dataset, tool, sample, mapq, correct, kept, recall_pct, precision_pct`.
+`<prefix>.align_mapq.tsv` — `dataset, tool, mapq, correct, kept, precision_pct,
+recall_mappable_pct, recall_total_pct, f1_mappable, f1_total`. No `sample` column: the curve is
+pooled across a dataset's samples, as `bench.py` plots it — a per-sample curve would be a different
+table, and the per-sample counts behind this one are in `align_samples.tsv`.
 
 `<prefix>.align_reads.tsv` (only with `--per-read`) — `dataset, sample, tool, read_id, mate,
 truth_contig, truth_pos, truth_genome, aln_target, aln_pos, mapq, verdict, nm, vnm`, where `verdict`

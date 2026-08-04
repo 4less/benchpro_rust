@@ -162,8 +162,11 @@ pub fn counts(
 /// they placed: a tool that aligns almost every read at chance accuracy would otherwise drag the
 /// union up to nearly the whole read set and reinstate exactly the ceiling being removed.
 /// Best-achieved-correct is the honest empirical answer to "how many of these reads can be placed
-/// at all", and it makes the leading tool peak at 100% recall with everyone else measured against
-/// it.
+/// at all".
+///
+/// On a single sample the leading tool therefore peaks at 100%. Across a dataset it usually does
+/// not: the pooled base is the sum of each sample's best, and no tool need win every sample, so
+/// `sum_s max_t correct(t, s) >= max_t sum_s correct(t, s)`.
 ///
 /// # Arguments
 ///
@@ -184,7 +187,8 @@ pub fn mappable_base<'a>(per_tool: impl Iterator<Item = &'a [MapqCount]>) -> u64
 /// # Arguments
 ///
 /// * `counts` - Cumulative counts from [`counts`]
-/// * `mappable` - Field-relative denominator from [`mappable_base`]
+/// * `mappable` - Field-relative denominator from [`mappable_base`]. When it is 0 no contender
+///   placed anything correctly, so every numerator is 0 too and the recall reads 0%
 /// * `total` - Reads in the truth
 ///
 /// # Returns
