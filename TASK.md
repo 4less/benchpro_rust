@@ -504,6 +504,27 @@ Checked against `align_metrics.py` / `report.py` on real data from
 Residual differences are 1 ulp, from float summation order (a `HashMap` iterates in a different
 order than a Python `dict`).
 
+### Where the time goes, and why there is no Rayon
+
+§12 lists "Rayon across files/rows". Measured on a 96 MB / 285,570-record SAM with a 1.28M-row
+truth, the run divides as truth loading ~1.2 s, replay ~0.6 s, parse + score ~0.7 s. Parallelism was
+therefore aimed at the largest cost rather than added where the list suggested:
+
+- **Across `(dataset, sample)` groups — rejected.** Each concurrent group holds its own truth and
+  record set resident, so it multiplies peak RSS by the concurrency. On a marker-DB run with
+  ten-million-read truths that is the wrong trade; the module would get faster and then OOM.
+- **Across files within a group — rejected.** The SAM parse is already internally multithreaded
+  (bioreader, `--threads`, now defaulting to all cores), so a second layer only oversubscribes.
+- **Inside the replay — rejected by design**, as the plan already said: records are fetched in
+  reference order because sorted seeks over a 16.6 GB FASTA keep the reads local.
+- **Truth loading — addressed directly instead.** Reading the file in one pass and interning the
+  contig and genome columns took it from 1.41 s to 1.20 s and peak RSS from 314 MB to 292 MB, with
+  byte-identical output. That helps every run rather than trading memory for wall time.
+
+Parallelising the scoring passes (`metrics::score`, `mapq::counts`, `base::summarize`) over the
+already-resident records would cost no extra memory and is the one place Rayon still fits; it is
+unmeasured and therefore not done.
+
 ### Divergences from the Python, deliberate
 
 1. **`recall_pct` uses `correct / total`**, matching `bench.py`'s summary. An earlier draft here
@@ -511,8 +532,10 @@ order than a Python `dict`).
    phase 5.
 2. **PAF rows carry no base-level columns at all.** The Python computes them anyway and gets a row
    of zeroes; an empty cell is the honest rendering of "this format cannot answer that".
-3. **The primary alignment is chosen by byte offset**, not by whichever worker saw it first, so the
-   record set does not depend on the thread count. Asserted by a test.
+3. **The primary alignment is chosen by byte offset**, and the replay sample is bottom-k on a hash
+   of the read key, so neither depends on the thread count or on how batches were split. The Python
+   reservoir-samples in file order, which is single threaded and so never had to be order free.
+   Asserted by tests; output is byte identical across runs and thread counts.
 4. **No samtools dependency.** `.fai` is built by a plain scan; the Python shells out when samtools
    is on `PATH`.
 
