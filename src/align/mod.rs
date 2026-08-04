@@ -14,16 +14,18 @@
 //! The unit of work is a `(dataset, sample)` **group**, not a row: the recall denominator and the
 //! base-level head-to-head both need every contender on a sample in memory at once.
 
+pub mod base;
 pub mod cigar;
 pub mod error;
 pub mod mapq;
 pub mod meta;
 pub mod metrics;
+pub mod reference;
 pub mod report;
 pub mod sam;
 pub mod truth;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use log::{debug, info, warn};
@@ -156,11 +158,13 @@ fn score_group(
         parsed.push(alignment);
     }
 
+    replay_against_references(rows, &mut parsed, args)?;
+
     // Score each contender, then fill in the recall denominator once the whole field is known.
     let mut scored = Vec::with_capacity(rows.len());
     let mut reads = Vec::new();
 
-    for (row, alignment) in rows.iter().zip(parsed.iter()) {
+    for (index, (row, alignment)) in rows.iter().zip(parsed.iter()).enumerate() {
         let truth = &truths[&row.truth];
         let context = ScoringContext {
             scoring: row.scoring,
@@ -198,6 +202,29 @@ fn score_group(
             }
         }
 
+        let base = base::summarize(
+            &alignment.records,
+            &alignment.counters,
+            Some(truth),
+            &context,
+        );
+
+        // The head-to-head needs the peer's records, which is why the group -- not the row -- is
+        // the unit of work.
+        let h2h = row.peer.as_ref().and_then(|peer_name| {
+            rows.iter()
+                .position(|candidate| &candidate.tool == peer_name)
+                .filter(|position| *position != index)
+                .map(|position| {
+                    base::head_to_head(
+                        &alignment.records,
+                        &parsed[position].records,
+                        peer_name,
+                        args.tolerance,
+                    )
+                })
+        });
+
         scored.push(SampleResult {
             dataset: dataset.to_string(),
             sample: sample.to_string(),
@@ -207,6 +234,8 @@ fn score_group(
             counters: alignment.counters.clone(),
             mapq_counts,
             mappable: 0,
+            base,
+            h2h,
         });
     }
 
@@ -222,6 +251,66 @@ fn score_group(
     }
 
     Ok((scored, reads))
+}
+
+/// Replays each contender's retained alignments against its reference.
+///
+/// Contenders that name the same reference share one open handle and one filtered index: on the
+/// marker reference the index alone is the expensive part, and every tool on a sample is aligned
+/// against the same FASTA.
+fn replay_against_references(
+    rows: &[&AlignRow],
+    parsed: &mut [ParsedAlignment],
+    args: &AlignArgs,
+) -> AlignResult<()> {
+    if args.no_replay {
+        return Ok(());
+    }
+
+    // Group the contenders by the reference they were aligned against.
+    let mut by_reference: HashMap<&Path, Vec<usize>> = HashMap::new();
+    for (index, row) in rows.iter().enumerate() {
+        if let Some(reference) = &row.reference {
+            if row.format.has_alignments() {
+                by_reference
+                    .entry(reference.as_path())
+                    .or_default()
+                    .push(index);
+            }
+        }
+    }
+
+    for (path, indices) in by_reference {
+        // Only the contigs the alignments actually name are loaded: a marker reference has
+        // millions of sequences and a scoring run touches a small fraction of them.
+        let wanted: HashSet<Box<str>> = indices
+            .iter()
+            .flat_map(|i| parsed[*i].records.values())
+            .filter(|record| record.seq.is_some())
+            .map(|record| record.target.clone())
+            .collect();
+        if wanted.is_empty() {
+            continue;
+        }
+
+        let mut reference = reference::Reference::open(path, Some(&wanted))?;
+        for index in indices {
+            let alignment = &mut parsed[index];
+            let verified = reference::verify(
+                &mut alignment.records,
+                &mut reference,
+                &mut alignment.counters,
+            )?;
+            info!(
+                "  {}: {} alignment(s) replayed against {}",
+                rows[index].tool,
+                verified,
+                path.display()
+            );
+        }
+    }
+
+    Ok(())
 }
 
 /// Appends a suffix to the output prefix.

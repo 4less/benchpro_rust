@@ -18,6 +18,7 @@ use polars::prelude::{DataFrame, NamedFrom, Series};
 use crate::options::ScoringMode;
 use crate::utils::write_df;
 
+use super::base::{BaseMetrics, HeadToHead};
 use super::error::{AlignError, AlignResult};
 use super::mapq::{self, MapqCount};
 use super::metrics::{pct, MappingScore, ReadVerdict};
@@ -42,6 +43,10 @@ pub struct SampleResult {
     pub mapq_counts: Vec<MapqCount>,
     /// Recall denominator for this sample, shared by every contender on it.
     pub mappable: u64,
+    /// Base-level metrics, absent for a contender that emitted no alignment.
+    pub base: Option<BaseMetrics>,
+    /// Base-level comparison against the row's peer, when one was named.
+    pub h2h: Option<HeadToHead>,
 }
 
 impl SampleResult {
@@ -76,6 +81,10 @@ pub struct ToolSummary {
     pub mappable: u64,
     /// Standard deviation of `correct_pct` across samples, when there is more than one.
     pub correct_pct_sd: Option<f64>,
+    /// Base-level metrics averaged over the samples that have them.
+    pub base: Option<BaseMetrics>,
+    /// Head-to-head averaged over the samples that have one.
+    pub h2h: Option<HeadToHead>,
     /// Note explaining any restriction applied to the sample set.
     pub note: Option<String>,
 }
@@ -204,6 +213,8 @@ pub fn summarize(results: &[SampleResult], notes: &HashMap<String, String>) -> V
                 mapq_counts: Vec::new(),
                 mappable: 0,
                 correct_pct_sd: None,
+                base: pool_base(group),
+                h2h: pool_h2h(group),
                 note: notes.get(&key.0).cloned(),
             };
 
@@ -222,6 +233,91 @@ pub fn summarize(results: &[SampleResult], notes: &HashMap<String, String>) -> V
             summary
         })
         .collect()
+}
+
+/// Pools base-level metrics across the samples that have them.
+///
+/// Counts are summed and shares are weighted by each sample's alignment count — a sample with a
+/// thousand alignments must not weigh the same as one with a million. A share that no sample
+/// defines stays `None`: a tool that emits no `NM` has no reported identity, and rendering that as
+/// zero would read as "every alignment is a complete mismatch".
+fn pool_base(group: &[&SampleResult]) -> Option<BaseMetrics> {
+    let present: Vec<(&BaseMetrics, u64)> = group
+        .iter()
+        .filter_map(|r| r.base.as_ref().map(|b| (b, b.records)))
+        .collect();
+    if present.is_empty() {
+        return None;
+    }
+
+    let total: u64 = present.iter().map(|(_, n)| *n).sum();
+    let verified: u64 = present.iter().map(|(b, _)| b.verified).sum();
+    // A share over the replayed subset must be weighted by that subset, not by all alignments.
+    let by_records = |f: fn(&BaseMetrics) -> f64| -> f64 {
+        weighted(present.iter().map(|(b, n)| (f(b), *n))).unwrap_or(0.0)
+    };
+    let by_records_opt = |f: fn(&BaseMetrics) -> Option<f64>| -> Option<f64> {
+        weighted(present.iter().filter_map(|(b, n)| f(b).map(|v| (v, *n))))
+    };
+    let by_verified = |f: fn(&BaseMetrics) -> Option<f64>| -> Option<f64> {
+        weighted(
+            present
+                .iter()
+                .filter_map(|(b, _)| f(b).map(|v| (v, b.verified))),
+        )
+    };
+
+    Some(BaseMetrics {
+        records: total,
+        verified,
+        identity: by_records_opt(|b| b.identity),
+        identity_high: by_records_opt(|b| b.identity_high),
+        identity_v: by_verified(|b| b.identity_v),
+        identity_high_v: by_verified(|b| b.identity_high_v),
+        nm_agree: by_verified(|b| b.nm_agree),
+        identity_correct: by_records_opt(|b| b.identity_correct),
+        identity_wrong: by_records_opt(|b| b.identity_wrong),
+        coverage: by_records(|b| b.coverage),
+        full_length: by_records(|b| b.full_length),
+        indel: by_records(|b| b.indel),
+        malformed: by_records(|b| b.malformed),
+        unknown_ref: by_records_opt(|b| b.unknown_ref),
+        no_nm: by_records(|b| b.no_nm),
+        proper_pair: by_records(|b| b.proper_pair),
+    })
+}
+
+/// Pools head-to-head results across the samples that have one.
+fn pool_h2h(group: &[&SampleResult]) -> Option<HeadToHead> {
+    let present: Vec<&HeadToHead> = group.iter().filter_map(|r| r.h2h.as_ref()).collect();
+    let first = present.first()?;
+
+    let common: u64 = present.iter().map(|h| h.common).sum();
+    let weighted_by_common = |f: fn(&HeadToHead) -> Option<f64>| -> Option<f64> {
+        weighted(present.iter().filter_map(|h| f(h).map(|v| (v, h.common))))
+    };
+
+    Some(HeadToHead {
+        peer: first.peer.clone(),
+        common,
+        only_self: present.iter().map(|h| h.only_self).sum(),
+        only_peer: present.iter().map(|h| h.only_peer).sum(),
+        same_locus: weighted_by_common(|h| h.same_locus),
+        better: weighted_by_common(|h| h.better),
+        equal: weighted_by_common(|h| h.equal),
+        worse: weighted_by_common(|h| h.worse),
+        nm_delta: weighted_by_common(|h| h.nm_delta),
+    })
+}
+
+/// Weighted mean, or `None` when nothing carries weight.
+fn weighted(values: impl Iterator<Item = (f64, u64)>) -> Option<f64> {
+    let (mut sum, mut weight) = (0.0, 0u64);
+    for (value, w) in values {
+        sum += value * w as f64;
+        weight += w;
+    }
+    (weight > 0).then(|| sum / weight as f64)
 }
 
 /// Sample standard deviation (Bessel-corrected).
@@ -306,6 +402,27 @@ pub fn summary_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
         ));
     }
 
+    // Base-level metrics. A column stays entirely null when no contender defines it, which is not
+    // the same as zero -- a tool that emits no NM has no reported identity.
+    let base = |f: fn(&BaseMetrics) -> Option<f64>| -> Vec<Option<f64>> {
+        summaries
+            .iter()
+            .map(|s| s.base.as_ref().and_then(f))
+            .collect()
+    };
+    let base_share = |f: fn(&BaseMetrics) -> f64| -> Vec<Option<f64>> {
+        summaries.iter().map(|s| s.base.as_ref().map(f)).collect()
+    };
+    let h2h = |f: fn(&HeadToHead) -> Option<f64>| -> Vec<Option<f64>> {
+        summaries
+            .iter()
+            .map(|s| s.h2h.as_ref().and_then(f))
+            .collect()
+    };
+    let h2h_count = |f: fn(&HeadToHead) -> u64| -> Vec<Option<u64>> {
+        summaries.iter().map(|s| s.h2h.as_ref().map(f)).collect()
+    };
+
     columns.extend([
         Series::new(
             "aln_records".into(),
@@ -320,6 +437,25 @@ pub fn summary_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
             numbers(summaries, |s| s.counters.secondary),
         ),
         Series::new(
+            "aln_verified".into(),
+            summaries
+                .iter()
+                .map(|s| s.base.as_ref().map(|b| b.verified))
+                .collect::<Vec<Option<u64>>>(),
+        ),
+        Series::new("aln_identity".into(), base(|b| b.identity)),
+        Series::new("aln_identity_high".into(), base(|b| b.identity_high)),
+        Series::new("aln_identity_v".into(), base(|b| b.identity_v)),
+        Series::new("aln_identity_high_v".into(), base(|b| b.identity_high_v)),
+        Series::new("aln_nm_agree".into(), base(|b| b.nm_agree)),
+        Series::new("aln_identity_correct".into(), base(|b| b.identity_correct)),
+        Series::new("aln_identity_wrong".into(), base(|b| b.identity_wrong)),
+        Series::new("aln_coverage".into(), base_share(|b| b.coverage)),
+        Series::new("aln_full_length".into(), base_share(|b| b.full_length)),
+        Series::new("aln_indel".into(), base_share(|b| b.indel)),
+        Series::new("aln_malformed".into(), base_share(|b| b.malformed)),
+        Series::new("aln_unknown_ref".into(), base(|b| b.unknown_ref)),
+        Series::new(
             "aln_no_nm".into(),
             summaries
                 .iter()
@@ -333,6 +469,21 @@ pub fn summary_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
                 .map(|s| pct(s.counters.proper_pair, s.score.aligned))
                 .collect::<Vec<_>>(),
         ),
+        Series::new(
+            "h2h_peer".into(),
+            summaries
+                .iter()
+                .map(|s| s.h2h.as_ref().map(|h| h.peer.clone()))
+                .collect::<Vec<Option<String>>>(),
+        ),
+        Series::new("h2h_common".into(), h2h_count(|h| h.common)),
+        Series::new("h2h_only_self".into(), h2h_count(|h| h.only_self)),
+        Series::new("h2h_only_peer".into(), h2h_count(|h| h.only_peer)),
+        Series::new("h2h_same_locus".into(), h2h(|h| h.same_locus)),
+        Series::new("h2h_better".into(), h2h(|h| h.better)),
+        Series::new("h2h_equal".into(), h2h(|h| h.equal)),
+        Series::new("h2h_worse".into(), h2h(|h| h.worse)),
+        Series::new("h2h_nm_delta".into(), h2h(|h| h.nm_delta)),
         Series::new(
             "mapq_best_cutoff".into(),
             best.iter()
@@ -404,6 +555,13 @@ pub fn samples_frame(results: &[SampleResult]) -> AlignResult<DataFrame> {
         ));
     }
 
+    let base = |f: fn(&BaseMetrics) -> Option<f64>| -> Vec<Option<f64>> {
+        results
+            .iter()
+            .map(|r| r.base.as_ref().and_then(f))
+            .collect()
+    };
+
     columns.extend([
         Series::new("unmapped".into(), numbers(results, |r| r.counters.unmapped)),
         Series::new(
@@ -414,6 +572,23 @@ pub fn samples_frame(results: &[SampleResult]) -> AlignResult<DataFrame> {
         Series::new(
             "proper_pair".into(),
             numbers(results, |r| r.counters.proper_pair),
+        ),
+        Series::new(
+            "aln_verified".into(),
+            results
+                .iter()
+                .map(|r| r.base.as_ref().map(|b| b.verified))
+                .collect::<Vec<Option<u64>>>(),
+        ),
+        Series::new("aln_identity".into(), base(|b| b.identity)),
+        Series::new("aln_identity_v".into(), base(|b| b.identity_v)),
+        Series::new("aln_nm_agree".into(), base(|b| b.nm_agree)),
+        Series::new(
+            "h2h_nm_delta".into(),
+            results
+                .iter()
+                .map(|r| r.h2h.as_ref().and_then(|h| h.nm_delta))
+                .collect::<Vec<Option<f64>>>(),
         ),
     ]);
 
@@ -619,6 +794,8 @@ mod tests {
                 kept: aligned,
             }],
             mappable: correct,
+            base: None,
+            h2h: None,
         }
     }
 
