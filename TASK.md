@@ -534,6 +534,25 @@ Parallelising the scoring passes (`metrics::score`, `mapq::counts`, `base::summa
 already-resident records would cost no extra memory and is the one place Rayon still fits; it is
 unmeasured and therefore not done.
 
+### Measured at scale
+
+`--per-read` on 4 contenders x a 5.1M-read truth (20.5M rows, a 1.4 GB table): **66 s, 4.9 GB
+peak**. Without `--per-read` the same run is 21 s / 3.6 GB, so the per-read table costs ~1.3 GB —
+the sorted verdict list, which has to exist in full because the table is ordered for
+reproducibility. The 3.6 GB baseline is the truth plus one parsed record set per contender, both of
+which must be resident within a group because the head-to-head compares two contenders' alignments
+directly.
+
+Two buffering bugs were found by measuring rather than by reading:
+
+- rows were collected for a whole `(dataset, sample)` group before writing, so memory scaled with
+  contenders per group: 1.16 / 1.78 / 3.40 GB for 1 / 2 / 4 tools on a 1.28M-read truth. Writing as
+  each contender is scored made that 1.27 / 1.52 / 1.79 GB.
+- a contender's rows were then tagged and framed all at once, which cost several times the
+  verdicts themselves. Chunking to 250k rows took the 5.1M-read case from 6.5 GB to 4.9 GB.
+
+Extrapolating to a ten-million-read truth: ~9-10 GB, against the 93 GB the marker-DB runs assume.
+
 ### Divergences from the Python, deliberate
 
 1. **`recall_pct` uses `correct / total`**, matching `bench.py`'s summary. An earlier draft here

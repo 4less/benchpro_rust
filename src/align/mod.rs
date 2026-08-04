@@ -54,6 +54,13 @@ type TruthKey = (
 /// contender is scored, since a group holds `truth x contenders` of them.
 type GroupScores = (Vec<SampleResult>, Vec<(String, metrics::PerGenome)>);
 
+/// Per-read rows built and handed to Polars at a time.
+///
+/// The verdicts themselves must all exist before writing — they are sorted, so the table is
+/// reproducible — but tagging them and building a frame costs several times their size, and
+/// doing that for a five-million-read sample at once dominates the run's peak memory.
+const READ_CHUNK: usize = 250_000;
+
 /// Runs the alignment benchmark described by `args.meta`.
 ///
 /// # Arguments
@@ -267,22 +274,26 @@ fn score_group(
         let mapq_counts = mapq::counts(&alignment.records, truth, &context);
 
         // Written now rather than collected: a group holds one row per truth read per contender,
-        // so buffering the group would still scale with the number of contenders in it.
+        // so buffering the group would still scale with the number of contenders in it. And
+        // written in chunks, because tagging a whole sample's verdicts and handing Polars one
+        // frame costs several times what the verdicts themselves do.
         if let Some(writer) = reads_writer {
-            let verdicts: Vec<TaggedVerdict> =
-                metrics::read_verdicts(&alignment.records, truth, &context)
-                    .into_iter()
+            let verdicts = metrics::read_verdicts(&alignment.records, truth, &context);
+            for chunk in verdicts.chunks(READ_CHUNK) {
+                let tagged: Vec<TaggedVerdict> = chunk
+                    .iter()
                     .map(|verdict| {
                         (
                             dataset.to_string(),
                             sample.to_string(),
                             row.tool.clone(),
                             row.scoring,
-                            verdict,
+                            verdict.clone(),
                         )
                     })
                     .collect();
-            writer.append(&verdicts)?;
+                writer.append(&tagged)?;
+            }
         }
 
         // Base-level metrics need a CIGAR and a SEQ, which PAF does not carry. Computing them
