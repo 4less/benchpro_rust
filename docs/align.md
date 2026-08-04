@@ -288,9 +288,10 @@ benchpro align --meta meta.tsv --outprefix out --force  # re-scores everything
 
 A contender is re-scored when its alignment, truth, `Contig2Genome` or `Reference` changes, when an
 option that affects the numbers changes (`--scoring`, `--sep`, `--tolerance`, `--verify-sample`,
-`--no-replay`, `--seed`, `--clip-geometry`), **or when its `Peer`'s alignment changes** — the
-head-to-head is computed against the peer's records, so this row's numbers move even though its own
-inputs did not.
+`--no-replay`, `--seed`, `--clip-geometry`), **or when its `Peer`'s alignment or reference changes** —
+the head-to-head is computed against the peer's records, so this row's numbers move even though its
+own inputs did not. (The peer's *reference* counts because it decides whether the comparison uses
+replayed or self-reported edit distances.)
 
 Two things it deliberately does not reuse:
 
@@ -300,7 +301,10 @@ Two things it deliberately does not reuse:
 - **Anything, under `--per-read`.** Those rows cannot be reconstructed from a stored result, so the
   cache is bypassed rather than silently writing a per-read table missing the reused contenders.
 
-Change detection is by size and modification time, not a content hash — hashing gigabyte SAMs every
+`--force` also *refreshes* the cache: a forced run stores what it recomputed, so the next plain run
+serves the corrected numbers rather than the stale ones again.
+
+Change detection is by size and modification time (to the nanosecond), not a content hash — hashing gigabyte SAMs every
 run would cost exactly what the cache saves. A file edited in place to the same length within the
 filesystem's timestamp granularity will look unchanged; `--force` is the answer when that matters.
 

@@ -62,6 +62,17 @@ type GroupScores = (Vec<SampleResult>, Vec<(String, metrics::PerGenome)>);
 /// doing that for a five-million-read sample at once dominates the run's peak memory.
 const READ_CHUNK: usize = 250_000;
 
+/// The chunk size to use, overridable so a test can cross the boundary without a million-read
+/// fixture. The code path either splits correctly or it does not; the size it splits at is not the
+/// thing under test.
+fn read_chunk() -> usize {
+    std::env::var("BENCHPRO_READ_CHUNK")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(READ_CHUNK)
+}
+
 /// Runs the alignment benchmark described by `args.meta`.
 ///
 /// # Arguments
@@ -99,15 +110,17 @@ pub fn run_align(args: &AlignArgs) -> AlignResult<()> {
     // `--per-read` writes one row per truth read per contender, and a cached result cannot produce
     // them -- the verdicts need the parsed alignments. Reusing anything would silently emit a
     // per-read table missing the reused contenders, so the cache is bypassed entirely.
-    let use_cache = !args.force && !args.per_read;
-    let mut cache = if use_cache {
+    // `--force` likewise reuses nothing, but both still *write* the cache: a run that recomputed
+    // everything holds the freshest possible answers, and discarding them would leave the stale
+    // ones in place for the next plain run -- so the documented escape hatch would last exactly
+    // one invocation.
+    let reuse_results = !args.force && !args.per_read;
+    if args.per_read && !args.force {
+        info!("--per-read regenerates every contender: a cached result carries no per-read rows");
+    }
+    let mut cache = if reuse_results {
         cache::Cache::load(&args.outprefix)
     } else {
-        if args.per_read && !args.force {
-            info!(
-                "--per-read regenerates every contender: a cached result carries no per-read rows"
-            );
-        }
         cache::Cache::empty()
     };
 
@@ -141,7 +154,7 @@ pub fn run_align(args: &AlignArgs) -> AlignResult<()> {
             args,
             &mut reads_writer,
             &mut cache,
-            use_cache,
+            reuse_results,
         )?;
         for (tool, counts) in group_genomes {
             let totals = per_genome.entry((dataset.to_string(), tool)).or_default();
@@ -180,8 +193,11 @@ pub fn run_align(args: &AlignArgs) -> AlignResult<()> {
     if let Some(writer) = reads_writer {
         writer.finish()?;
     }
-    if use_cache {
-        cache.save(&args.outprefix)?;
+    // The cache is an optimization, never a result: a run whose four tables are on disk has
+    // succeeded, and failing it because a scratch file could not be written would be absurd.
+    cache.retain(&meta.rows);
+    if let Err(err) = cache.save(&args.outprefix) {
+        warn!("could not write the result cache ({err}); the next run will recompute");
     }
 
     Ok(())
@@ -198,7 +214,7 @@ fn score_group(
     args: &AlignArgs,
     reads_writer: &mut Option<report::ReadsWriter>,
     cache: &mut cache::Cache,
-    use_cache: bool,
+    reuse_results: bool,
 ) -> AlignResult<GroupScores> {
     // One truth and one contig map per path, however many contenders share them.
     let mut truths: HashMap<TruthKey, Truth> = HashMap::new();
@@ -208,29 +224,35 @@ fn score_group(
     // Which contenders still need computing. A row whose inputs are unchanged is reused -- but a
     // stale row that names a Peer needs that peer's PARSED ALIGNMENTS to compare against, which no
     // cached result carries, so the peer is re-read even when its own result is still good.
+    // Fingerprints are computed even under --force: the run's results still have to be STORED, or
+    // the next plain run serves the stale entries --force was invoked to escape. Only the lookup
+    // below is suppressed.
     let fingerprints: Vec<Option<cache::Fingerprint>> = rows
         .iter()
         .map(|row| {
             let peer = row.peer.as_ref().and_then(|peer| {
                 rows.iter()
                     .find(|candidate| &candidate.tool == peer)
-                    .map(|candidate| candidate.alignment.as_path())
+                    .copied()
             });
-            use_cache
-                .then(|| cache::Fingerprint::of(row, args, peer))
-                .flatten()
+            cache::Fingerprint::of(row, args, peer)
         })
         .collect();
     let reused: Vec<Option<(SampleResult, metrics::PerGenome)>> = rows
         .iter()
         .zip(fingerprints.iter())
         .map(|(row, fingerprint)| {
+            if !reuse_results {
+                return None;
+            }
             fingerprint
                 .as_ref()
                 .and_then(|fingerprint| cache.reuse(row, fingerprint))
         })
         .collect();
 
+    // One round suffices: a reused row is never re-scored, so it never needs its OWN peer's
+    // records -- only a stale row does, and its peer is covered here.
     let mut needs_parse: Vec<bool> = reused.iter().map(Option::is_none).collect();
     for (index, row) in rows.iter().enumerate() {
         if !needs_parse[index] {
@@ -257,6 +279,7 @@ fn score_group(
             scored.push(result);
         }
         fill_mappable(&mut scored, dataset, sample);
+        report_warnings(&scored);
         return Ok((scored, genomes));
     }
 
@@ -331,6 +354,7 @@ fn score_group(
             scored.push(result);
             continue;
         }
+
         let truth = &truths[&(
             row.truth.clone(),
             row.contig2genome.clone(),
@@ -359,10 +383,10 @@ fn score_group(
         }
 
         // A truth written for one scoring mode and read under another lines up perfectly on read
-        // ids and then scores every read wrong -- a plausible zero rather than an error.
-        if let Some(problem) = metrics::vocabulary_mismatch(&alignment.records, truth, &context) {
-            warn!("{}/{} {}: {}", dataset, sample, row.tool, problem);
-        }
+        // ids and then scores every read wrong -- a plausible zero rather than an error. Stored on
+        // the result so a reused run repeats it: a warning that only appears on cold runs teaches
+        // the reader that silence means nothing is wrong.
+        let warning = metrics::vocabulary_mismatch(&alignment.records, truth, &context);
 
         let (score, row_genomes) = metrics::score_detailed(&alignment.records, truth, &context);
         genomes.push((row.tool.clone(), row_genomes));
@@ -374,7 +398,7 @@ fn score_group(
         // frame costs several times what the verdicts themselves do.
         if let Some(writer) = reads_writer {
             let verdicts = metrics::read_verdicts(&alignment.records, truth, &context);
-            for chunk in verdicts.chunks(READ_CHUNK) {
+            for chunk in verdicts.chunks(read_chunk()) {
                 let tagged: Vec<TaggedVerdict> = chunk
                     .iter()
                     .map(|verdict| {
@@ -444,6 +468,7 @@ fn score_group(
             base,
             h2h,
             clip,
+            warning,
         };
         if let Some(fingerprint) = fingerprints[index].clone() {
             cache.store(row, fingerprint, &result, &genomes[genomes.len() - 1].1);
@@ -452,8 +477,21 @@ fn score_group(
     }
 
     fill_mappable(&mut scored, dataset, sample);
+    report_warnings(&scored);
 
     Ok((scored, genomes))
+}
+
+/// Logs the diagnostics carried by a group's results, whether freshly computed or reused.
+fn report_warnings(scored: &[SampleResult]) {
+    for result in scored {
+        if let Some(problem) = &result.warning {
+            warn!(
+                "{}/{} {}: {}",
+                result.dataset, result.sample, result.tool, problem
+            );
+        }
+    }
 }
 
 /// Fills in the group's recall denominator.

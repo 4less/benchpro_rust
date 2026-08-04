@@ -704,8 +704,8 @@ fn a_tsv_truth_row_gets_no_exact_column_value_even_beside_a_gold_row() {
 /// Every distinction a metric could silently collapse, and the property a fixture needs to separate
 /// it.
 ///
-/// This guards the *precondition* the other tests depend on; it does not itself detect a wrong
-/// metric. Twice a wrong denominator survived review because no fixture could tell the two
+/// This guards the *precondition* that makes the other tests capable, over its own samplesheet
+/// naming every committed fixture; it does not itself detect a wrong metric. Twice a wrong denominator survived review because no fixture could tell the two
 /// quantities apart — at checkpoint 10 `aligned == records` held everywhere, and at checkpoint 20
 /// the per-genome fixture placed every read — and in both cases the assertions were fine, the
 /// inputs were not. So this fails when the fixture set *loses* the ability to discriminate, which
@@ -718,40 +718,42 @@ type Discriminator = (&'static str, fn(&Row) -> bool);
 const DISCRIMINATORS: &[Discriminator] = &[
     // total vs aligned: a tool that does not place every truth read.
     ("some reads are never placed", |r| {
-        num(r, "aligned") < num(r, "total")
+        less(r, "aligned", "total")
     }),
     // aligned vs correct: precision below 1, so correct/aligned differs from aligned/total.
     ("some placements are wrong", |r| {
-        num(r, "correct") < num(r, "aligned")
+        less(r, "correct", "aligned")
     }),
     // aligned vs emitted: a tool that places reads the truth does not know about.
     ("some alignments are outside the truth", |r| {
-        r.get("aln_records").is_some_and(|v| !v.is_empty())
-            && num(r, "aln_records") > num(r, "aligned")
+        less(r, "aligned", "aln_records")
     }),
     // correct vs position: the right genome at the wrong locus.
     (
         "some reads land on the right genome at the wrong locus",
-        |r| {
-            r.get("position_pct").is_some_and(|v| !v.is_empty())
-                && num(r, "position_pct") < num(r, "recall_pct")
-        },
+        |r| less(r, "position_pct", "recall_pct"),
     ),
     // position vs exact: the right locus with a different alignment.
     (
         "some reads land at the right locus with a different alignment",
-        |r| {
-            r.get("exact_pct").is_some_and(|v| !v.is_empty())
-                && num(r, "exact_pct") < num(r, "position_pct")
-        },
+        |r| less(r, "exact_pct", "position_pct"),
     ),
 ];
 
-/// A numeric cell, treating an empty cell as 0 for the purposes of a comparison.
-fn num(row: &Row, column: &str) -> f64 {
+/// A numeric cell, or `None` when the column is absent or empty.
+///
+/// A discriminator must not be satisfiable by a missing column: "some reads land at the right locus
+/// with a different alignment" is a claim about two real numbers, and treating an empty cell as 0
+/// would let a table that cannot answer the question pretend it did.
+fn cell(row: &Row, column: &str) -> Option<f64> {
     row.get(column)
         .filter(|v| !v.is_empty())
-        .map_or(0.0, |v| v.parse().unwrap_or(0.0))
+        .and_then(|v| v.parse().ok())
+}
+
+/// Both cells present, and the first strictly less than the second.
+fn less(row: &Row, smaller: &str, larger: &str) -> bool {
+    matches!((cell(row, smaller), cell(row, larger)), (Some(a), Some(b)) if a < b)
 }
 
 #[test]
@@ -991,6 +993,172 @@ fn the_recall_denominator_follows_the_field_not_the_cache() {
     assert!(
         single < paired,
         "mappable stayed {paired} after the better contender left -- a cached denominator"
+    );
+}
+
+#[test]
+fn a_contender_is_re_scored_when_its_peers_reference_changes() {
+    // Whether the PEER has a reference decides whether the head-to-head compares replayed or
+    // self-reported edit distances. Nothing about this row's own inputs changes, so a fingerprint
+    // covering only its own files serves a stale comparison.
+    let dir = unique_temp_dir("benchpro_align_cache_peer_ref");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    for name in [
+        "good.sam",
+        "sloppy.sam",
+        "reads.truth.tsv",
+        "reference.contig2genome.tsv",
+        "reference.fna",
+    ] {
+        fs::copy(fixture(name), dir.join(name)).expect("copy fixture");
+    }
+    let d = dir.to_string_lossy().into_owned();
+    let sheet = |peer_reference: &str| {
+        format!(
+            "ID\tSample\tTool\tAlignment\tTruth\tContig2Genome\tReference\tPeer\n\
+             ds\ts1\tgood\t{d}/good.sam\t{d}/reads.truth.tsv\t{d}/reference.contig2genome.tsv\t{d}/reference.fna\tsloppy\n\
+             ds\ts1\tsloppy\t{d}/sloppy.sam\t{d}/reads.truth.tsv\t{d}/reference.contig2genome.tsv\t{peer_reference}\t\n"
+        )
+    };
+    let without = dir.join("without.tsv");
+    let with = dir.join("with.tsv");
+    fs::write(&without, sheet("")).expect("write");
+    fs::write(&with, sheet(&format!("{d}/reference.fna"))).expect("write");
+
+    let prefix = dir.join("out");
+    run_on(
+        &without.to_string_lossy(),
+        &prefix,
+        &["--verify-sample", "0"],
+    );
+    run_on(&with.to_string_lossy(), &prefix, &["--verify-sample", "0"]);
+    let cached = read_tsv(&prefix.with_extension("align_summary.tsv"));
+
+    let forced = dir.join("forced");
+    run_on(
+        &with.to_string_lossy(),
+        &forced,
+        &["--force", "--verify-sample", "0"],
+    );
+    let fresh = read_tsv(&forced.with_extension("align_summary.tsv"));
+
+    for column in ["h2h_better", "h2h_equal", "h2h_worse", "h2h_nm_delta"] {
+        assert_eq!(
+            row_for(&cached, "good")[column],
+            row_for(&fresh, "good")[column],
+            "{column} is stale after the peer gained a reference"
+        );
+    }
+}
+
+#[test]
+fn force_refreshes_the_cache_for_the_next_run() {
+    // --force is documented as the escape hatch for a stale entry. If it recomputes without
+    // storing, the very next plain run serves the stale entry again and the remedy lasts one run.
+    let dir = unique_temp_dir("benchpro_align_cache_force");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let meta = caching_workspace(&dir, false);
+    let prefix = dir.join("out");
+    run_on(&meta, &prefix, &[]);
+
+    let cache = dir.join("out.align_cache.json");
+    let before = fs::read(&cache).expect("cache written");
+
+    // Change an input, then --force.
+    let sloppy = dir.join("sloppy.sam");
+    let text = fs::read_to_string(&sloppy).expect("read");
+    let trimmed: String = text
+        .lines()
+        .filter(|l| l.starts_with('@'))
+        .chain(text.lines().filter(|l| !l.starts_with('@')).take(6))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    fs::write(&sloppy, trimmed).expect("write");
+    run_on(&meta, &prefix, &["--force"]);
+
+    let after = fs::read(&cache).expect("cache still there");
+    assert_ne!(before, after, "--force left the stale cache in place");
+
+    // ...and the next plain run reuses the refreshed entries rather than re-reading.
+    let warm = run_on(&meta, &prefix, &[]);
+    assert!(warm.contains("unchanged, reusing"), "{warm}");
+}
+
+#[test]
+fn a_reused_run_repeats_the_warnings_the_cold_run_gave() {
+    // A warning that appears once and then goes quiet on identical inputs teaches the reader that
+    // silence means nothing is wrong.
+    let dir = unique_temp_dir("benchpro_align_cache_warning");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    for name in ["good.sam", "reads.truth.tsv"] {
+        fs::copy(fixture(name), dir.join(name)).expect("copy fixture");
+    }
+    let d = dir.to_string_lossy().into_owned();
+    let meta = dir.join("meta.tsv");
+    // species scoring against a full-style truth: the vocabulary-mismatch warning fires.
+    fs::write(
+        &meta,
+        format!(
+            "ID\tSample\tTool\tAlignment\tTruth\tScoring\n\
+             ds\ts1\tgood\t{d}/good.sam\t{d}/reads.truth.tsv\tspecies\n"
+        ),
+    )
+    .expect("write meta");
+
+    let prefix = dir.join("out");
+    let cold = run_on(&meta.to_string_lossy(), &prefix, &[]);
+    assert!(
+        cold.contains("no genome label"),
+        "cold run must warn: {cold}"
+    );
+
+    let warm = run_on(&meta.to_string_lossy(), &prefix, &[]);
+    assert!(warm.contains("unchanged, reusing"), "{warm}");
+    assert!(
+        warm.contains("no genome label"),
+        "the warning vanished on the reused run: {warm}"
+    );
+}
+
+#[test]
+fn the_per_read_table_is_identical_however_it_is_chunked() {
+    // The chunking path is invisible at fixture scale -- 20 rows never cross a 250k boundary -- so
+    // the split is forced here. Rows and header must not depend on where it happens.
+    let dir = unique_temp_dir("benchpro_align_chunk");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let meta = caching_workspace(&dir, false);
+
+    let whole = dir.join("whole");
+    run_on(&meta, &whole, &["--per-read"]);
+
+    let split = dir.join("split");
+    let output = Command::new(benchpro_bin())
+        .args([
+            "--log-level",
+            "error",
+            "align",
+            "--meta",
+            &meta,
+            "--outprefix",
+            &split.to_string_lossy(),
+            "--per-read",
+        ])
+        .env("BENCHPRO_READ_CHUNK", "3")
+        .output()
+        .expect("run benchpro align");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let a = fs::read_to_string(whole.with_extension("align_reads.tsv")).expect("read");
+    let b = fs::read_to_string(split.with_extension("align_reads.tsv")).expect("read");
+    assert_eq!(a, b, "chunking changed the per-read table");
+    assert_eq!(
+        b.lines().filter(|l| l.starts_with("dataset\t")).count(),
+        1,
+        "the header was written more than once"
     );
 }
 

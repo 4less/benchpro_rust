@@ -80,10 +80,22 @@ pub mod opt_f64_bits {
     }
 }
 
-/// The cache format's version. A run whose entries were written by a different version ignores
-/// them: adding a metric changes what a stored result means, and silently mixing the two is worse
-/// than recomputing.
-const FORMAT: u32 = 1;
+/// The cache format's identity. Entries written under a different one are ignored.
+///
+/// It carries the crate version, because the risk this guards is not a changed struct — `serde`
+/// catches those, since every cached type denies unknown fields — but a changed *computation*.
+/// Three audits running have found denominator defects: fixes that alter what a number means
+/// without touching a single field. A warm run after such a fix would serve the old wrong number
+/// for every unchanged contender, and nothing would prompt anyone to bump a hand-written integer.
+/// Tying it to the version means a release cannot serve results computed by a different one.
+///
+/// **Bump `FORMAT_REVISION` when a metric's computation changes within a version.**
+const FORMAT_REVISION: u32 = 2;
+
+/// The full format identity stored in the file.
+fn format_identity() -> String {
+    format!("{FORMAT_REVISION}+{}", env!("CARGO_PKG_VERSION"))
+}
 
 /// What a file looked like when a result was computed from it.
 ///
@@ -92,13 +104,16 @@ const FORMAT: u32 = 1;
 /// that a file edited in place, to the same length, within the filesystem's timestamp granularity
 /// looks unchanged — `--force` is the answer when that matters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileStamp {
     /// Path as the samplesheet gave it.
     pub path: String,
     /// Size in bytes.
     pub len: u64,
-    /// Modification time in seconds since the epoch, when the platform reports one.
-    pub modified: Option<u64>,
+    /// Modification time in nanoseconds since the epoch, when the platform reports one. Seconds
+    /// would leave a one-second window in which a same-size rewrite looks unchanged, and the finer
+    /// resolution costs nothing.
+    pub modified: Option<u128>,
 }
 
 impl FileStamp {
@@ -114,19 +129,25 @@ impl FileStamp {
     pub fn of(path: &Path) -> Option<Self> {
         let meta = std::fs::metadata(path).ok()?;
         Some(Self {
-            path: path.to_string_lossy().into_owned(),
+            // Canonical, so two runs from different working directories do not compare a relative
+            // path against an equal-looking one that means a different file.
+            path: std::fs::canonicalize(path)
+                .unwrap_or_else(|_| path.to_path_buf())
+                .to_string_lossy()
+                .into_owned(),
             len: meta.len(),
             modified: meta
                 .modified()
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs()),
+                .map(|d| d.as_nanos()),
         })
     }
 }
 
 /// Everything a contender's result depends on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Fingerprint {
     /// The alignment file.
     pub alignment: FileStamp,
@@ -136,10 +157,12 @@ pub struct Fingerprint {
     pub contig2genome: Option<FileStamp>,
     /// The reference, when one is named — it changes the replayed metrics.
     pub reference: Option<FileStamp>,
-    /// The peer's name, and what its alignment file looked like. The head-to-head is computed
-    /// against the peer's *records*, so this row's numbers move when the peer's file changes even
-    /// though nothing of this row's own inputs did.
-    pub peer: Option<(String, FileStamp)>,
+    /// The peer, and every input that determines the peer's *records* — its alignment and its
+    /// reference. The head-to-head compares against those records, so this row's numbers move when
+    /// either changes, though none of its own inputs did. The reference matters as much as the
+    /// alignment: whether the peer has one decides whether the comparison uses replayed or
+    /// self-reported edit distances.
+    pub peer: Option<PeerStamp>,
     /// The options that change what the numbers mean, rendered as one string.
     pub options: String,
 }
@@ -151,12 +174,12 @@ impl Fingerprint {
     ///
     /// * `row` - The samplesheet row
     /// * `args` - The run's options
-    /// * `peer_alignment` - The peer's alignment file, when this row names a peer that exists
+    /// * `peer` - The peer's row, when this row names a peer that is present on the sample
     ///
     /// # Returns
     ///
     /// The fingerprint, or `None` when an input file cannot be stamped.
-    pub fn of(row: &AlignRow, args: &AlignArgs, peer_alignment: Option<&Path>) -> Option<Self> {
+    pub fn of(row: &AlignRow, args: &AlignArgs, peer: Option<&AlignRow>) -> Option<Self> {
         // Only the options that change a *result*. `--per-read`, `--outprefix` and the thread count
         // do not: the first changes what is written, the others nothing at all.
         let options = format!(
@@ -176,23 +199,37 @@ impl Fingerprint {
             // make a deleted reference look like "no reference was ever configured".
             contig2genome: stamp_optional(row.contig2genome.as_deref())?,
             reference: stamp_optional(row.reference.as_deref())?,
-            peer: match (&row.peer, peer_alignment) {
-                (Some(name), Some(path)) => Some((name.clone(), FileStamp::of(path)?)),
+            peer: match (&row.peer, peer) {
+                (Some(name), Some(peer)) => Some(PeerStamp {
+                    tool: name.clone(),
+                    alignment: Some(FileStamp::of(&peer.alignment)?),
+                    reference: stamp_optional(peer.reference.as_deref())?,
+                }),
                 // A named peer that is not on this sample produces no head-to-head at all, which
                 // is a different result from one that does -- so the name still counts.
-                (Some(name), None) => Some((
-                    name.clone(),
-                    FileStamp {
-                        path: String::new(),
-                        len: 0,
-                        modified: None,
-                    },
-                )),
+                (Some(name), None) => Some(PeerStamp {
+                    tool: name.clone(),
+                    alignment: None,
+                    reference: None,
+                }),
                 (None, _) => None,
             },
             options,
         })
     }
+}
+
+/// What a peer contributed to a head-to-head.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerStamp {
+    /// The peer's tool name.
+    pub tool: String,
+    /// Its alignment file, or `None` when the named peer is not on this sample at all — which
+    /// produces no head-to-head, a different result from one that does.
+    pub alignment: Option<FileStamp>,
+    /// Its reference, which decides whether the comparison is replayed or self-reported.
+    pub reference: Option<FileStamp>,
 }
 
 /// Stamps an optional input: `Some(None)` when it is not configured, `None` when it is configured
@@ -206,6 +243,7 @@ fn stamp_optional(path: Option<&Path>) -> Option<Option<FileStamp>> {
 
 /// One contender's stored result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CacheEntry {
     /// What the inputs looked like.
     pub fingerprint: Fingerprint,
@@ -217,9 +255,10 @@ pub struct CacheEntry {
 
 /// Results from previous runs, keyed by `(dataset, sample, tool)`.
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Cache {
-    /// Format version of the entries below.
-    format: u32,
+    /// Format identity of the entries below.
+    format: String,
     /// One entry per scored contender.
     entries: HashMap<String, CacheEntry>,
 }
@@ -261,7 +300,7 @@ impl Cache {
             return Self::empty();
         };
         match serde_json::from_reader::<_, Self>(BufReader::new(file)) {
-            Ok(cache) if cache.format == FORMAT => {
+            Ok(cache) if cache.format == format_identity() => {
                 debug!(
                     "{}: {} cached result(s)",
                     path.display(),
@@ -274,7 +313,7 @@ impl Cache {
                     "{} was written by cache format {} (this is {}); recomputing everything",
                     path.display(),
                     cache.format,
-                    FORMAT
+                    format_identity()
                 );
                 Self::empty()
             }
@@ -295,7 +334,7 @@ impl Cache {
     /// A cache with no entries.
     pub fn empty() -> Self {
         Self {
-            format: FORMAT,
+            format: format_identity(),
             entries: HashMap::new(),
         }
     }
@@ -376,14 +415,36 @@ impl Cache {
     /// Returns [`AlignError::Output`] when the file cannot be written.
     pub fn save(&self, outprefix: &str) -> AlignResult<()> {
         let path = Self::path_for(outprefix);
-        let file = File::create(&path).map_err(|e| AlignError::Output {
-            path: path.clone(),
+        // Written under a scratch name and renamed, as the `.fai` builder and the per-read writer
+        // do: a run killed mid-write must not destroy the previous good cache.
+        let mut scratch = path.as_os_str().to_os_string();
+        scratch.push(format!(".tmp.{}", std::process::id()));
+        let scratch = PathBuf::from(scratch);
+
+        let file = File::create(&scratch).map_err(|e| AlignError::Output {
+            path: scratch.clone(),
             message: e.to_string(),
         })?;
         serde_json::to_writer(BufWriter::new(file), self).map_err(|e| AlignError::Output {
+            path: scratch.clone(),
+            message: e.to_string(),
+        })?;
+        std::fs::rename(&scratch, &path).map_err(|e| AlignError::Output {
             path,
             message: e.to_string(),
         })
+    }
+
+    /// Drops entries for rows the samplesheet no longer names.
+    ///
+    /// Without this a long-lived `--outprefix` accumulates every contender ever scored under it.
+    ///
+    /// # Arguments
+    ///
+    /// * `rows` - The samplesheet's current rows
+    pub fn retain(&mut self, rows: &[AlignRow]) {
+        let live: std::collections::HashSet<String> = rows.iter().map(key).collect();
+        self.entries.retain(|stored, _| live.contains(stored));
     }
 }
 
@@ -461,13 +522,40 @@ mod tests {
         let dir = temp_dir("peer");
         let mut r = row(write(&dir, "a.sam", "x"), write(&dir, "t.tsv", "y"));
         r.peer = Some("other".into());
-        let peer = write(&dir, "peer.sam", "short");
+        let peer_row = row(write(&dir, "peer.sam", "short"), write(&dir, "t.tsv", "y"));
 
-        let before = Fingerprint::of(&r, &args(), Some(&peer)).unwrap();
+        let before = Fingerprint::of(&r, &args(), Some(&peer_row)).unwrap();
         write(&dir, "peer.sam", "a considerably longer file");
-        let after = Fingerprint::of(&r, &args(), Some(&peer)).unwrap();
+        let after = Fingerprint::of(&r, &args(), Some(&peer_row)).unwrap();
 
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn the_peers_reference_is_part_of_the_fingerprint() {
+        // Whether the PEER has a reference decides whether the head-to-head compares replayed or
+        // self-reported edit distances, so it changes this row's numbers without touching any of
+        // this row's own inputs.
+        let dir = temp_dir("peer_reference");
+        let mut r = row(write(&dir, "a.sam", "x"), write(&dir, "t.tsv", "y"));
+        r.peer = Some("other".into());
+
+        let mut peer_row = row(write(&dir, "peer.sam", "p"), write(&dir, "t.tsv", "y"));
+        let without = Fingerprint::of(&r, &args(), Some(&peer_row)).unwrap();
+
+        peer_row.reference = Some(write(&dir, "ref.fna", ">c\nACGT\n"));
+        let with = Fingerprint::of(&r, &args(), Some(&peer_row)).unwrap();
+        assert_ne!(
+            without, with,
+            "adding a reference to the peer must invalidate"
+        );
+
+        write(&dir, "ref.fna", ">c\nACGTACGTACGT\n");
+        let changed = Fingerprint::of(&r, &args(), Some(&peer_row)).unwrap();
+        assert_ne!(
+            with, changed,
+            "changing the peer's reference must invalidate"
+        );
     }
 
     #[test]

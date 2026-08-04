@@ -59,6 +59,11 @@ pub struct SampleResult {
     pub h2h: Option<HeadToHead>,
     /// Clip geometry, when `--clip-geometry` asked for it.
     pub clip: Option<ClipGeometry>,
+    /// A diagnostic the scoring pass raised about this contender, carried so a reused result
+    /// still reports it. A warning that appears on a cold run and vanishes on a warm one is worse
+    /// than no warning: it teaches the reader that silence means nothing is wrong.
+    #[serde(default)]
+    pub warning: Option<String>,
 }
 
 impl SampleResult {
@@ -908,8 +913,8 @@ pub fn reads_frame(
 /// Appends the per-read table one group at a time.
 ///
 /// The whole table is one row per truth read per contender — tens of millions of rows on a real
-/// marker-DB run. Building it in memory and handing Polars one frame costs the rows twice over;
-/// writing each `(dataset, sample)` group as it is scored bounds the cost to the largest group.
+/// marker-DB run. Building it in memory and handing Polars one frame costs the rows twice over, so
+/// rows are appended as each contender is scored, in chunks.
 pub struct ReadsWriter {
     path: PathBuf,
     scratch: PathBuf,
@@ -951,11 +956,11 @@ impl ReadsWriter {
         })
     }
 
-    /// Appends one group's verdicts.
+    /// Appends a batch of verdicts.
     ///
     /// # Arguments
     ///
-    /// * `rows` - The group's per-read verdicts; an empty slice is a no-op
+    /// * `rows` - The batch; an empty slice is a no-op
     ///
     /// # Returns
     ///
@@ -1227,6 +1232,7 @@ mod tests {
             base: None,
             h2h: None,
             clip: None,
+            warning: None,
         }
     }
 
