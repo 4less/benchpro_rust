@@ -532,12 +532,15 @@ unmeasured and therefore not done.
    phase 5.
 2. **PAF rows carry no base-level columns at all.** The Python computes them anyway and gets a row
    of zeroes; an empty cell is the honest rendering of "this format cannot answer that".
-3. **The primary alignment is chosen by byte offset**, and the replay sample is bottom-k on a hash
-   of the read key, so neither depends on the thread count or on how batches were split. The Python
-   reservoir-samples in file order, which is single threaded and so never had to be order free.
-   Asserted by tests; output is byte identical across runs and thread counts.
+3. **The primary alignment is chosen by byte offset**, the replay sample is bottom-k on a hash of
+   the read key, and `no_nm`/`proper_pair` are derived from the surviving record set — so none of
+   them depends on the thread count or on how batches were split. The Python samples in file order,
+   which is single threaded and so never had to be order free. Verified byte-identical across runs
+   and across `-t 1/2/8` on a 76 MB SAM in which every mate is duplicated.
 4. **No samtools dependency.** `.fai` is built by a plain scan; the Python shells out when samtools
    is on `PATH`.
+5. **`genome_pct` is not emitted** although §9 lists it: of total it is `recall_pct`, of aligned it
+   is `correct_pct`, so it would be a third name for a number already in the row.
 
 ### Answers to §13's open questions
 
@@ -548,6 +551,48 @@ unmeasured and therefore not done.
    control and the HTML report are untouched.
 3. **Read pairs** — both mates are scored independently, as in the Python. Pair-level metrics
    beyond the `proper_pair` flag are not ported.
+
+### Checkpoint-10 audit (`.claude/night/review-10.md`)
+
+An adversarial review found three CRITICAL defects and ten warnings. All are fixed except one that
+needs a decision (below). What it caught, and what it says about the earlier parity claims:
+
+| # | Defect | Why the parity runs missed it |
+|---|---|---|
+| C1 | `aln_records`/`aln_no_nm`/`aln_proper_pair` divided by truth reads placed, not alignments emitted — percentages over 100% | the fixture and the parity SAM both have `aligned == records`, so the two denominators coincided |
+| C2 | `no_nm`/`proper_pair` counted before the duplicate check, so they varied with `--threads` | the parity SAM has no duplicate primaries |
+| C3 | a mate seen by two workers could occupy two sample slots or be stripped while still sampled | same |
+| W13 | `reference_pct`/`position_pct` divided by `aligned`; `report.py` renders them "of total" | never compared — the parity run used `scoring=species`, which has no strata |
+
+The lesson for any future parity work: **`aligned == records` on every test input hid two wrong
+denominators.** Inputs where a tool places reads the truth does not cover are now part of the
+fixture set.
+
+### Open question — `mappable_base` is spec-vs-source conflicted
+
+§8.5 of this document specifies `mappable_base` (the most any one contender got right at MAPQ 0) as
+the MAPQ curve's recall denominator, quoting `report.py::mappable_base`. The implementation follows
+it. But `bench.py:1697-1701` has since **reversed that decision** and uses the truth size, with the
+comment that `mappable_base` is
+
+> a tool-dependent, moving denominator: the field's own best result decides the scale every member
+> of the field is then measured on. Adding or removing a contender silently rescales everyone's
+> recall.
+
+That is a real defect in the current behaviour: adding a contender to a samplesheet moves every
+other contender's `mapq_best_cutoff` and `mapq_best_f1`. The code was left spec-conformant rather
+than silently switched. **Decide which rule wins**; if the Python's current one does, the change is
+`mapq::curve`'s denominator and the stale rationale at `mapq.rs:131-139`.
+
+### Smaller divergences, recorded rather than fixed
+
+- `--tolerance` defaults to 100 and feeds both the position stratum and the head-to-head's "same
+  locus"; `align_metrics.py` defaults the latter to 50. A parity comparison must pass
+  `--tolerance 50`. §2 asks for one knob, so this is spec-conformant.
+- A mapped record with `POS 0` maps to `pos0 = 0`, where the Python gives `-1`. Only reachable for a
+  malformed record; the position stratum would differ by one for it.
+- The truth loader skips `#`-prefixed lines and rejects a mate that is not `1` or `2`; the Python
+  does neither. A read id beginning with `#` is dropped silently.
 
 ### Known issues, pre-existing and unrelated
 
