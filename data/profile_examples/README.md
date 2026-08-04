@@ -13,7 +13,7 @@ Provenance differs, and it changes what the tests using them prove:
 | `sylph090.profile` | real sylph output, from `data/test_data/` |
 | `protal.profile` | real protal output, from `data/test_data/` |
 | `bracken.profile` | **synthetic** — no Bracken report exists in this repository |
-| `motus404.relab` | **synthetic** — no mOTUs 4.x output exists in this repository |
+| `motus404.relab` | **synthetic** — no mOTUs 4.x output exists in this repository. Its version is read from the `# … motus version 4.0.4 …` banner, which is where mOTUs really writes it |
 | `metaphlan402.profile` | **synthetic** — no MetaPhlAn SGB profile with `t__` ranks exists here |
 
 The three synthetic files reproduce the column layout and header lines each detector keys on.

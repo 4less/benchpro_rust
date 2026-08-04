@@ -1,6 +1,5 @@
 # git tag version 4.0.4 |  motus version 4.0.4 | map_tax 4.0.4 | gene database: nr4.0.4 | calc_mgc 4.0.4 -y insert.scaled_counts -l 75 | calc_motu 4.0.4 -k mOTU -C precision -g 3 | taxonomy: ref_mOTU_4.0.4
 # call: motus profile -f reads_1.fq -r reads_2.fq -t 8
-# tool_version=4.0.4
 mOTU	taxonomy	sample
 ref_mOTU_v4_00095	d__Bacteria;p__Bacteroidota;c__Bacteroidia;o__Bacteroidales;f__Bacteroidaceae;g__Bacteroides;s__Bacteroides fragilis	0.213400
 ref_mOTU_v4_00312	d__Bacteria;p__Pseudomonadota;c__Gammaproteobacteria;o__Enterobacterales;f__Enterobacteriaceae;g__Escherichia;s__Escherichia coli	0.145200

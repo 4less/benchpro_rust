@@ -131,7 +131,12 @@ fn detect_tool(lines: &[&str]) -> DetectionResult {
         return DetectionResult {
             format: ProfileFormatKind::Tool,
             tool: "motus".to_owned(),
-            version: extract_motus_tool_version(lines).unwrap_or_else(|| "X".to_owned()),
+            // `tool_version=` first, then the `# ... motus version X ...` banner mOTUs actually
+            // writes. Without the fallback a genuine relab profile -- which carries the banner and
+            // no `tool_version=` -- reports version "X", and the CAMI writer emits `@Version:X`.
+            version: extract_motus_tool_version(lines)
+                .or_else(|| extract_motus_version(lines))
+                .unwrap_or_else(|| "X".to_owned()),
         };
     }
 

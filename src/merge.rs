@@ -996,15 +996,29 @@ d__Bacteria;p__Firmicutes;s__Foo\t97.5
         // and the unclassified mass follows that convention, so match the row by its species
         // suffix as the other tests here do rather than by a bare `s__` key at line start, which
         // the format never emits for any taxon.
-        let unclassified = output_content
+        let unclassified: Vec<&str> = output_content
             .lines()
-            .find(|line| line.contains("s__UNCLASSIFIED"))
-            .unwrap_or_else(|| {
-                panic!("Expected an s__UNCLASSIFIED row in merged matrix, got:\n{output_content}")
-            });
+            .filter(|line| line.contains("s__UNCLASSIFIED"))
+            .collect();
+        // Exactly one row: the point of the test is that the unclassified mass is AGGREGATED into
+        // the species bucket, so splitting it across two keys must fail rather than be found by
+        // whichever one comes first.
+        assert_eq!(
+            unclassified.len(),
+            1,
+            "Expected exactly one s__UNCLASSIFIED row, got:\n{output_content}"
+        );
+        // Parsed, not substring-matched: `contains("\t2.5")` also accepts 2.55 and 2.5000001, so a
+        // rounding or partial-double-count regression would pass it.
+        let abundance: f64 = unclassified[0]
+            .rsplit('\t')
+            .next()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| panic!("no numeric abundance in:\n{}", unclassified[0]));
         assert!(
-            unclassified.contains("\t2.5"),
-            "Expected the unclassified mass to be 2.5, got:\n{unclassified}"
+            (abundance - 2.5).abs() < 1e-9,
+            "Expected the unclassified mass to be 2.5, got {abundance} in:\n{}",
+            unclassified[0]
         );
 
         Ok(())
