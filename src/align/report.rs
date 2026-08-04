@@ -1,0 +1,737 @@
+//! Result aggregation and the output tables.
+//!
+//! Aggregation rules here are decisions, not defaults, and two of them are load-bearing:
+//!
+//! * **Pooled rates, never means of rates.** Numerators and denominators are summed across samples
+//!   and divided once. A mean of per-sample percentages weights a 1000-read sample like a
+//!   million-read one.
+//! * **Restrict to common samples.** Aggregates are sums, and a sum over ten samples is not
+//!   comparable with a sum over five. Left alone that publishes nonsense that looks fine, so the
+//!   sample set is intersected across contenders and the note goes into the output.
+
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+
+use log::{info, warn};
+use polars::prelude::{DataFrame, NamedFrom, Series};
+
+use crate::options::ScoringMode;
+use crate::utils::write_df;
+
+use super::error::{AlignError, AlignResult};
+use super::mapq::{self, MapqCount};
+use super::metrics::{pct, MappingScore, ReadVerdict};
+use super::sam::ParseCounters;
+
+/// Everything scored for one contender on one sample.
+#[derive(Debug, Clone)]
+pub struct SampleResult {
+    /// Dataset label.
+    pub dataset: String,
+    /// Sample id.
+    pub sample: String,
+    /// Contender name.
+    pub tool: String,
+    /// Which correctness definition was used.
+    pub scoring: ScoringMode,
+    /// Mapping-level score.
+    pub score: MappingScore,
+    /// What the parse saw and skipped.
+    pub counters: ParseCounters,
+    /// Cumulative MAPQ counts, ascending in cutoff.
+    pub mapq_counts: Vec<MapqCount>,
+    /// Recall denominator for this sample, shared by every contender on it.
+    pub mappable: u64,
+}
+
+impl SampleResult {
+    /// Recall against the sample's mappable base.
+    ///
+    /// # Returns
+    ///
+    /// `100 * correct / mappable`, or 0 when no contender placed anything.
+    pub fn recall_pct(&self) -> f64 {
+        pct(self.score.correct, self.mappable)
+    }
+}
+
+/// A contender's results pooled over every sample of one dataset.
+#[derive(Debug, Clone)]
+pub struct ToolSummary {
+    /// Dataset label.
+    pub dataset: String,
+    /// Contender name.
+    pub tool: String,
+    /// Which correctness definition was used.
+    pub scoring: ScoringMode,
+    /// Samples that contributed.
+    pub samples: usize,
+    /// Pooled mapping score.
+    pub score: MappingScore,
+    /// Pooled parse counters.
+    pub counters: ParseCounters,
+    /// Pooled MAPQ counts.
+    pub mapq_counts: Vec<MapqCount>,
+    /// Pooled recall denominator.
+    pub mappable: u64,
+    /// Standard deviation of `correct_pct` across samples, when there is more than one.
+    pub correct_pct_sd: Option<f64>,
+    /// Note explaining any restriction applied to the sample set.
+    pub note: Option<String>,
+}
+
+impl ToolSummary {
+    /// Recall against the pooled mappable base.
+    ///
+    /// # Returns
+    ///
+    /// `100 * correct / mappable`.
+    pub fn recall_pct(&self) -> f64 {
+        pct(self.score.correct, self.mappable)
+    }
+
+    /// The MAPQ cutoff maximising F1, with its recall and precision.
+    ///
+    /// # Returns
+    ///
+    /// The best point of the pooled curve, or `None` when there is no curve.
+    pub fn best_f1(&self) -> Option<mapq::MapqPoint> {
+        mapq::best_f1(&mapq::curve(&self.mapq_counts, self.mappable))
+    }
+}
+
+/// Drops samples that not every contender produced, per dataset.
+///
+/// Aggregates are sums, and a sum over ten samples is not comparable with a sum over five. This can
+/// only ever make a comparison narrower, never wrong.
+///
+/// # Arguments
+///
+/// * `results` - Every scored `(dataset, sample, tool)` result
+///
+/// # Returns
+///
+/// The retained results, and one note per dataset that lost samples.
+pub fn restrict_to_common_samples(
+    results: Vec<SampleResult>,
+) -> (Vec<SampleResult>, HashMap<String, String>) {
+    let mut per_dataset: HashMap<&str, HashMap<&str, HashSet<&str>>> = HashMap::new();
+    for result in &results {
+        per_dataset
+            .entry(&result.dataset)
+            .or_default()
+            .entry(&result.tool)
+            .or_default()
+            .insert(&result.sample);
+    }
+
+    let mut keep: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut notes: HashMap<String, String> = HashMap::new();
+
+    for (dataset, per_tool) in &per_dataset {
+        let mut sets = per_tool.values();
+        let Some(first) = sets.next() else { continue };
+        let common: HashSet<&str> = sets.fold(first.clone(), |acc, set| &acc & set);
+        let union: HashSet<&str> = per_tool.values().flatten().copied().collect();
+
+        if per_tool.len() > 1 && common.len() < union.len() {
+            let mut dropped: Vec<&str> = union.difference(&common).copied().collect();
+            dropped.sort_unstable();
+            let note = format!(
+                "restricted to the {} sample(s) every contender produced; dropped {}",
+                common.len(),
+                dropped.join(", ")
+            );
+            warn!(
+                "{}: sample(s) {} are missing for at least one contender — aggregating over the {} \
+                 sample(s) every contender ran, so the totals stay comparable",
+                dataset,
+                dropped.join(", "),
+                common.len()
+            );
+            notes.insert((*dataset).to_string(), note);
+        }
+        keep.insert(
+            (*dataset).to_string(),
+            common.into_iter().map(str::to_string).collect(),
+        );
+    }
+
+    let retained = results
+        .into_iter()
+        .filter(|r| {
+            keep.get(&r.dataset)
+                .is_none_or(|samples| samples.contains(&r.sample))
+        })
+        .collect();
+
+    (retained, notes)
+}
+
+/// Pools per-sample results into one row per `(dataset, tool)`.
+///
+/// # Arguments
+///
+/// * `results` - Per-sample results, already restricted to the common sample set
+/// * `notes` - Per-dataset restriction notes from [`restrict_to_common_samples`]
+///
+/// # Returns
+///
+/// One summary per contender per dataset, in first-seen order.
+pub fn summarize(results: &[SampleResult], notes: &HashMap<String, String>) -> Vec<ToolSummary> {
+    let mut order: Vec<(String, String)> = Vec::new();
+    let mut grouped: HashMap<(String, String), Vec<&SampleResult>> = HashMap::new();
+
+    for result in results {
+        let key = (result.dataset.clone(), result.tool.clone());
+        if !grouped.contains_key(&key) {
+            order.push(key.clone());
+        }
+        grouped.entry(key).or_default().push(result);
+    }
+
+    order
+        .into_iter()
+        .map(|key| {
+            let group = &grouped[&key];
+            let mut summary = ToolSummary {
+                dataset: key.0.clone(),
+                tool: key.1.clone(),
+                scoring: group[0].scoring,
+                samples: group.len(),
+                score: MappingScore::default(),
+                counters: ParseCounters::default(),
+                mapq_counts: Vec::new(),
+                mappable: 0,
+                correct_pct_sd: None,
+                note: notes.get(&key.0).cloned(),
+            };
+
+            for result in group {
+                summary.score.add(&result.score);
+                summary.counters.add(&result.counters);
+                mapq::add_counts(&mut summary.mapq_counts, &result.mapq_counts);
+                summary.mappable += result.mappable;
+            }
+
+            if group.len() > 1 {
+                let values: Vec<f64> = group.iter().map(|r| r.score.correct_pct()).collect();
+                summary.correct_pct_sd = Some(sample_sd(&values));
+            }
+
+            summary
+        })
+        .collect()
+}
+
+/// Sample standard deviation (Bessel-corrected).
+fn sample_sd(values: &[f64]) -> f64 {
+    if values.len() < 2 {
+        return 0.0;
+    }
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    let variance =
+        values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (values.len() - 1) as f64;
+    variance.sqrt()
+}
+
+/// Builds the `<prefix>.align_summary.tsv` frame.
+///
+/// # Arguments
+///
+/// * `summaries` - Pooled per-contender results
+///
+/// # Returns
+///
+/// One row per `(dataset, tool)`.
+///
+/// # Errors
+///
+/// Returns [`AlignError::Output`] when the frame cannot be assembled.
+pub fn summary_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
+    let stratified: Vec<Option<u64>> = summaries.iter().map(|s| s.score.reference).collect();
+    let has_strata = stratified.iter().any(Option::is_some);
+    let best: Vec<Option<mapq::MapqPoint>> = summaries.iter().map(|s| s.best_f1()).collect();
+
+    let mut columns = vec![
+        Series::new("dataset".into(), strings(summaries, |s| s.dataset.clone())),
+        Series::new("tool".into(), strings(summaries, |s| s.tool.clone())),
+        Series::new(
+            "scoring".into(),
+            strings(summaries, |s| scoring_label(s.scoring).to_string()),
+        ),
+        Series::new(
+            "samples".into(),
+            summaries
+                .iter()
+                .map(|s| s.samples as u64)
+                .collect::<Vec<_>>(),
+        ),
+        Series::new("total".into(), numbers(summaries, |s| s.score.total)),
+        Series::new("aligned".into(), numbers(summaries, |s| s.score.aligned)),
+        Series::new("correct".into(), numbers(summaries, |s| s.score.correct)),
+        Series::new("mappable".into(), numbers(summaries, |s| s.mappable)),
+        Series::new(
+            "align_pct".into(),
+            floats(summaries, |s| s.score.align_pct()),
+        ),
+        Series::new(
+            "correct_pct".into(),
+            floats(summaries, |s| s.score.correct_pct()),
+        ),
+        Series::new(
+            "correct_pct_sd".into(),
+            summaries
+                .iter()
+                .map(|s| s.correct_pct_sd)
+                .collect::<Vec<_>>(),
+        ),
+        Series::new("recall_pct".into(), floats(summaries, |s| s.recall_pct())),
+    ];
+
+    if has_strata {
+        columns.push(Series::new(
+            "reference_pct".into(),
+            summaries
+                .iter()
+                .map(|s| s.score.reference.map(|v| pct(v, s.score.aligned)))
+                .collect::<Vec<_>>(),
+        ));
+        columns.push(Series::new(
+            "position_pct".into(),
+            summaries
+                .iter()
+                .map(|s| s.score.position.map(|v| pct(v, s.score.aligned)))
+                .collect::<Vec<_>>(),
+        ));
+    }
+
+    columns.extend([
+        Series::new(
+            "aln_records".into(),
+            numbers(summaries, |s| s.score.aligned),
+        ),
+        Series::new(
+            "aln_unmapped".into(),
+            numbers(summaries, |s| s.counters.unmapped),
+        ),
+        Series::new(
+            "aln_secondary".into(),
+            numbers(summaries, |s| s.counters.secondary),
+        ),
+        Series::new(
+            "aln_no_nm".into(),
+            summaries
+                .iter()
+                .map(|s| pct(s.counters.no_nm, s.score.aligned))
+                .collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "aln_proper_pair".into(),
+            summaries
+                .iter()
+                .map(|s| pct(s.counters.proper_pair, s.score.aligned))
+                .collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "mapq_best_cutoff".into(),
+            best.iter()
+                .map(|b| b.map(|p| p.mapq as u32))
+                .collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "mapq_best_f1".into(),
+            best.iter().map(|b| b.map(|p| p.f1())).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "note".into(),
+            summaries
+                .iter()
+                .map(|s| s.note.clone())
+                .collect::<Vec<Option<String>>>(),
+        ),
+    ]);
+
+    DataFrame::new(columns).map_err(|e| AlignError::Output {
+        path: "align_summary.tsv".into(),
+        message: e.to_string(),
+    })
+}
+
+/// Builds the `<prefix>.align_samples.tsv` frame: the rows behind every aggregate.
+///
+/// # Arguments
+///
+/// * `results` - Per-sample results
+///
+/// # Returns
+///
+/// One row per `(dataset, sample, tool)`.
+///
+/// # Errors
+///
+/// Returns [`AlignError::Output`] when the frame cannot be assembled.
+pub fn samples_frame(results: &[SampleResult]) -> AlignResult<DataFrame> {
+    let has_strata = results.iter().any(|r| r.score.reference.is_some());
+
+    let mut columns = vec![
+        Series::new("dataset".into(), strings(results, |r| r.dataset.clone())),
+        Series::new("sample".into(), strings(results, |r| r.sample.clone())),
+        Series::new("tool".into(), strings(results, |r| r.tool.clone())),
+        Series::new("total".into(), numbers(results, |r| r.score.total)),
+        Series::new("aligned".into(), numbers(results, |r| r.score.aligned)),
+        Series::new("correct".into(), numbers(results, |r| r.score.correct)),
+        Series::new("mappable".into(), numbers(results, |r| r.mappable)),
+        Series::new("align_pct".into(), floats(results, |r| r.score.align_pct())),
+        Series::new(
+            "correct_pct".into(),
+            floats(results, |r| r.score.correct_pct()),
+        ),
+        Series::new("recall_pct".into(), floats(results, |r| r.recall_pct())),
+    ];
+
+    if has_strata {
+        columns.push(Series::new(
+            "reference".into(),
+            results
+                .iter()
+                .map(|r| r.score.reference)
+                .collect::<Vec<_>>(),
+        ));
+        columns.push(Series::new(
+            "position".into(),
+            results.iter().map(|r| r.score.position).collect::<Vec<_>>(),
+        ));
+    }
+
+    columns.extend([
+        Series::new("unmapped".into(), numbers(results, |r| r.counters.unmapped)),
+        Series::new(
+            "secondary".into(),
+            numbers(results, |r| r.counters.secondary),
+        ),
+        Series::new("no_nm".into(), numbers(results, |r| r.counters.no_nm)),
+        Series::new(
+            "proper_pair".into(),
+            numbers(results, |r| r.counters.proper_pair),
+        ),
+    ]);
+
+    DataFrame::new(columns).map_err(|e| AlignError::Output {
+        path: "align_samples.tsv".into(),
+        message: e.to_string(),
+    })
+}
+
+/// Builds the `<prefix>.align_mapq.tsv` frame: the pooled precision/recall curve per contender.
+///
+/// # Arguments
+///
+/// * `summaries` - Pooled per-contender results
+///
+/// # Returns
+///
+/// One row per `(dataset, tool, mapq)`.
+///
+/// # Errors
+///
+/// Returns [`AlignError::Output`] when the frame cannot be assembled.
+pub fn mapq_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
+    let mut dataset = Vec::new();
+    let mut tool = Vec::new();
+    let mut cutoff = Vec::new();
+    let mut correct = Vec::new();
+    let mut kept = Vec::new();
+    let mut recall = Vec::new();
+    let mut precision = Vec::new();
+    let mut f1 = Vec::new();
+
+    for summary in summaries {
+        let points = mapq::curve(&summary.mapq_counts, summary.mappable);
+        for (count, point) in summary.mapq_counts.iter().zip(points.iter()) {
+            dataset.push(summary.dataset.clone());
+            tool.push(summary.tool.clone());
+            cutoff.push(point.mapq as u32);
+            correct.push(count.correct);
+            kept.push(count.kept);
+            recall.push(point.recall_pct);
+            precision.push(point.precision_pct);
+            f1.push(point.f1());
+        }
+    }
+
+    DataFrame::new(vec![
+        Series::new("dataset".into(), dataset),
+        Series::new("tool".into(), tool),
+        Series::new("mapq".into(), cutoff),
+        Series::new("correct".into(), correct),
+        Series::new("kept".into(), kept),
+        Series::new("recall_pct".into(), recall),
+        Series::new("precision_pct".into(), precision),
+        Series::new("f1".into(), f1),
+    ])
+    .map_err(|e| AlignError::Output {
+        path: "align_mapq.tsv".into(),
+        message: e.to_string(),
+    })
+}
+
+/// Builds the `<prefix>.align_reads.tsv` frame: one row per truth read per contender.
+///
+/// # Arguments
+///
+/// * `rows` - Per-read verdicts, each tagged with the run that produced it
+///
+/// # Returns
+///
+/// The per-read table.
+///
+/// # Errors
+///
+/// Returns [`AlignError::Output`] when the frame cannot be assembled.
+pub fn reads_frame(
+    rows: &[(String, String, String, ScoringMode, ReadVerdict)],
+) -> AlignResult<DataFrame> {
+    DataFrame::new(vec![
+        Series::new("dataset".into(), strings(rows, |r| r.0.clone())),
+        Series::new("sample".into(), strings(rows, |r| r.1.clone())),
+        Series::new("tool".into(), strings(rows, |r| r.2.clone())),
+        Series::new("read_id".into(), strings(rows, |r| r.4.key.id.to_string())),
+        Series::new(
+            "mate".into(),
+            rows.iter().map(|r| r.4.key.mate as u32).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "truth_contig".into(),
+            strings(rows, |r| r.4.truth.contig.to_string()),
+        ),
+        Series::new("truth_pos".into(), numbers(rows, |r| r.4.truth.pos0)),
+        Series::new(
+            "truth_genome".into(),
+            strings(rows, |r| r.4.truth.genome.to_string()),
+        ),
+        Series::new(
+            "aln_target".into(),
+            rows.iter()
+                .map(|r| r.4.target.as_ref().map(|t| t.to_string()))
+                .collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "aln_pos".into(),
+            rows.iter().map(|r| r.4.pos0).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "mapq".into(),
+            rows.iter()
+                .map(|r| r.4.mapq.map(|q| q as u32))
+                .collect::<Vec<_>>(),
+        ),
+        Series::new("nm".into(), rows.iter().map(|r| r.4.nm).collect::<Vec<_>>()),
+        Series::new(
+            "vnm".into(),
+            rows.iter().map(|r| r.4.vnm).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "verdict".into(),
+            strings(rows, |r| r.4.verdict.label(r.3).to_string()),
+        ),
+    ])
+    .map_err(|e| AlignError::Output {
+        path: "align_reads.tsv".into(),
+        message: e.to_string(),
+    })
+}
+
+/// Writes a frame as a TSV.
+///
+/// # Arguments
+///
+/// * `frame` - Table to write
+/// * `path` - Destination
+///
+/// # Returns
+///
+/// `Ok(())` once written.
+///
+/// # Errors
+///
+/// Returns [`AlignError::Output`] when the file cannot be created or serialised.
+pub fn write(frame: &mut DataFrame, path: &Path) -> AlignResult<()> {
+    write_df(frame, path).map_err(|e| AlignError::Output {
+        path: path.to_path_buf(),
+        message: e.to_string(),
+    })?;
+    info!("Wrote {} ({} rows)", path.display(), frame.height());
+    Ok(())
+}
+
+/// The scoring mode as it appears in the output.
+fn scoring_label(scoring: ScoringMode) -> &'static str {
+    match scoring {
+        ScoringMode::Full => "full",
+        ScoringMode::Species => "species",
+    }
+}
+
+/// Collects a string column.
+fn strings<T>(items: &[T], f: impl Fn(&T) -> String) -> Vec<String> {
+    items.iter().map(f).collect()
+}
+
+/// Collects a `u64` column.
+fn numbers<T>(items: &[T], f: impl Fn(&T) -> u64) -> Vec<u64> {
+    items.iter().map(f).collect()
+}
+
+/// Collects an `f64` column.
+fn floats<T>(items: &[T], f: impl Fn(&T) -> f64) -> Vec<f64> {
+    items.iter().map(f).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result(
+        dataset: &str,
+        sample: &str,
+        tool: &str,
+        total: u64,
+        aligned: u64,
+        correct: u64,
+    ) -> SampleResult {
+        SampleResult {
+            dataset: dataset.to_string(),
+            sample: sample.to_string(),
+            tool: tool.to_string(),
+            scoring: ScoringMode::Species,
+            score: MappingScore {
+                total,
+                aligned,
+                correct,
+                reference: None,
+                position: None,
+            },
+            counters: ParseCounters::default(),
+            mapq_counts: vec![MapqCount {
+                mapq: 0,
+                correct,
+                kept: aligned,
+            }],
+            mappable: correct,
+        }
+    }
+
+    #[test]
+    fn common_sample_restriction_drops_the_odd_sample_out() {
+        let results = vec![
+            result("ds", "s1", "a", 10, 10, 10),
+            result("ds", "s2", "a", 10, 10, 10),
+            result("ds", "s1", "b", 10, 10, 5),
+        ];
+        let (kept, notes) = restrict_to_common_samples(results);
+
+        assert_eq!(kept.len(), 2, "s2 has no 'b' result, so it is dropped");
+        assert!(kept.iter().all(|r| r.sample == "s1"));
+        assert!(notes["ds"].contains("dropped s2"), "{:?}", notes);
+    }
+
+    #[test]
+    fn a_single_contender_keeps_every_sample() {
+        let results = vec![
+            result("ds", "s1", "a", 10, 10, 10),
+            result("ds", "s2", "a", 10, 10, 10),
+        ];
+        let (kept, notes) = restrict_to_common_samples(results);
+        assert_eq!(kept.len(), 2);
+        assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn summaries_pool_counts_rather_than_averaging_rates() {
+        // 50% of 100 and 100% of 100 pool to 75%, which is also the mean here -- so make the
+        // sample sizes differ, where a mean of rates would give the wrong answer.
+        let results = vec![
+            result("ds", "s1", "a", 10, 10, 10),      // 100% of 10
+            result("ds", "s2", "a", 1000, 1000, 500), // 50% of 1000
+        ];
+        let (kept, notes) = restrict_to_common_samples(results);
+        let summaries = summarize(&kept, &notes);
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].samples, 2);
+        assert_eq!(summaries[0].score.aligned, 1010);
+        assert_eq!(summaries[0].score.correct, 510);
+        let pooled = summaries[0].score.correct_pct();
+        assert!((pooled - 100.0 * 510.0 / 1010.0).abs() < 1e-9);
+        assert!(
+            (pooled - 75.0).abs() > 1.0,
+            "a mean of rates would have said 75%"
+        );
+    }
+
+    #[test]
+    fn summaries_report_spread_only_when_there_is_more_than_one_sample() {
+        let one = summarize(&[result("ds", "s1", "a", 10, 10, 10)], &HashMap::new());
+        assert_eq!(one[0].correct_pct_sd, None);
+
+        let two = summarize(
+            &[
+                result("ds", "s1", "a", 10, 10, 10),
+                result("ds", "s2", "a", 10, 10, 5),
+            ],
+            &HashMap::new(),
+        );
+        assert!(two[0].correct_pct_sd.unwrap() > 0.0);
+    }
+
+    #[test]
+    fn frames_have_the_expected_shape() {
+        let results = vec![
+            result("ds", "s1", "a", 10, 10, 10),
+            result("ds", "s1", "b", 10, 8, 4),
+        ];
+        let (kept, notes) = restrict_to_common_samples(results);
+        let summaries = summarize(&kept, &notes);
+
+        let summary = summary_frame(&summaries).unwrap();
+        assert_eq!(summary.height(), 2);
+        assert!(summary
+            .get_column_names()
+            .iter()
+            .any(|n| n.as_str() == "correct_pct"));
+        // species scoring has no reference/position strata, so those columns stay out entirely
+        assert!(!summary
+            .get_column_names()
+            .iter()
+            .any(|n| n.as_str() == "position_pct"));
+
+        assert_eq!(samples_frame(&kept).unwrap().height(), 2);
+        assert_eq!(mapq_frame(&summaries).unwrap().height(), 2);
+    }
+
+    #[test]
+    fn full_scoring_adds_the_stratum_columns() {
+        let mut results = vec![result("ds", "s1", "a", 10, 10, 10)];
+        results[0].scoring = ScoringMode::Full;
+        results[0].score.reference = Some(8);
+        results[0].score.position = Some(6);
+
+        let summaries = summarize(&results, &HashMap::new());
+        let frame = summary_frame(&summaries).unwrap();
+        let names: Vec<String> = frame
+            .get_column_names()
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+
+        assert!(names.contains(&"reference_pct".to_string()));
+        assert!(names.contains(&"position_pct".to_string()));
+    }
+
+    #[test]
+    fn sd_is_bessel_corrected() {
+        assert_eq!(sample_sd(&[1.0]), 0.0);
+        assert!((sample_sd(&[2.0, 4.0]) - 2.0f64.sqrt()).abs() < 1e-12);
+    }
+}

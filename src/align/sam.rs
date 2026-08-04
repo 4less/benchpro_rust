@@ -138,7 +138,12 @@ pub struct ParseCounters {
 }
 
 impl ParseCounters {
-    fn merge(&mut self, other: &Self) {
+    /// Folds another set of counters into this one, for pooled aggregation.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The counters to add
+    pub fn add(&mut self, other: &Self) {
         self.records += other.records;
         self.unmapped += other.unmapped;
         self.secondary += other.secondary;
@@ -173,7 +178,7 @@ struct ParseState {
 
 impl Merge for ParseState {
     fn merge_from(&mut self, other: &mut Self) {
-        self.counters.merge(&other.counters);
+        self.counters.add(&other.counters);
         for (key, record) in other.records.drain() {
             match self.records.get(&key) {
                 // Both workers saw this mate. The primary is the record that comes first in the
