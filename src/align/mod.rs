@@ -202,12 +202,21 @@ fn score_group(
             }
         }
 
-        let base = base::summarize(
-            &alignment.records,
-            &alignment.counters,
-            Some(truth),
-            &context,
-        );
+        // Base-level metrics need a CIGAR and a SEQ, which PAF does not carry. Computing them
+        // anyway would fill the row with zeroes that read as measurements: 0% coverage, 0
+        // unclipped, 0 replayed.
+        let base = row
+            .format
+            .has_alignments()
+            .then(|| {
+                base::summarize(
+                    &alignment.records,
+                    &alignment.counters,
+                    Some(truth),
+                    &context,
+                )
+            })
+            .flatten();
 
         // The head-to-head needs the peer's records, which is why the group -- not the row -- is
         // the unit of work.
@@ -354,7 +363,7 @@ fn log_summary(summaries: &[report::ToolSummary]) {
                 Box::new(|s: &report::ToolSummary| format!("{:.2}%", s.score.correct_pct())),
             ),
             (
-                "recall (% of mappable)",
+                "recall (% of truth)",
                 Box::new(|s: &report::ToolSummary| format!("{:.2}%", s.recall_pct())),
             ),
             (
@@ -367,18 +376,182 @@ fn log_summary(summaries: &[report::ToolSummary]) {
             ),
         ];
 
-        for (label, render) in rows {
-            let mut line = format!("{label:<40}");
-            for summary in &group {
-                line.push_str(&format!("{:>18}", render(summary)));
+        // A metric no contender defines is left out entirely rather than printed as a row of
+        // "n/a" -- a PAF-only field has no base-level section at all.
+        let base_rows: Vec<(&str, Render)> = vec![
+            (
+                "alignments emitted",
+                Box::new(|s: &report::ToolSummary| base_count(s, |b| b.records)),
+            ),
+            (
+                "of those, replayed vs reference",
+                Box::new(|s: &report::ToolSummary| base_count(s, |b| b.verified)),
+            ),
+            (
+                "identity vs reference (replayed)",
+                Box::new(|s: &report::ToolSummary| base_pct(s, |b| b.identity_v)),
+            ),
+            (
+                "replayed identity >= 95%",
+                Box::new(|s: &report::ToolSummary| base_pct(s, |b| b.identity_high_v)),
+            ),
+            (
+                "NM tag matches the reference",
+                Box::new(|s: &report::ToolSummary| base_pct(s, |b| b.nm_agree)),
+            ),
+            (
+                "mean identity (as reported)",
+                Box::new(|s: &report::ToolSummary| base_pct(s, |b| b.identity)),
+            ),
+            (
+                "mean identity, right target",
+                Box::new(|s: &report::ToolSummary| base_pct(s, |b| b.identity_correct)),
+            ),
+            (
+                "mean identity, wrong target",
+                Box::new(|s: &report::ToolSummary| base_pct(s, |b| b.identity_wrong)),
+            ),
+            (
+                "query coverage",
+                Box::new(|s: &report::ToolSummary| base_pct(s, |b| Some(b.coverage))),
+            ),
+            (
+                "unclipped alignments",
+                Box::new(|s: &report::ToolSummary| base_pct(s, |b| Some(b.full_length))),
+            ),
+            (
+                "alignments with an indel",
+                Box::new(|s: &report::ToolSummary| base_pct(s, |b| Some(b.indel))),
+            ),
+            (
+                "flagged proper pair",
+                Box::new(|s: &report::ToolSummary| base_pct(s, |b| Some(b.proper_pair))),
+            ),
+            (
+                "malformed (CIGAR != SEQ len)",
+                Box::new(|s: &report::ToolSummary| base_pct(s, |b| Some(b.malformed))),
+            ),
+            (
+                "target not in the reference",
+                Box::new(|s: &report::ToolSummary| base_pct(s, |b| b.unknown_ref)),
+            ),
+            (
+                "missing NM tag",
+                Box::new(|s: &report::ToolSummary| base_pct(s, |b| Some(b.no_nm))),
+            ),
+        ];
+
+        let h2h_rows: Vec<(&str, Render)> = vec![
+            (
+                "peer",
+                Box::new(|s: &report::ToolSummary| {
+                    s.h2h.as_ref().map(|h| h.peer.clone()).unwrap_or_default()
+                }),
+            ),
+            (
+                "reads aligned by both",
+                Box::new(|s: &report::ToolSummary| h2h_count(s, |h| h.common)),
+            ),
+            (
+                "reads only this tool aligned",
+                Box::new(|s: &report::ToolSummary| h2h_count(s, |h| h.only_self)),
+            ),
+            (
+                "reads only the peer aligned",
+                Box::new(|s: &report::ToolSummary| h2h_count(s, |h| h.only_peer)),
+            ),
+            (
+                "same locus as peer",
+                Box::new(|s: &report::ToolSummary| h2h_pct(s, |h| h.same_locus)),
+            ),
+            (
+                "lower edit distance than peer",
+                Box::new(|s: &report::ToolSummary| h2h_pct(s, |h| h.better)),
+            ),
+            (
+                "equal edit distance",
+                Box::new(|s: &report::ToolSummary| h2h_pct(s, |h| h.equal)),
+            ),
+            (
+                "higher edit distance",
+                Box::new(|s: &report::ToolSummary| h2h_pct(s, |h| h.worse)),
+            ),
+            (
+                "mean NM delta vs peer (<0 = better)",
+                Box::new(|s: &report::ToolSummary| {
+                    s.h2h
+                        .as_ref()
+                        .and_then(|h| h.nm_delta)
+                        .map(|v| format!("{v:.3}"))
+                        .unwrap_or_default()
+                }),
+            ),
+        ];
+
+        let print = |rows: Vec<(&str, Render)>| {
+            for (label, render) in rows {
+                let cells: Vec<String> = group.iter().map(|s| render(s)).collect();
+                if cells.iter().all(String::is_empty) {
+                    continue;
+                }
+                let mut line = format!("{label:<40}");
+                for cell in cells {
+                    line.push_str(&format!("{cell:>18}"));
+                }
+                info!("{}", line);
             }
-            info!("{}", line);
+        };
+
+        print(rows);
+        if group.iter().any(|s| s.base.is_some()) {
+            print(base_rows);
+        }
+        if group.iter().any(|s| s.h2h.is_some()) {
+            print(h2h_rows);
         }
 
         if let Some(note) = group.iter().find_map(|s| s.note.as_ref()) {
             info!("note: {}", note);
         }
     }
+}
+
+/// A base-level count for the log table, empty when the tool has no base-level metrics.
+fn base_count(summary: &report::ToolSummary, f: fn(&base::BaseMetrics) -> u64) -> String {
+    summary
+        .base
+        .as_ref()
+        .map(|b| f(b).to_string())
+        .unwrap_or_default()
+}
+
+/// A base-level percentage for the log table, empty when it is not defined for this tool.
+fn base_pct(summary: &report::ToolSummary, f: fn(&base::BaseMetrics) -> Option<f64>) -> String {
+    summary
+        .base
+        .as_ref()
+        .and_then(f)
+        .map(|v| format!("{v:.2}%"))
+        .unwrap_or_default()
+}
+
+/// A head-to-head count for the log table.
+fn h2h_count(summary: &report::ToolSummary, f: fn(&base::HeadToHead) -> u64) -> String {
+    summary
+        .h2h
+        .as_ref()
+        .map(|h| f(h).to_string())
+        .unwrap_or_default()
+}
+
+/// A head-to-head percentage for the log table.
+fn h2h_pct(summary: &report::ToolSummary, f: fn(&base::HeadToHead) -> Option<f64>) -> String {
+    summary
+        .h2h
+        .as_ref()
+        .and_then(f)
+        .map(|v| format!("{v:.2}%"))
+        .unwrap_or_default()
 }
 
 /// Dataset labels in first-seen order.

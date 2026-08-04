@@ -127,7 +127,12 @@ pub fn ensure_fai(fasta: &Path) -> AlignResult<PathBuf> {
         ));
     }
 
-    let tmp = fai.with_extension("fai.tmp");
+    // The temp name carries this process's id: two benchpro runs indexing the same reference at
+    // once would otherwise share one temp path, and the second rename would find it already
+    // consumed by the first. Rename is atomic, so whichever finishes last simply wins.
+    let mut tmp = fai.as_os_str().to_os_string();
+    tmp.push(format!(".tmp.{}", std::process::id()));
+    let tmp = PathBuf::from(tmp);
     std::fs::write(&tmp, index).map_err(|e| AlignError::io(&tmp, e))?;
     std::fs::rename(&tmp, &fai).map_err(|e| AlignError::io(&fai, e))?;
     Ok(fai)

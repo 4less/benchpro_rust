@@ -30,3 +30,8 @@ Thumbs.db
 # Logs / temporary files
 *.log
 tmp/
+
+# FASTA indexes built on demand by `benchpro align` (regenerated, never authored)
+*.fna.fai
+*.fa.fai
+*.fasta.fai

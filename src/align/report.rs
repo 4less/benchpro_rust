@@ -41,7 +41,8 @@ pub struct SampleResult {
     pub counters: ParseCounters,
     /// Cumulative MAPQ counts, ascending in cutoff.
     pub mapq_counts: Vec<MapqCount>,
-    /// Recall denominator for this sample, shared by every contender on it.
+    /// Denominator of the MAPQ curve's recall axis, shared by every contender on this sample.
+    /// Not used by [`Self::recall_pct`].
     pub mappable: u64,
     /// Base-level metrics, absent for a contender that emitted no alignment.
     pub base: Option<BaseMetrics>,
@@ -50,13 +51,23 @@ pub struct SampleResult {
 }
 
 impl SampleResult {
-    /// Recall against the sample's mappable base.
+    /// Recall: correct placements as a share of *every* read in the truth.
+    ///
+    /// The companion of `correct_pct`, and both are reported because neither alone is honest.
+    /// `correct_pct` divides by the reads the tool placed, which is precision — it rewards a tool
+    /// for mapping less, since one that places its most confident 1% and gets them all right
+    /// scores 100%. Recall uses a denominator the tool cannot influence, so it is comparable
+    /// however permissive the tool is.
+    ///
+    /// Note this is *not* normalised by [`Self::mappable`]: that base exists for the MAPQ curve's
+    /// axis, where an all-reads denominator would flatten every contender (see
+    /// [`mapq::mappable_base`]).
     ///
     /// # Returns
     ///
-    /// `100 * correct / mappable`, or 0 when no contender placed anything.
+    /// `100 * correct / total`, or 0 for an empty truth.
     pub fn recall_pct(&self) -> f64 {
-        pct(self.score.correct, self.mappable)
+        pct(self.score.correct, self.score.total)
     }
 }
 
@@ -77,7 +88,7 @@ pub struct ToolSummary {
     pub counters: ParseCounters,
     /// Pooled MAPQ counts.
     pub mapq_counts: Vec<MapqCount>,
-    /// Pooled recall denominator.
+    /// Pooled denominator of the MAPQ curve's recall axis.
     pub mappable: u64,
     /// Standard deviation of `correct_pct` across samples, when there is more than one.
     pub correct_pct_sd: Option<f64>,
@@ -90,13 +101,15 @@ pub struct ToolSummary {
 }
 
 impl ToolSummary {
-    /// Recall against the pooled mappable base.
+    /// Recall: correct placements as a share of every read in the truth.
+    ///
+    /// See [`SampleResult::recall_pct`] for why this denominator, and not the mappable base.
     ///
     /// # Returns
     ///
-    /// `100 * correct / mappable`.
+    /// `100 * correct / total`.
     pub fn recall_pct(&self) -> f64 {
-        pct(self.score.correct, self.mappable)
+        pct(self.score.correct, self.score.total)
     }
 
     /// The MAPQ cutoff maximising F1, with its recall and precision.
