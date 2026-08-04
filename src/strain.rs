@@ -217,133 +217,136 @@ pub fn run_strain(args: &StrainArgs) -> Result<(), StrainError> {
         };
 
         if let Some(tree_file) = &job.tree_path {
-        info!("Computing monophyly from tree '{}'...", tree_file.display());
-        let mut tree = load_tree(tree_file)?;
-        let root_children = tree
-            .get_root()
-            .ok()
-            .and_then(|r| tree.get(&r).ok())
-            .map(|n| n.children.len())
-            .unwrap_or(0);
-        let is_unrooted = root_children >= 3;
-        if args.midpoint_root || is_unrooted {
-            if is_unrooted && !args.midpoint_root {
-                info!(
-                    "Tree '{}' has a trifurcating root (unrooted IQ-TREE/RAxML format); \
+            info!("Computing monophyly from tree '{}'...", tree_file.display());
+            let mut tree = load_tree(tree_file)?;
+            let root_children = tree
+                .get_root()
+                .ok()
+                .and_then(|r| tree.get(&r).ok())
+                .map(|n| n.children.len())
+                .unwrap_or(0);
+            let is_unrooted = root_children >= 3;
+            if args.midpoint_root || is_unrooted {
+                if is_unrooted && !args.midpoint_root {
+                    info!(
+                        "Tree '{}' has a trifurcating root (unrooted IQ-TREE/RAxML format); \
                      applying midpoint root automatically.",
-                    tree_file.display()
-                );
+                        tree_file.display()
+                    );
+                }
+                midpoint_root(&mut tree)?;
             }
-            midpoint_root(&mut tree)?;
-        }
-        if let Some(ref keep_ids) = keep_ids_for_pruning {
-            prune_tree_to_tips(&mut tree, keep_ids)?;
-        }
+            if let Some(ref keep_ids) = keep_ids_for_pruning {
+                prune_tree_to_tips(&mut tree, keep_ids)?;
+            }
 
-        let name2id: HashMap<String, NodeId> = tree
-            .get_leaves()
-            .iter()
-            .filter_map(|id| {
-                tree.get(id)
-                    .ok()
-                    .and_then(|n| n.name.as_ref().map(|name| (name.clone(), *id)))
-            })
-            .collect();
-
-        for (genome, samples) in &genome_groups {
-            // Resolve samples to tree node IDs, keeping coverage alongside.
-            let resolved: Vec<(&SampleInfo, NodeId)> = samples
+            let name2id: HashMap<String, NodeId> = tree
+                .get_leaves()
                 .iter()
-                .filter_map(|s| {
-                    let node_id = name2id.get(&s.id);
-                    if node_id.is_none() {
-                        warn!(
-                            "Sample '{}' not found as tip in tree '{}'",
-                            s.id,
-                            tree_file.display()
-                        );
-                    }
-                    node_id.map(|nid| (s, *nid))
+                .filter_map(|id| {
+                    tree.get(id)
+                        .ok()
+                        .and_then(|n| n.name.as_ref().map(|name| (name.clone(), *id)))
                 })
                 .collect();
 
-            let tip_count = resolved.len();
-            if tip_count == 0 {
-                warn!(
-                    "No tree tips found for genome '{}' in '{}', skipping.",
-                    genome,
-                    tree_file.display()
-                );
-                continue;
-            }
-
-            let tip_ids: Vec<NodeId> = resolved.iter().map(|(_, nid)| *nid).collect();
-
-            let (monophyly_score, lca_tip_count) = if tip_count == 1 {
-                (1.0_f64, 1_usize)
-            } else {
-                let lca = find_lca(&tree, &tip_ids)?;
-                let lca_leaves = tree
-                    .get_subtree_leaves(&lca)
-                    .map_err(|e| StrainError::Meta(e.to_string()))?;
-                let lca_tip_count = lca_leaves.len();
-                (tip_count as f64 / lca_tip_count as f64, lca_tip_count)
-            };
-
-            let (pw_min, pw_max, pw_mean, pw_median) =
-                compute_pairwise_distances(&tree, &tip_ids)?;
-
-            rows.push(MonophylyRow {
-                id: job.id.clone(),
-                species: job.species.clone(),
-                genome: genome.clone(),
-                tip_count,
-                lca_tip_count,
-                monophyly_score,
-                pw_dist_min: pw_min,
-                pw_dist_max: pw_max,
-                pw_dist_mean: pw_mean,
-                pw_dist_median: pw_median,
-            });
-
-            // Per-tip rows: distances from this tip to all others in the group.
-            for (i, (sample, nid)) in resolved.iter().enumerate() {
-                let others: Vec<NodeId> = tip_ids
+            for (genome, samples) in &genome_groups {
+                // Resolve samples to tree node IDs, keeping coverage alongside.
+                let resolved: Vec<(&SampleInfo, NodeId)> = samples
                     .iter()
-                    .enumerate()
-                    .filter(|(j, _)| *j != i)
-                    .map(|(_, id)| *id)
+                    .filter_map(|s| {
+                        let node_id = name2id.get(&s.id);
+                        if node_id.is_none() {
+                            warn!(
+                                "Sample '{}' not found as tip in tree '{}'",
+                                s.id,
+                                tree_file.display()
+                            );
+                        }
+                        node_id.map(|nid| (s, *nid))
+                    })
                     .collect();
 
-                let (tip_min, tip_max, tip_mean, tip_median) = if others.is_empty() {
-                    (0.0, 0.0, 0.0, 0.0)
+                let tip_count = resolved.len();
+                if tip_count == 0 {
+                    warn!(
+                        "No tree tips found for genome '{}' in '{}', skipping.",
+                        genome,
+                        tree_file.display()
+                    );
+                    continue;
+                }
+
+                let tip_ids: Vec<NodeId> = resolved.iter().map(|(_, nid)| *nid).collect();
+
+                let (monophyly_score, lca_tip_count) = if tip_count == 1 {
+                    (1.0_f64, 1_usize)
                 } else {
-                    compute_distances_from_one(&tree, nid, &others)?
+                    let lca = find_lca(&tree, &tip_ids)?;
+                    let lca_leaves = tree
+                        .get_subtree_leaves(&lca)
+                        .map_err(|e| StrainError::Meta(e.to_string()))?;
+                    let lca_tip_count = lca_leaves.len();
+                    (tip_count as f64 / lca_tip_count as f64, lca_tip_count)
                 };
 
-                tip_rows.push(TipRow {
+                let (pw_min, pw_max, pw_mean, pw_median) =
+                    compute_pairwise_distances(&tree, &tip_ids)?;
+
+                rows.push(MonophylyRow {
                     id: job.id.clone(),
                     species: job.species.clone(),
                     genome: genome.clone(),
-                    sample: sample.id.clone(),
-                    coverage: sample.coverage,
                     tip_count,
                     lca_tip_count,
                     monophyly_score,
-                    pw_dist_min: tip_min,
-                    pw_dist_max: tip_max,
-                    pw_dist_mean: tip_mean,
-                    pw_dist_median: tip_median,
+                    pw_dist_min: pw_min,
+                    pw_dist_max: pw_max,
+                    pw_dist_mean: pw_mean,
+                    pw_dist_median: pw_median,
                 });
+
+                // Per-tip rows: distances from this tip to all others in the group.
+                for (i, (sample, nid)) in resolved.iter().enumerate() {
+                    let others: Vec<NodeId> = tip_ids
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, _)| *j != i)
+                        .map(|(_, id)| *id)
+                        .collect();
+
+                    let (tip_min, tip_max, tip_mean, tip_median) = if others.is_empty() {
+                        (0.0, 0.0, 0.0, 0.0)
+                    } else {
+                        compute_distances_from_one(&tree, nid, &others)?
+                    };
+
+                    tip_rows.push(TipRow {
+                        id: job.id.clone(),
+                        species: job.species.clone(),
+                        genome: genome.clone(),
+                        sample: sample.id.clone(),
+                        coverage: sample.coverage,
+                        tip_count,
+                        lca_tip_count,
+                        monophyly_score,
+                        pw_dist_min: tip_min,
+                        pw_dist_max: tip_max,
+                        pw_dist_mean: tip_mean,
+                        pw_dist_median: tip_median,
+                    });
+                }
             }
-        }
         } // end if let Some(tree_file)
 
         if let Some(msa_path) = &job.msa_path {
             info!("Computing MSA sequence errors for '{}'...", job.id);
             match compute_msa_error_rows_whole(job, msa_path, &genome_groups) {
                 Ok(rows) => msa_error_rows.extend(rows),
-                Err(e) => warn!("MSA sequence error computation failed for '{}': {}", job.id, e),
+                Err(e) => warn!(
+                    "MSA sequence error computation failed for '{}': {}",
+                    job.id, e
+                ),
             }
 
             if let Some(partition_path) = &job.partition_path {
@@ -360,10 +363,7 @@ pub fn run_strain(args: &StrainArgs) -> Result<(), StrainError> {
                 info!("Computing MSA distance errors for '{}'...", job.id);
                 match compute_msa_error_rows(job, msa_path, gold_msa_path, &genome_groups) {
                     Ok(error_rows) => sample_error_rows.extend(error_rows),
-                    Err(e) => warn!(
-                        "MSA error computation failed for '{}': {}",
-                        job.id, e
-                    ),
+                    Err(e) => warn!("MSA error computation failed for '{}': {}", job.id, e),
                 }
             }
             (Some(_), None) | (None, Some(_)) => {
@@ -376,7 +376,10 @@ pub fn run_strain(args: &StrainArgs) -> Result<(), StrainError> {
         }
 
         if let Some(gold_tree_path) = &job.gold_tree_path {
-            info!("Computing genome proximity from gold standard tree for '{}'...", job.id);
+            info!(
+                "Computing genome proximity from gold standard tree for '{}'...",
+                job.id
+            );
             match gold_tree_closest_neighbors(gold_tree_path) {
                 Ok(gold_closest) => {
                     let job_rows = compute_genome_proximity(job, &gold_closest, &rows);
@@ -403,7 +406,10 @@ pub fn run_strain(args: &StrainArgs) -> Result<(), StrainError> {
 
     let tip_output = PathBuf::from(format!("{}.monophyly_tips.tsv", args.outprefix));
     write_tip_output(&tip_rows, &tip_output)?;
-    info!("Wrote per-tip monophyly stats to '{}'.", tip_output.display());
+    info!(
+        "Wrote per-tip monophyly stats to '{}'.",
+        tip_output.display()
+    );
 
     if !sample_error_rows.is_empty() {
         let error_output = PathBuf::from(format!("{}.sample_error.tsv", args.outprefix));
@@ -414,22 +420,29 @@ pub fn run_strain(args: &StrainArgs) -> Result<(), StrainError> {
     if !msa_error_rows.is_empty() {
         let msa_error_output = PathBuf::from(format!("{}.msa_error.tsv", args.outprefix));
         write_msa_error_output(&msa_error_rows, &msa_error_output)?;
-        info!("Wrote MSA sequence error stats to '{}'.", msa_error_output.display());
+        info!(
+            "Wrote MSA sequence error stats to '{}'.",
+            msa_error_output.display()
+        );
     }
 
     if !msa_gene_error_rows.is_empty() {
-        let msa_gene_error_output =
-            PathBuf::from(format!("{}.msa_gene_error.tsv", args.outprefix));
+        let msa_gene_error_output = PathBuf::from(format!("{}.msa_gene_error.tsv", args.outprefix));
         write_msa_gene_error_output(&msa_gene_error_rows, &msa_gene_error_output)?;
-        info!("Wrote MSA gene error stats to '{}'.", msa_gene_error_output.display());
+        info!(
+            "Wrote MSA gene error stats to '{}'.",
+            msa_gene_error_output.display()
+        );
     }
 
     if !proximity_rows.is_empty() {
         rank_and_window_proximity(&mut proximity_rows, 30);
-        let proximity_output =
-            PathBuf::from(format!("{}.genome_proximity.tsv", args.outprefix));
+        let proximity_output = PathBuf::from(format!("{}.genome_proximity.tsv", args.outprefix));
         write_genome_proximity_output(&proximity_rows, &proximity_output)?;
-        info!("Wrote genome proximity stats to '{}'.", proximity_output.display());
+        info!(
+            "Wrote genome proximity stats to '{}'.",
+            proximity_output.display()
+        );
     }
 
     Ok(())
@@ -458,10 +471,12 @@ fn prune_tree_to_tips(
         }
 
         for leaf_id in &to_remove {
-            tree.prune(leaf_id).map_err(|e| StrainError::Meta(e.to_string()))?;
+            tree.prune(leaf_id)
+                .map_err(|e| StrainError::Meta(e.to_string()))?;
         }
     }
-    tree.compress().map_err(|e| StrainError::Meta(e.to_string()))?;
+    tree.compress()
+        .map_err(|e| StrainError::Meta(e.to_string()))?;
     Ok(())
 }
 
@@ -869,9 +884,7 @@ fn load_strain_jobs(path: &Path) -> Result<Vec<StrainJob>, StrainError> {
     Ok(jobs)
 }
 
-fn load_genome_groups(
-    path: &Path,
-) -> Result<BTreeMap<String, Vec<SampleInfo>>, StrainError> {
+fn load_genome_groups(path: &Path) -> Result<BTreeMap<String, Vec<SampleInfo>>, StrainError> {
     let df = Meta::polars_from_path(path).ok_or_else(|| {
         StrainError::Meta(format!(
             "Failed to read sample meta file '{}'",
@@ -920,7 +933,10 @@ fn load_genome_groups(
             .ok_or_else(|| StrainError::Meta("Missing genome value".to_string()))?
             .to_string();
         let coverage = coverages.get(row).unwrap_or(f64::NAN);
-        groups.entry(genome).or_default().push(SampleInfo { id, coverage });
+        groups
+            .entry(genome)
+            .or_default()
+            .push(SampleInfo { id, coverage });
     }
 
     Ok(groups)
@@ -928,9 +944,7 @@ fn load_genome_groups(
 
 /// Loads the gold standard tree, applies midpoint root if trifurcating, and returns
 /// a map from each genome name to `(closest_neighbor_name, cophenetic_distance)`.
-fn gold_tree_closest_neighbors(
-    path: &Path,
-) -> Result<HashMap<String, (String, f64)>, StrainError> {
+fn gold_tree_closest_neighbors(path: &Path) -> Result<HashMap<String, (String, f64)>, StrainError> {
     let mut tree = load_tree(path)?;
     let root_children = tree
         .get_root()
@@ -962,14 +976,16 @@ fn gold_tree_closest_neighbors(
         for j in (i + 1)..names.len() {
             let a = &names[i];
             let b = &names[j];
-            if let Ok((Some(dist), _)) =
-                tree.get_distance(&name_to_id[a], &name_to_id[b])
-            {
-                let entry_a = closest.entry(a.clone()).or_insert((b.clone(), f64::INFINITY));
+            if let Ok((Some(dist), _)) = tree.get_distance(&name_to_id[a], &name_to_id[b]) {
+                let entry_a = closest
+                    .entry(a.clone())
+                    .or_insert((b.clone(), f64::INFINITY));
                 if dist < entry_a.1 {
                     *entry_a = (b.clone(), dist);
                 }
-                let entry_b = closest.entry(b.clone()).or_insert((a.clone(), f64::INFINITY));
+                let entry_b = closest
+                    .entry(b.clone())
+                    .or_insert((a.clone(), f64::INFINITY));
                 if dist < entry_b.1 {
                     *entry_b = (a.clone(), dist);
                 }
@@ -1299,7 +1315,11 @@ fn pearson_correlation(x: &[f64], y: &[f64]) -> Option<f64> {
     }
     let mx = x.iter().sum::<f64>() / n as f64;
     let my = y.iter().sum::<f64>() / n as f64;
-    let cov: f64 = x.iter().zip(y.iter()).map(|(xi, yi)| (xi - mx) * (yi - my)).sum();
+    let cov: f64 = x
+        .iter()
+        .zip(y.iter())
+        .map(|(xi, yi)| (xi - mx) * (yi - my))
+        .sum();
     let var_x: f64 = x.iter().map(|xi| (xi - mx).powi(2)).sum();
     let var_y: f64 = y.iter().map(|yi| (yi - my).powi(2)).sum();
     let denom = (var_x * var_y).sqrt();
@@ -1327,9 +1347,17 @@ fn weighted_pearson_correlation(x: &[f64], y: &[f64], w: &[f64]) -> Option<f64> 
         .map(|((wi, xi), yi)| wi * (xi - mx) * (yi - my))
         .sum::<f64>()
         / w_sum;
-    let var_x: f64 = w.iter().zip(x.iter()).map(|(wi, xi)| wi * (xi - mx).powi(2)).sum::<f64>()
+    let var_x: f64 = w
+        .iter()
+        .zip(x.iter())
+        .map(|(wi, xi)| wi * (xi - mx).powi(2))
+        .sum::<f64>()
         / w_sum;
-    let var_y: f64 = w.iter().zip(y.iter()).map(|(wi, yi)| wi * (yi - my).powi(2)).sum::<f64>()
+    let var_y: f64 = w
+        .iter()
+        .zip(y.iter())
+        .map(|(wi, yi)| wi * (yi - my).powi(2))
+        .sum::<f64>()
         / w_sum;
     let denom = (var_x * var_y).sqrt();
     if denom < 1e-15 {
@@ -1522,10 +1550,7 @@ fn compute_msa_error_rows(
     Ok(error_rows)
 }
 
-fn write_sample_error_output(
-    rows: &[SampleErrorRow],
-    output: &Path,
-) -> Result<(), StrainError> {
+fn write_sample_error_output(rows: &[SampleErrorRow], output: &Path) -> Result<(), StrainError> {
     let mut ids = Vec::with_capacity(rows.len());
     let mut species = Vec::with_capacity(rows.len());
     let mut samples = Vec::with_capacity(rows.len());
@@ -1658,7 +1683,11 @@ fn compute_msa_gene_error_rows(
                     .iter()
                     .map(|(_, seq)| {
                         let b = seq[pos];
-                        if b != b'-' && b != b'N' { Some(b) } else { None }
+                        if b != b'-' && b != b'N' {
+                            Some(b)
+                        } else {
+                            None
+                        }
                     })
                     .collect();
 
@@ -1685,8 +1714,10 @@ fn compute_msa_gene_error_rows(
                     .map(|(_, (_, seq_j))| {
                         (start..=end)
                             .filter(|&pos| {
-                                seq_i[pos] != b'-' && seq_i[pos] != b'N'
-                                    && seq_j[pos] != b'-' && seq_j[pos] != b'N'
+                                seq_i[pos] != b'-'
+                                    && seq_i[pos] != b'N'
+                                    && seq_j[pos] != b'-'
+                                    && seq_j[pos] != b'N'
                             })
                             .count() as f64
                     })
@@ -1746,7 +1777,11 @@ fn compute_msa_error_rows_whole(
                 .iter()
                 .map(|(_, seq)| {
                     let b = seq[pos];
-                    if b != b'-' && b != b'N' { Some(b) } else { None }
+                    if b != b'-' && b != b'N' {
+                        Some(b)
+                    } else {
+                        None
+                    }
                 })
                 .collect();
 
@@ -1773,8 +1808,10 @@ fn compute_msa_error_rows_whole(
                 .map(|(_, (_, seq_j))| {
                     (0..msa_len)
                         .filter(|&pos| {
-                            seq_i[pos] != b'-' && seq_i[pos] != b'N'
-                                && seq_j[pos] != b'-' && seq_j[pos] != b'N'
+                            seq_i[pos] != b'-'
+                                && seq_i[pos] != b'N'
+                                && seq_j[pos] != b'-'
+                                && seq_j[pos] != b'N'
                         })
                         .count() as f64
                 })
@@ -1816,10 +1853,7 @@ fn median_f64(sorted: &[f64]) -> f64 {
     }
 }
 
-fn write_msa_gene_error_output(
-    rows: &[MsaGeneErrorRow],
-    output: &Path,
-) -> Result<(), StrainError> {
+fn write_msa_gene_error_output(rows: &[MsaGeneErrorRow], output: &Path) -> Result<(), StrainError> {
     let mut ids = Vec::with_capacity(rows.len());
     let mut species_col = Vec::with_capacity(rows.len());
     let mut samples = Vec::with_capacity(rows.len());
@@ -1971,9 +2005,7 @@ mod tests {
         // halfway along the root->CD edge (0.6), so a new node N is
         // inserted 0.3 from root and 0.3 from CD.
         // After rerooting at N: dist(N,B)=0.8, dist(N,D)=0.8
-        let mut tree =
-            Tree::from_newick("((A:0.1,B:0.2):0.3,(C:0.4,D:0.5):0.6);")
-                .unwrap();
+        let mut tree = Tree::from_newick("((A:0.1,B:0.2):0.3,(C:0.4,D:0.5):0.6);").unwrap();
         midpoint_root(&mut tree).unwrap();
         assert!(tree.is_rooted().unwrap(), "tree should be rooted");
         let root = tree.get_root().unwrap();
