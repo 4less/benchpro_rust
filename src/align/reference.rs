@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use log::{debug, info};
 
@@ -127,11 +128,18 @@ pub fn ensure_fai(fasta: &Path) -> AlignResult<PathBuf> {
         ));
     }
 
-    // The temp name carries this process's id: two benchpro runs indexing the same reference at
-    // once would otherwise share one temp path, and the second rename would find it already
-    // consumed by the first. Rename is atomic, so whichever finishes last simply wins.
+    // Every build gets its own scratch file: the process id separates concurrent runs, and the
+    // counter separates concurrent threads within one run. Sharing a name means the second rename
+    // finds the file already consumed by the first and the run dies on a path it never wrote.
+    // `rename` is atomic, so whichever build finishes last simply wins, and the loser's work is
+    // discarded rather than half-visible.
+    static BUILD: AtomicU64 = AtomicU64::new(0);
     let mut tmp = fai.as_os_str().to_os_string();
-    tmp.push(format!(".tmp.{}", std::process::id()));
+    tmp.push(format!(
+        ".tmp.{}.{}",
+        std::process::id(),
+        BUILD.fetch_add(1, Ordering::Relaxed)
+    ));
     let tmp = PathBuf::from(tmp);
     std::fs::write(&tmp, index).map_err(|e| AlignError::io(&tmp, e))?;
     std::fs::rename(&tmp, &fai).map_err(|e| AlignError::io(&fai, e))?;
@@ -590,6 +598,43 @@ mod tests {
         verify(&mut records, &mut reference, &mut counters).unwrap();
 
         assert_eq!(records[&key("over")].vnm, Some(4));
+    }
+
+    #[test]
+    fn concurrent_index_builds_do_not_collide() {
+        // Two runs can index the same reference at once -- and after `--threads`, two threads of
+        // one run could too. Each needs its own scratch file: sharing one means the second rename
+        // finds it already consumed by the first, and the run dies on a file it never wrote.
+        let dir = temp_dir("concurrent");
+        let fasta = write_fasta(&dir, WRAPPED);
+
+        let results: Vec<_> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| scope.spawn(|| ensure_fai(&fasta).map(|p| p.exists())))
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+
+        for result in &results {
+            assert!(
+                result.is_ok(),
+                "a concurrent index build failed: {result:?}"
+            );
+        }
+        // ...and the index that survives is complete, not a half-written one.
+        let mut reference = Reference::open(&fasta, None).unwrap();
+        assert_eq!(reference.len(), 2);
+        assert_eq!(reference.fetch("ctg1", 0, 4).unwrap(), b"ACGT");
+        assert_eq!(reference.length_of("ctg2"), Some(10));
+
+        // No scratch files left behind.
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "scratch files left: {leftovers:?}");
     }
 
     #[test]

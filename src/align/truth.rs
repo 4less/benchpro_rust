@@ -133,7 +133,7 @@ pub fn load_truth(path: &Path) -> AlignResult<Truth> {
             Some((b'\r', head)) => head,
             _ => raw,
         };
-        if line.is_empty() || line[0] == b'#' {
+        if line.is_empty() {
             continue;
         }
 
@@ -145,6 +145,12 @@ pub fn load_truth(path: &Path) -> AlignResult<Truth> {
             fields.next(),
             fields.next(),
         ) else {
+            // A `#` line that is not a record is a comment; a `#` line that IS a record is a read
+            // whose id happens to start with `#`, and dropping it would lose data silently. The
+            // format is headerless, so shape decides, not the first byte.
+            if line[0] == b'#' {
+                continue;
+            }
             return Err(AlignError::parse(
                 path,
                 i + 1,
@@ -244,11 +250,15 @@ pub fn load_contig2genome(path: &Path) -> AlignResult<HashMap<Box<str>, Box<str>
     for (i, line) in BufReader::new(file).lines().enumerate() {
         let line = line.map_err(|e| AlignError::io(path, e))?;
         let line = line.trim_end_matches('\r');
-        if line.is_empty() || line.starts_with('#') {
+        if line.is_empty() {
             continue;
         }
         let mut fields = line.split('\t');
         let (Some(contig), Some(genome)) = (fields.next(), fields.next()) else {
+            // As in `load_truth`: shape decides whether a `#` line is a comment or a record.
+            if line.starts_with('#') {
+                continue;
+            }
             return Err(AlignError::parse(
                 path,
                 i + 1,
@@ -345,6 +355,23 @@ mod tests {
         let path = temp_file("short.tsv", "r1\t1\tctg1\t100\tgenomeA\nr2\t1\tctg1\n");
         let err = load_truth(&path).unwrap_err();
         assert!(err.to_string().contains(":2:"), "{err}");
+    }
+
+    #[test]
+    fn a_read_id_starting_with_hash_is_a_read_not_a_comment() {
+        // The truth format is headerless and has no comment convention, so a leading '#' cannot be
+        // assumed to mean "ignore this line" -- dropping it would lose a read without a word.
+        let path = temp_file(
+            "hash.tsv",
+            "# a real comment\n#oddread\t1\tctg1\t100\tgenomeA\nnormal\t1\tctg1\t5\tgenomeA\n",
+        );
+        let truth = load_truth(&path).unwrap();
+
+        assert_eq!(truth.len(), 2, "the comment is skipped, the read is not");
+        assert!(truth.contains_key(&ReadKey {
+            id: "#oddread".into(),
+            mate: 1
+        }));
     }
 
     #[test]

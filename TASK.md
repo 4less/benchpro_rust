@@ -589,8 +589,9 @@ information. A unit test pins the case where they choose different cutoffs.
   `--tolerance 50`. §2 asks for one knob, so this is spec-conformant.
 - A mapped record with `POS 0` maps to `pos0 = 0`, where the Python gives `-1`. Only reachable for a
   malformed record; the position stratum would differ by one for it.
-- The truth loader skips `#`-prefixed lines and rejects a mate that is not `1` or `2`; the Python
-  does neither. A read id beginning with `#` is dropped silently.
+- The truth loader rejects a mate that is not `1` or `2`, where the Python accepts anything. A
+  `#`-prefixed line is treated as a comment only when it does not parse as a record, so a read id
+  beginning with `#` is kept rather than silently dropped.
 
 ### Known issues, pre-existing and unrelated
 
