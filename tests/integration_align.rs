@@ -119,9 +119,12 @@ fn full_scoring_strata_match_the_fixture_by_construction() {
     assert_eq!(number(good, "correct_pct"), 100.0);
     // Recall divides by ALL reads in the truth, not by what the tool placed.
     assert_eq!(number(good, "recall_pct"), 90.0);
-    // Only 16 are on the true contig: pair 9 went to 1001_geneB.
-    assert!((number(good, "reference_pct") - 100.0 * 16.0 / 18.0).abs() < 1e-9);
-    assert!((number(good, "position_pct") - 100.0 * 16.0 / 18.0).abs() < 1e-9);
+    // Only 16 of the 20 truth mates are on the true contig: pair 9 went to 1001_geneB and pair 10
+    // was not placed. The strata are shares of the truth, not of what the tool placed.
+    assert!((number(good, "reference_pct") - 100.0 * 16.0 / 20.0).abs() < 1e-9);
+    assert!((number(good, "position_pct") - 100.0 * 16.0 / 20.0).abs() < 1e-9);
+    // Its precision counterpart divides by the 18 it did place.
+    assert!((number(good, "position_precision_pct") - 100.0 * 16.0 / 18.0).abs() < 1e-9);
 
     let sloppy = row_for(&summary, "sloppy");
     // 10 (pairs 1-5) + 6 (pairs 6-8, wrong genome) + 2 (pair 9) + 1 (pair 10 mate 2) = 19.
@@ -181,7 +184,10 @@ fn paf_contenders_are_scored_at_the_mapping_level() {
     // Pairs 1-9 at the true locus; the /1,/2 suffix must join with the truth's mate column.
     assert_eq!(number(mapper, "aligned"), 18.0);
     assert_eq!(number(mapper, "correct"), 18.0);
-    assert_eq!(number(mapper, "position_pct"), 100.0);
+    // 18 of the 20 truth mates are at their true locus -- pair 10 was not placed at all.
+    assert_eq!(number(mapper, "position_pct"), 90.0);
+    // Of the 18 it did place, every one is right.
+    assert_eq!(number(mapper, "position_precision_pct"), 100.0);
     // PAF carries no CIGAR, SEQ or NM, so there is nothing base level to report.
     assert_eq!(mapper["aln_identity"], "");
     assert_eq!(mapper["aln_verified"], "");
@@ -332,6 +338,36 @@ fn base_level_columns_are_shares_of_emitted_alignments_not_of_truth_reads() {
             "{column} = {value} is not a percentage"
         );
     }
+}
+
+#[test]
+fn the_per_read_table_covers_exactly_the_samples_the_summary_kept() {
+    // `good` ran on two samples, `sloppy` on one. s2 is dropped from the aggregates because not
+    // every contender produced it -- so the per-read table must drop it too, or it describes runs
+    // that no summary row accounts for.
+    let meta = format!(
+        "ID\tSample\tTool\tAlignment\tTruth\tScoring\n\
+         ds\ts1\tgood\t{good}\t{truth}\tspecies\n\
+         ds\ts2\tgood\t{good}\t{truth}\tspecies\n\
+         ds\ts1\tsloppy\t{sloppy}\t{truth}\tspecies\n",
+        good = fixture("good.sam"),
+        sloppy = fixture("sloppy.sam"),
+        truth = fixture("reads.truth.tsv"),
+    );
+    let prefix = run_align("per_read_restricted", &meta, &["--per-read"]);
+
+    let samples = read_tsv(&prefix.with_extension("align_samples.tsv"));
+    assert!(
+        samples.iter().all(|r| r["sample"] == "s1"),
+        "s2 should have been dropped from the aggregates"
+    );
+
+    let reads = read_tsv(&prefix.with_extension("align_reads.tsv"));
+    assert!(!reads.is_empty());
+    assert!(
+        reads.iter().all(|r| r["sample"] == "s1"),
+        "per-read rows survive for a sample the summary dropped"
+    );
 }
 
 #[test]

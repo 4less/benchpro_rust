@@ -417,19 +417,27 @@ pub fn summary_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
     ];
 
     if has_strata {
-        columns.push(Series::new(
-            "genome_pct".into(),
-            floats(summaries, |s| s.score.correct_pct()),
-        ));
+        // The strata are shares of ALL reads in the truth, as report.py renders them
+        // ("reference-correct (of total)", "position-correct (of total)"). Dividing by `aligned`
+        // instead would make a tool look better for placing fewer reads, which is the trap
+        // `correct_pct` already carries and why it is reported beside `recall_pct`.
         columns.push(Series::new(
             "reference_pct".into(),
             summaries
                 .iter()
-                .map(|s| s.score.reference.map(|v| pct(v, s.score.aligned)))
+                .map(|s| s.score.reference.map(|v| pct(v, s.score.total)))
                 .collect::<Vec<_>>(),
         ));
         columns.push(Series::new(
             "position_pct".into(),
+            summaries
+                .iter()
+                .map(|s| s.score.position.map(|v| pct(v, s.score.total)))
+                .collect::<Vec<_>>(),
+        ));
+        // ...and the precision counterpart the Python reports alongside them.
+        columns.push(Series::new(
+            "position_precision_pct".into(),
             summaries
                 .iter()
                 .map(|s| s.score.position.map(|v| pct(v, s.score.aligned)))

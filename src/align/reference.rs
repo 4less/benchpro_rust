@@ -309,10 +309,22 @@ impl Reference {
         self.file
             .seek(SeekFrom::Start(from))
             .map_err(|e| AlignError::io("<reference>", e))?;
+
+        // Read up to the computed span rather than insisting on it. The `.fai` records one line
+        // width per sequence, so a FASTA whose lines are not uniformly wrapped can put `to` past
+        // the end of the file -- `read_exact` would abort the whole run over a short final line,
+        // where a short read is exactly the "the reference does not have those bases" signal the
+        // replay already knows how to charge.
         let mut buffer = vec![0u8; (to - from) as usize];
-        self.file
-            .read_exact(&mut buffer)
-            .map_err(|e| AlignError::io("<reference>", e))?;
+        let mut filled = 0;
+        while filled < buffer.len() {
+            match self.file.read(&mut buffer[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(e) => return Err(AlignError::io("<reference>", e)),
+            }
+        }
+        buffer.truncate(filled);
 
         buffer.retain(|b| !b.is_ascii_whitespace());
         buffer.make_ascii_uppercase();
@@ -578,6 +590,19 @@ mod tests {
         verify(&mut records, &mut reference, &mut counters).unwrap();
 
         assert_eq!(records[&key("over")].vnm, Some(4));
+    }
+
+    #[test]
+    fn a_ragged_final_line_does_not_abort_the_run() {
+        // The .fai records the FIRST line's width, so a shorter final line makes the computed span
+        // overshoot the file. That must degrade to a short read, not an error.
+        let dir = temp_dir("ragged");
+        let fasta = write_fasta(&dir, ">only\nACGTACGTAC\nACG\n");
+        let mut reference = Reference::open(&fasta, None).unwrap();
+
+        assert_eq!(reference.length_of("only"), Some(13));
+        assert_eq!(reference.fetch("only", 0, 13).unwrap(), b"ACGTACGTACACG");
+        assert_eq!(reference.fetch("only", 10, 13).unwrap(), b"ACG");
     }
 
     #[test]

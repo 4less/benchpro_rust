@@ -209,14 +209,16 @@ pub fn replay(cigar: &[u8], seq: &[u8], reference: &[u8]) -> u64 {
                 let query = &seq[qi.min(seq.len())..(qi + len_usize).min(seq.len())];
                 let refr =
                     &reference[ri.min(reference.len())..(ri + len_usize).min(reference.len())];
-                let compared = query.len().min(refr.len());
                 nm += query
                     .iter()
                     .zip(refr.iter())
                     .filter(|(a, b)| !a.eq_ignore_ascii_case(b))
                     .count() as u64;
-                // Whatever the reference could not supply is a mismatch by definition.
-                nm += len - compared as u64;
+                // Whatever the REFERENCE could not supply is a mismatch by definition: the record
+                // claims bases the reference does not have. A short SEQ is charged nothing extra --
+                // that is a malformed record, already reported as such by `aln_malformed`, and
+                // inflating its edit distance here would double-count one defect as two.
+                nm += len - (refr.len() as u64).min(len);
                 qi += len_usize;
                 ri += len_usize;
             }
@@ -308,6 +310,15 @@ mod tests {
         // 2S: skipped in the query. 2I: two inserted bases. 3D: three deleted reference bases.
         assert_eq!(replay(b"2S4M2I4M", b"XXACGTTTACGT", b"ACGTACGT"), 2);
         assert_eq!(replay(b"4M3D4M", b"ACGTACGT", b"ACGTNNNACGT"), 3);
+    }
+
+    #[test]
+    fn a_short_seq_is_not_charged_for_its_missing_bases() {
+        // A malformed record (SEQ shorter than the CIGAR claims) is kept and replayed, but its
+        // defect is reported by `aln_malformed`. Charging the missing query bases as mismatches
+        // too would report the same problem twice, and diverge from the Python.
+        assert_eq!(replay(b"8M", b"ACGT", b"ACGTACGT"), 0);
+        assert_eq!(replay(b"8M", b"ACGA", b"ACGTACGT"), 1);
     }
 
     #[test]

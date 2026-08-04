@@ -36,7 +36,7 @@ pub enum ClipKind {
 /// Distribution of clip explanations across a contender's alignments.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ClipGeometry {
-    /// Alignments whose geometry could be judged (clipped or not).
+    /// Alignments whose geometry could be judged: everything except [`ClipKind::Unknown`].
     pub judged: u64,
     /// Alignments with no clipping at all.
     pub unclipped: u64,
@@ -84,11 +84,11 @@ impl ClipGeometry {
         let contained_bases = total_bases(self.contained_mean_bases, self.contained)
             + total_bases(other.contained_mean_bases, other.contained);
 
-        self.judged += other.judged;
         self.unclipped += other.unclipped;
         self.dovetail += other.dovetail;
         self.contained += other.contained;
         self.unknown += other.unknown;
+        self.judged = self.unclipped + self.dovetail + self.contained;
 
         self.dovetail_mean_bases =
             (self.dovetail > 0).then(|| dovetail_bases / self.dovetail as f64);
@@ -151,10 +151,7 @@ pub fn summarize(
         return None;
     }
 
-    let mut geometry = ClipGeometry {
-        judged: records.len() as u64,
-        ..Default::default()
-    };
+    let mut geometry = ClipGeometry::default();
     let (mut dovetail_bases, mut contained_bases) = (0u64, 0u64);
 
     for record in records.values() {
@@ -172,6 +169,11 @@ pub fn summarize(
             ClipKind::Unknown => geometry.unknown += 1,
         }
     }
+
+    // Records whose contig length is unknown are excluded from the denominator, as the Python does:
+    // counting them would deflate both shares by however many contigs the reference did not name,
+    // which is exactly the case where the numbers most need to be trusted.
+    geometry.judged = geometry.unclipped + geometry.dovetail + geometry.contained;
 
     geometry.dovetail_mean_bases =
         (geometry.dovetail > 0).then(|| dovetail_bases as f64 / geometry.dovetail as f64);
@@ -318,6 +320,60 @@ mod tests {
         assert_eq!(geometry.contained_mean_bases, Some(30.0));
         assert_eq!(geometry.dovetail_pct(), 50.0);
         assert_eq!(geometry.contained_pct(), 25.0);
+    }
+
+    #[test]
+    fn records_on_unknown_contigs_leave_the_denominator() {
+        // Two of four alignments sit on a contig the reference never named. The Python drops those
+        // from the denominator; counting them would halve both reported shares.
+        let lengths: HashMap<Box<str>, u64> = [(Box::from("ctg1"), LENGTH)].into_iter().collect();
+        let mut off_contig = record(0, "20S80M");
+        off_contig.target = "unlisted".into();
+        let mut off_contig2 = record(500, "20S80M");
+        off_contig2.target = "unlisted".into();
+
+        let records: HashMap<ReadKey, AlnRecord> = [
+            (
+                ReadKey {
+                    id: "a".into(),
+                    mate: 1,
+                },
+                record(0, "20S80M"),
+            ),
+            (
+                ReadKey {
+                    id: "b".into(),
+                    mate: 1,
+                },
+                record(500, "20S80M"),
+            ),
+            (
+                ReadKey {
+                    id: "c".into(),
+                    mate: 1,
+                },
+                off_contig,
+            ),
+            (
+                ReadKey {
+                    id: "d".into(),
+                    mate: 1,
+                },
+                off_contig2,
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let geometry = summarize(&records, &lengths).unwrap();
+
+        assert_eq!(geometry.unknown, 2);
+        assert_eq!(
+            geometry.judged, 2,
+            "the unjudgeable pair is not a denominator"
+        );
+        assert_eq!(geometry.dovetail_pct(), 50.0);
+        assert_eq!(geometry.contained_pct(), 50.0);
     }
 
     #[test]

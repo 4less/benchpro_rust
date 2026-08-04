@@ -88,6 +88,16 @@ pub fn run_align(args: &AlignArgs) -> AlignResult<()> {
     }
 
     let (results, notes) = report::restrict_to_common_samples(results);
+    // The per-read table exists to explain the aggregates, so it has to describe the same runs:
+    // rows for a sample that was dropped from the summary cannot reconstruct anything in it.
+    let retained: std::collections::HashSet<(&str, &str)> = results
+        .iter()
+        .map(|r| (r.dataset.as_str(), r.sample.as_str()))
+        .collect();
+    per_read.retain(|(dataset, sample, _, _, _)| {
+        retained.contains(&(dataset.as_str(), sample.as_str()))
+    });
+
     let summaries = report::summarize(&results, &notes);
     log_summary(&summaries);
 
@@ -161,12 +171,8 @@ fn score_group(
 
     replay_against_references(rows, &mut parsed, args)?;
 
-    // Contig lengths for the clip geometry, from the reference's .fai where there is one and the
-    // SAM's own @SQ header otherwise -- so the geometry is available without a reference too.
-    let contig_lengths: Vec<HashMap<Box<str>, u64>> = if args.clip_geometry {
-        rows.iter()
-            .map(|row| contig_lengths_for(row))
-            .collect::<AlignResult<Vec<_>>>()?
+    let contig_lengths = if args.clip_geometry {
+        contig_lengths_for(rows, &parsed)?
     } else {
         Vec::new()
     };
@@ -343,22 +349,59 @@ fn replay_against_references(
     Ok(())
 }
 
-/// Contig lengths for one contender, for the clip geometry.
+/// Contig lengths per contender, for the clip geometry.
 ///
 /// Prefers the reference's `.fai`, which is authoritative; falls back to the SAM's own `@SQ`
 /// header, which every well-formed SAM carries. A contig in neither is reported as unknown rather
 /// than guessed at.
-fn contig_lengths_for(row: &AlignRow) -> AlignResult<HashMap<Box<str>, u64>> {
-    if let Some(reference) = &row.reference {
-        let opened = reference::Reference::open(reference, None)?;
-        if !opened.is_empty() {
-            return Ok(opened.lengths());
+///
+/// Contenders sharing a reference resolve it once, against the union of the contigs they actually
+/// name — the marker reference has 14.5 M sequences, and loading all of them (once per contender)
+/// would cost gigabytes for a run that touches a small fraction.
+fn contig_lengths_for(
+    rows: &[&AlignRow],
+    parsed: &[ParsedAlignment],
+) -> AlignResult<Vec<HashMap<Box<str>, u64>>> {
+    let mut by_reference: HashMap<&Path, Vec<usize>> = HashMap::new();
+    for (index, row) in rows.iter().enumerate() {
+        if let Some(reference) = &row.reference {
+            by_reference
+                .entry(reference.as_path())
+                .or_default()
+                .push(index);
         }
     }
-    if row.format.has_alignments() {
-        return sam::header_lengths(&row.alignment);
+
+    let mut lengths: Vec<HashMap<Box<str>, u64>> = vec![HashMap::new(); rows.len()];
+
+    for (path, indices) in by_reference {
+        let wanted: HashSet<Box<str>> = indices
+            .iter()
+            .flat_map(|i| parsed[*i].records.values())
+            .map(|record| record.target.clone())
+            .collect();
+        if wanted.is_empty() {
+            continue;
+        }
+        let reference = reference::Reference::open(path, Some(&wanted))?;
+        if reference.is_empty() {
+            continue;
+        }
+        let shared = reference.lengths();
+        for index in indices {
+            lengths[index] = shared.clone();
+        }
     }
-    Ok(HashMap::new())
+
+    // Anything still empty had no reference, or one that named none of its contigs; the SAM's own
+    // header is the fallback.
+    for (index, row) in rows.iter().enumerate() {
+        if lengths[index].is_empty() && row.format.has_alignments() {
+            lengths[index] = sam::header_lengths(&row.alignment)?;
+        }
+    }
+
+    Ok(lengths)
 }
 
 /// Appends a suffix to the output prefix.
