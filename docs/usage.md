@@ -1,12 +1,26 @@
 # Usage
 
+Benchpro is a set of subcommands. Every invocation names one:
+
+| Subcommand | Purpose |
+|---|---|
+| `profile` | Benchmark taxonomic profiles against a gold standard |
+| `strain` | Benchmark at the strain level |
+| `merge` | Merge profiles into an abundance matrix |
+| `msa` | Compute MSA summary statistics |
+| `normalize` | Convert a profile to a canonical format |
+| `align` | Benchmark read aligners — see [Alignment Benchmark](align.md) |
+
 ## Build and run
 
 ```bash
-cargo run -- --meta path/to/meta.xlsx --outprefix output/path/prefix
+cargo run -- profile --meta path/to/meta.xlsx --outprefix output/path/prefix
 ```
 
 ## Flags
+
+These are the `profile` subcommand's flags; `--log-level` is global. Run
+`benchpro <subcommand> --help` for the others.
 
 - `--meta <PATH>`: Meta file (`.xlsx`, `.csv`, `.tsv`).
 - `--outprefix <PREFIX>`: Output prefix for TSV outputs.
