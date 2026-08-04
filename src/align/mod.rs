@@ -234,6 +234,12 @@ fn score_group(
             });
         }
 
+        // A truth written for one scoring mode and read under another lines up perfectly on read
+        // ids and then scores every read wrong -- a plausible zero rather than an error.
+        if let Some(problem) = metrics::vocabulary_mismatch(&alignment.records, truth, &context) {
+            warn!("{}/{} {}: {}", dataset, sample, row.tool, problem);
+        }
+
         let score = metrics::score(&alignment.records, truth, &context);
         let mapq_counts = mapq::counts(&alignment.records, truth, &context);
 

@@ -9,7 +9,7 @@
 //!   of its species' markers, so the only meaningful question is whether the marker belongs to the
 //!   right species. Reference and position strata are not defined and are left out.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::options::ScoringMode;
 
@@ -239,6 +239,29 @@ pub struct ScoringContext<'a> {
 }
 
 impl ScoringContext<'_> {
+    /// The genome label this mode derives from an alignment's target.
+    ///
+    /// # Arguments
+    ///
+    /// * `target` - The reference sequence an alignment names
+    ///
+    /// # Returns
+    ///
+    /// The label that will be compared against the truth's genome.
+    pub fn label_of<'a>(&self, target: &'a str) -> &'a str
+    where
+        Self: 'a,
+    {
+        match self.scoring {
+            ScoringMode::Species => target.split(self.sep).next().unwrap_or(target),
+            ScoringMode::Full => self
+                .contig2genome
+                .and_then(|map| map.get(target))
+                .map(|g| &**g)
+                .unwrap_or("NA"),
+        }
+    }
+
     /// Judges one alignment against one read's truth.
     ///
     /// # Arguments
@@ -250,30 +273,17 @@ impl ScoringContext<'_> {
     ///
     /// The strongest verdict the alignment earns.
     pub fn verdict(&self, record: &AlnRecord, truth: &TruthEntry) -> Verdict {
+        // Both modes ask the same question of a different label; `label_of` is the single place
+        // that derives it, so the vocabulary check cannot disagree with the scorer.
+        if self.label_of(&record.target) != &*truth.genome {
+            return Verdict::Wrong;
+        }
+
         match self.scoring {
-            ScoringMode::Species => {
-                // The marker's species is encoded in the contig-name prefix, so no per-contig map
-                // is needed: split the mapped contig on `sep`.
-                let prefix = record
-                    .target
-                    .split(self.sep)
-                    .next()
-                    .unwrap_or(&record.target);
-                if prefix == &*truth.genome {
-                    Verdict::Genome
-                } else {
-                    Verdict::Wrong
-                }
-            }
+            // A marker read may legitimately land on any of its species' markers, so the finer
+            // strata are not defined.
+            ScoringMode::Species => Verdict::Genome,
             ScoringMode::Full => {
-                let genome = self
-                    .contig2genome
-                    .and_then(|map| map.get(&record.target))
-                    .map(|g| &**g)
-                    .unwrap_or("NA");
-                if genome != &*truth.genome {
-                    return Verdict::Wrong;
-                }
                 if *record.target != *truth.contig {
                     return Verdict::Genome;
                 }
@@ -391,6 +401,67 @@ pub fn score(
     }
 
     score
+}
+
+/// How many records and truth entries to sample when checking label vocabularies.
+const VOCABULARY_SAMPLE: usize = 2000;
+
+/// Checks that the truth's genome labels and the labels the scorer derives from predictions are
+/// drawn from the same vocabulary.
+///
+/// A truth written for one scoring mode and scored under another produces a plausible-looking zero
+/// rather than an error: `species` compares the contig's prefix (`1001`) while a `full`-style truth
+/// names a genome (`genomeA`), and the two never match. The read ids line up, every read is placed,
+/// and every read is wrong. That is the failure this catches.
+///
+/// Only a warning, and only when the two sets are *entirely* disjoint: a tool that places every
+/// read on the wrong genome would also produce disjoint sets, and it is not this function's job to
+/// call that a misconfiguration.
+///
+/// # Arguments
+///
+/// * `records` - Primary alignments
+/// * `truth` - The sample's truth
+/// * `context` - The correctness definition whose vocabulary is in question
+///
+/// # Returns
+///
+/// A message naming an example from each side, or `None` when the vocabularies overlap or either
+/// side is empty.
+pub fn vocabulary_mismatch(
+    records: &HashMap<ReadKey, AlnRecord>,
+    truth: &Truth,
+    context: &ScoringContext,
+) -> Option<String> {
+    let predicted: HashSet<&str> = records
+        .values()
+        .take(VOCABULARY_SAMPLE)
+        .map(|record| context.label_of(&record.target))
+        .collect();
+    let expected: HashSet<&str> = truth
+        .values()
+        .take(VOCABULARY_SAMPLE)
+        .map(|entry| &*entry.genome)
+        .collect();
+
+    if predicted.is_empty() || expected.is_empty() || !predicted.is_disjoint(&expected) {
+        return None;
+    }
+
+    let example = |set: &HashSet<&str>| {
+        let mut names: Vec<&str> = set.iter().copied().collect();
+        names.sort_unstable();
+        names.truncate(3);
+        names.join(", ")
+    };
+    Some(format!(
+        "no genome label the alignments imply appears in the truth at all (alignments give {}; \
+         truth has {}). Every read will be scored wrong. Check that Scoring matches how the truth \
+         was written: 'species' compares the target's prefix before --sep, 'full' maps it through \
+         Contig2Genome",
+        example(&predicted),
+        example(&expected)
+    ))
 }
 
 /// One row of the per-read verdict table.
@@ -717,6 +788,75 @@ mod tests {
         assert_eq!(a.reference, Some(90));
         // Pooled, not the mean of 50% and 75%.
         assert!((a.correct_pct() - 100.0 * 100.0 / 150.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_truth_written_for_the_other_mode_is_reported_not_scored_as_zero() {
+        // The trap: read ids line up, every read is placed, and every read is wrong -- because the
+        // truth names genomes while species scoring compares contig prefixes.
+        let truth: Truth = [(key("r1"), truth_entry("src", 0, "genomeA"))]
+            .into_iter()
+            .collect();
+        let records = [(key("r1"), record("1001_geneA", 0))].into_iter().collect();
+        let context = ScoringContext {
+            scoring: ScoringMode::Species,
+            sep: "_",
+            contig2genome: None,
+            tolerance: 100,
+        };
+
+        let problem = vocabulary_mismatch(&records, &truth, &context).expect("mismatch missed");
+        assert!(problem.contains("1001"), "{problem}");
+        assert!(problem.contains("genomeA"), "{problem}");
+        // ...and the score really is the zero the warning is about.
+        assert_eq!(score(&records, &truth, &context).correct, 0);
+    }
+
+    #[test]
+    fn matching_vocabularies_are_not_reported() {
+        let truth: Truth = [(key("r1"), truth_entry("src", 0, "1001"))]
+            .into_iter()
+            .collect();
+        let context = ScoringContext {
+            scoring: ScoringMode::Species,
+            sep: "_",
+            contig2genome: None,
+            tolerance: 100,
+        };
+        // Right species, and also a tool that placed this read on the WRONG species: neither is a
+        // vocabulary problem, because both labels are drawn from the same namespace.
+        for target in ["1001_geneA", "9999_geneA"] {
+            let records: HashMap<ReadKey, AlnRecord> = [
+                (key("r1"), record(target, 0)),
+                (key("r2"), record("1001_geneB", 0)),
+            ]
+            .into_iter()
+            .collect();
+            assert!(
+                vocabulary_mismatch(&records, &truth, &context).is_none(),
+                "false alarm on target {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_side_is_not_a_mismatch() {
+        let context = ScoringContext {
+            scoring: ScoringMode::Species,
+            sep: "_",
+            contig2genome: None,
+            tolerance: 100,
+        };
+        let truth: Truth = [(key("r1"), truth_entry("src", 0, "1001"))]
+            .into_iter()
+            .collect();
+        assert!(vocabulary_mismatch(&HashMap::new(), &truth, &context).is_none());
+        assert!(vocabulary_mismatch(
+            &[(key("r1"), record("1001_g", 0))].into_iter().collect(),
+            &Truth::default(),
+            &context
+        )
+        .is_none());
     }
 
     #[test]

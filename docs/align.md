@@ -70,6 +70,17 @@ Headerless, five tab-separated columns — the format written by the flexalign b
 read_id	mate(1|2)	true_contig	true_pos(1-based)	true_genome
 ```
 
+!!! warning "The truth's genome column must match the scoring mode"
+    `species` scoring compares the target's **prefix** before `--sep` (`1001`); `full` scoring maps
+    the target through `Contig2Genome` (`genomeA`). A truth written for one mode and scored under
+    the other lines up perfectly on read ids and then scores **every read wrong** — a plausible 0%,
+    not an error. Benchpro warns when no label the alignments imply appears in the truth at all:
+
+    ```
+    gut/s1 flexalign: no genome label the alignments imply appears in the truth at all
+    (alignments give 1001; truth has genomeA). Every read will be scored wrong.
+    ```
+
 Reads join on `(read_id, mate)`. The FASTQ convention is `<id>/<mate>`; some aligners keep that
 suffix and some strip it, so the suffix is removed from QNAME and the mate is taken from the FLAG.
 If an alignment and its truth share **no** read at all, `align` fails loudly rather than reporting a
