@@ -140,15 +140,21 @@ fn score_group(
     let mut parsed: Vec<ParsedAlignment> = Vec::with_capacity(rows.len());
 
     for row in rows {
-        if !truths.contains_key(&row.truth) {
-            let truth = truth::load_truth(&row.truth)?;
-            debug!("{}: {} truth reads", row.truth.display(), truth.len());
-            truths.insert(row.truth.clone(), truth);
-        }
+        // The contig map is loaded first: a gold-standard SAM truth needs it to label each read's
+        // genome, exactly as build_truth.py does when it turns one into a truth TSV.
         if let Some(path) = &row.contig2genome {
             if !maps.contains_key(path) {
                 maps.insert(path.clone(), truth::load_contig2genome(path)?);
             }
+        }
+        if !truths.contains_key(&row.truth) {
+            let truth = truth::load_truth_any(
+                &row.truth,
+                row.contig2genome.as_ref().and_then(|p| maps.get(p)),
+                args.threads,
+            )?;
+            debug!("{}: {} truth reads", row.truth.display(), truth.len());
+            truths.insert(row.truth.clone(), truth);
         }
 
         let keep_seq = !args.no_replay && row.reference.is_some() && row.format.has_alignments();

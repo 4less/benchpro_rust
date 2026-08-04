@@ -18,6 +18,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::error::{AlignError, AlignResult};
+use super::meta::AlignmentFormat;
+use super::sam::parse_alignment;
 
 /// A read mate: the join key between an alignment record and its truth.
 ///
@@ -96,6 +98,9 @@ pub struct TruthEntry {
     pub pos0: u64,
     /// Source genome label — a genome accession, or a protal `TIID` on a marker DB.
     pub genome: Arc<str>,
+    /// Fingerprint of the gold-standard CIGAR, when the truth came from a SAM. `None` for a truth
+    /// TSV, which records where a read came from but not how it should align.
+    pub cigar_fingerprint: Option<u64>,
 }
 
 /// The per-read truth of one sample.
@@ -189,6 +194,7 @@ pub fn load_truth(path: &Path) -> AlignResult<Truth> {
                 mate,
             },
             TruthEntry {
+                cigar_fingerprint: None,
                 contig: intern(&mut pool, contig),
                 // The file is 1-based; everything downstream is 0-based. A 0 means "no position",
                 // so it stays 0 rather than wrapping to u64::MAX.
@@ -227,6 +233,103 @@ fn parse_u64(bytes: &[u8]) -> Option<u64> {
         value = value.checked_mul(10)?.checked_add((byte - b'0') as u64)?;
     }
     Some(value)
+}
+
+/// Loads truth from a gold-standard SAM.
+///
+/// Read simulators emit one — `art_illumina -sam` is the usual source — recording where every read
+/// really came from *and* how it really aligns. That last part is what a truth TSV cannot express,
+/// and it is what makes the third benchmark possible: not just "did the read land in the right
+/// place" but "is the reported alignment the one the simulator produced".
+///
+/// The genome label comes from `contig2genome` when one is given, exactly as `build_truth.py`
+/// assigns it; without one, each contig stands for its own genome, so the genome and reference
+/// strata coincide.
+///
+/// # Arguments
+///
+/// * `path` - Gold-standard `.sam` or `.sam.gz`
+/// * `format` - Which parser to use
+/// * `contig2genome` - Optional contig-to-genome map
+/// * `threads` - Worker threads for parsing
+///
+/// # Returns
+///
+/// A map from read mate to its true origin, carrying the gold CIGAR's fingerprint.
+///
+/// # Errors
+///
+/// Returns [`AlignError::Io`] when the file cannot be read.
+pub fn load_truth_sam(
+    path: &Path,
+    format: AlignmentFormat,
+    contig2genome: Option<&HashMap<Box<str>, Box<str>>>,
+    threads: usize,
+) -> AlignResult<Truth> {
+    let parsed = parse_alignment(path, format, false, 0, threads, 0)?;
+    let mut truth = Truth::default();
+    let mut pool: HashMap<Box<str>, Arc<str>> = HashMap::new();
+
+    for (key, record) in parsed.records {
+        let genome = contig2genome
+            .and_then(|map| map.get(&record.target))
+            .map(|g| &**g)
+            .unwrap_or(&record.target);
+        let genome = match pool.get(genome) {
+            Some(shared) => shared.clone(),
+            None => {
+                let shared: Arc<str> = genome.into();
+                pool.insert(genome.into(), shared.clone());
+                shared
+            }
+        };
+        let contig = match pool.get(&*record.target) {
+            Some(shared) => shared.clone(),
+            None => {
+                let shared: Arc<str> = (*record.target).into();
+                pool.insert(record.target.clone(), shared.clone());
+                shared
+            }
+        };
+
+        truth.insert(
+            key,
+            TruthEntry {
+                contig,
+                pos0: record.pos0,
+                genome,
+                cigar_fingerprint: Some(record.cigar_fingerprint),
+            },
+        );
+    }
+
+    Ok(truth)
+}
+
+/// Loads truth from whichever format the path names.
+///
+/// # Arguments
+///
+/// * `path` - Truth TSV, or a gold-standard `.sam`/`.paf`
+/// * `contig2genome` - Optional contig-to-genome map, used only for a gold-standard SAM
+/// * `threads` - Worker threads, used only for a gold-standard SAM
+///
+/// # Returns
+///
+/// The sample's per-read truth.
+///
+/// # Errors
+///
+/// Returns [`AlignError::Io`] or [`AlignError::Parse`] as the underlying loader does.
+pub fn load_truth_any(
+    path: &Path,
+    contig2genome: Option<&HashMap<Box<str>, Box<str>>>,
+    threads: usize,
+) -> AlignResult<Truth> {
+    match AlignmentFormat::from_path(path) {
+        Some(format) => load_truth_sam(path, format, contig2genome, threads),
+        None => load_truth(path),
+    }
 }
 
 /// Loads a `contig<TAB>genome` map.

@@ -179,6 +179,29 @@ pub fn clip_ends(cigar: &[u8]) -> (u64, u64) {
     (leading, trailing)
 }
 
+/// A 64-bit fingerprint of a CIGAR, for comparing an alignment against a gold standard.
+///
+/// A fingerprint rather than the string itself: keeping every record's CIGAR would cost an
+/// allocation and ~40 bytes per record, which on a ten-million-read run is the same allocation
+/// volume the truth loader was rewritten to avoid. Two different CIGARs collide with probability
+/// ~2^-64 per comparison, which over a ten-million-read run is ~5e-13 — far below the rate at which
+/// the alignments themselves are ambiguous.
+///
+/// # Arguments
+///
+/// * `cigar` - The CIGAR field
+///
+/// # Returns
+///
+/// A fingerprint equal for equal CIGAR strings.
+pub fn fingerprint(cigar: &[u8]) -> u64 {
+    let mut state: u64 = 0xcbf2_9ce4_8422_2325;
+    for &byte in cigar {
+        state = (state ^ byte as u64).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    state
+}
+
 /// Recomputes an alignment's edit distance against the reference bases it claims.
 ///
 /// This is what makes the identity numbers tool independent. protal emits no `NM` tag at all, and a
@@ -267,6 +290,14 @@ mod tests {
         let c = count(b"10H90M");
         assert_eq!(c.read_len(), 100);
         assert_eq!(c.query_consumed(), 90);
+    }
+
+    #[test]
+    fn fingerprints_distinguish_cigars() {
+        assert_eq!(fingerprint(b"150M"), fingerprint(b"150M"));
+        assert_ne!(fingerprint(b"150M"), fingerprint(b"149M"));
+        assert_ne!(fingerprint(b"10S140M"), fingerprint(b"140M10S"));
+        assert_ne!(fingerprint(b"150M"), fingerprint(b"*"));
     }
 
     #[test]

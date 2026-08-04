@@ -276,6 +276,7 @@ mod tests {
                 ..Default::default()
             },
             clip_ends: (0, 0),
+            cigar_fingerprint: 0,
             malformed: false,
             proper_pair: false,
             cigar: None,
@@ -324,6 +325,7 @@ mod tests {
                         contig: "src".into(),
                         pos0: 0,
                         genome: "1234".into(),
+                        cigar_fingerprint: None,
                     },
                 )
             })
@@ -464,6 +466,7 @@ mod tests {
                 contig: "ctg1".into(),
                 pos0: 10_000,
                 genome: "genomeA".into(),
+                cigar_fingerprint: None,
             },
         )]
         .into_iter()

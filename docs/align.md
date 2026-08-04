@@ -42,7 +42,21 @@ gut	s1	flexalign	s1/flexalign.sam	s1/reads.truth.tsv	ref.fna	minibwa
 gut	s1	minibwa	s1/minibwa.sam	s1/reads.truth.tsv	ref.fna	
 ```
 
-## Truth file
+## Truth: a TSV, or a gold-standard SAM
+
+The `Truth` column accepts either.
+
+### Gold-standard SAM
+
+Read simulators can emit the true alignment of every read — `art_illumina -sam` is the usual
+source. Point `Truth` at that `.sam`/`.sam.gz` and Benchpro reads it directly; no `build_truth.py`
+step is needed.
+
+A gold SAM says not only *where* each read came from but *how it truly aligns*, which is what makes
+the third benchmark below possible. The genome label comes from `Contig2Genome` when one is given
+(exactly as `build_truth.py` assigns it); without one, each contig stands for its own genome.
+
+### Truth TSV
 
 Headerless, five tab-separated columns — the format written by the flexalign benchmark's
 `build_truth.py`:
@@ -68,9 +82,25 @@ stratified, each level implying the one before:
 ```
 aligned    placed anywhere
 genome     contig2genome[target] == truth genome
-reference  genome  AND target == truth contig
+reference  genome    AND target == truth contig
 position   reference AND |pos - truth pos| <= --tolerance
+exact      position  AND pos == truth pos AND the CIGAR matches   (gold-standard SAM only)
 ```
+
+The last three are the three questions worth asking separately:
+
+| | Question | Column | Needs |
+|---|---|---|---|
+| a | Did the read go to the right reference? | `reference_pct` | truth TSV or gold SAM |
+| b | Is the position right, within a window? | `position_pct` | truth TSV or gold SAM |
+| c | Is the alignment *identical* to the gold standard? | `exact_pct` | **gold-standard SAM** |
+
+(c) is strictly harder than (b) and catches what (b) cannot. On a real ART SAM with a third of the
+alignments perturbed — some reshaped (same start, different CIGAR), some shifted 40 bp inside the
+100 bp window — `reference_pct` and `position_pct` both read 100% while `exact_pct` reads 66%.
+
+`exact_pct` is empty when the truth is a TSV: a TSV records where a read came from, not how it
+should align, so the question is undefined rather than failed.
 
 **`--scoring species`** — a marker-gene reference, where a read may legitimately land on any of its
 species' markers. Correct iff the target's prefix before `--sep` is the truth genome. The reference
@@ -114,6 +144,7 @@ contenders therefore have every `aln_*` column empty: PAF carries no CIGAR, SEQ 
 | `correct_pct` | correct / **placed** — precision. Rewards a tool for placing less |
 | `recall_pct` | correct / **all truth reads** — comparable however permissive the tool is |
 | `reference_pct`, `position_pct` | strata, as shares of all truth reads (`full` only) |
+| `exact_pct` | alignments identical to the gold standard, of all truth reads (gold SAM only) |
 | `position_precision_pct` | position / placed (`full` only) |
 
 Both `correct_pct` and `recall_pct` are reported because neither alone is honest: a tool that places

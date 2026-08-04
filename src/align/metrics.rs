@@ -29,6 +29,9 @@ pub enum Verdict {
     Reference = 3,
     /// Placed within `tolerance` bp of the true locus.
     Position = 4,
+    /// The reported alignment is identical to the gold standard's: same contig, same start, same
+    /// CIGAR. Only reachable when the truth came from a gold-standard SAM.
+    Exact = 5,
 }
 
 impl Verdict {
@@ -50,6 +53,7 @@ impl Verdict {
             (ScoringMode::Full, Verdict::Genome) => "genome",
             (ScoringMode::Full, Verdict::Reference) => "reference",
             (ScoringMode::Full, Verdict::Position) => "position",
+            (ScoringMode::Full, Verdict::Exact) => "exact",
         }
     }
 
@@ -77,6 +81,9 @@ pub struct MappingScore {
     pub reference: Option<u64>,
     /// Reads placed within tolerance of the true locus; `full` scoring only.
     pub position: Option<u64>,
+    /// Reads whose alignment is identical to the gold standard's; only when the truth is a
+    /// gold-standard SAM.
+    pub exact: Option<u64>,
 }
 
 impl MappingScore {
@@ -112,6 +119,7 @@ impl MappingScore {
         self.correct += other.correct;
         self.reference = add_option(self.reference, other.reference);
         self.position = add_option(self.position, other.position);
+        self.exact = add_option(self.exact, other.exact);
     }
 }
 
@@ -193,10 +201,18 @@ impl ScoringContext<'_> {
                 if *record.target != *truth.contig {
                     return Verdict::Genome;
                 }
-                if record.pos0.abs_diff(truth.pos0) <= self.tolerance {
-                    Verdict::Position
-                } else {
-                    Verdict::Reference
+                if record.pos0.abs_diff(truth.pos0) > self.tolerance {
+                    return Verdict::Reference;
+                }
+                // The third benchmark, and the only one a truth TSV cannot answer: is this the
+                // alignment the simulator produced, base for base? Same start and same CIGAR is
+                // exactly that -- a shifted start or a different gap placement is a different
+                // alignment of the same read to the same locus.
+                match truth.cigar_fingerprint {
+                    Some(gold) if record.pos0 == truth.pos0 && record.cigar_fingerprint == gold => {
+                        Verdict::Exact
+                    }
+                    _ => Verdict::Position,
                 }
             }
         }
@@ -233,6 +249,11 @@ pub fn score(
         score.reference = Some(0);
         score.position = Some(0);
     }
+    // The exact stratum exists only when the truth can express it.
+    let gold_alignments = truth.values().any(|t| t.cigar_fingerprint.is_some());
+    if stratified && gold_alignments {
+        score.exact = Some(0);
+    }
 
     for (key, entry) in truth {
         let Some(record) = records.get(key) else {
@@ -249,6 +270,9 @@ pub fn score(
             }
             if verdict >= Verdict::Position {
                 score.position = score.position.map(|v| v + 1);
+            }
+            if verdict >= Verdict::Exact {
+                score.exact = score.exact.map(|v| v + 1);
             }
         }
     }
@@ -341,6 +365,7 @@ mod tests {
                 ..Default::default()
             },
             clip_ends: (0, 0),
+            cigar_fingerprint: 0,
             malformed: false,
             proper_pair: false,
             cigar: None,
@@ -362,6 +387,7 @@ mod tests {
             contig: contig.into(),
             pos0,
             genome: genome.into(),
+            cigar_fingerprint: None,
         }
     }
 
@@ -556,6 +582,7 @@ mod tests {
             correct: 25,
             reference: Some(20),
             position: Some(10),
+            exact: None,
         };
         a.add(&MappingScore {
             total: 100,
@@ -563,6 +590,7 @@ mod tests {
             correct: 75,
             reference: Some(70),
             position: Some(60),
+            exact: None,
         });
 
         assert_eq!(a.total, 200);

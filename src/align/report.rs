@@ -458,6 +458,16 @@ pub fn summary_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
                 .map(|s| s.score.position.map(|v| pct(v, s.score.total)))
                 .collect::<Vec<_>>(),
         ));
+        // The third benchmark: identical to the gold standard's alignment, not merely near it.
+        // Null unless the truth was a gold-standard SAM, which is the only source that says how a
+        // read should align rather than only where it came from.
+        columns.push(Series::new(
+            "exact_pct".into(),
+            summaries
+                .iter()
+                .map(|s| s.score.exact.map(|v| pct(v, s.score.total)))
+                .collect::<Vec<_>>(),
+        ));
         // ...and the precision counterpart the Python reports alongside them.
         columns.push(Series::new(
             "position_precision_pct".into(),
@@ -669,6 +679,10 @@ pub fn samples_frame(results: &[SampleResult]) -> AlignResult<DataFrame> {
         columns.push(Series::new(
             "position".into(),
             results.iter().map(|r| r.score.position).collect::<Vec<_>>(),
+        ));
+        columns.push(Series::new(
+            "exact".into(),
+            results.iter().map(|r| r.score.exact).collect::<Vec<_>>(),
         ));
     }
 
@@ -989,6 +1003,7 @@ mod tests {
                 correct,
                 reference: None,
                 position: None,
+                exact: None,
             },
             counters: ParseCounters::default(),
             mapq_counts: vec![MapqCount {

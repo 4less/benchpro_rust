@@ -196,6 +196,7 @@ mod tests {
             nm: Some(0),
             counts: cigar::count(cigar_str.as_bytes()),
             clip_ends: cigar::clip_ends(cigar_str.as_bytes()),
+            cigar_fingerprint: cigar::fingerprint(cigar_str.as_bytes()),
             malformed: false,
             proper_pair: false,
             cigar: None,

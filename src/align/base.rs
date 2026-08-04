@@ -311,6 +311,7 @@ mod tests {
             nm,
             counts: cigar::count(cigar_str.as_bytes()),
             clip_ends: cigar::clip_ends(cigar_str.as_bytes()),
+            cigar_fingerprint: cigar::fingerprint(cigar_str.as_bytes()),
             malformed: false,
             proper_pair: false,
             cigar: None,
@@ -430,6 +431,7 @@ mod tests {
                         contig: "src".into(),
                         pos0: 0,
                         genome: "1234".into(),
+                        cigar_fingerprint: None,
                     },
                 )
             })

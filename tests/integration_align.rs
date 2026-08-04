@@ -384,6 +384,90 @@ fn the_per_read_table_covers_exactly_the_samples_the_summary_kept() {
 }
 
 #[test]
+fn a_gold_standard_sam_answers_all_three_benchmarks() {
+    // Read simulators (art_illumina -sam) emit a SAM recording not just where each read came from
+    // but how it truly aligns. That third fact is what a truth TSV cannot express, so it unlocks
+    // the third question: not "near the right place" but "the alignment the simulator produced".
+    //
+    // approx.sam, against gold.sam, is built so the three answers differ:
+    //   pairs 1-6  identical to gold                    -> exact       (12 mates)
+    //   pairs 7-8  right locus, different CIGAR         -> position    (4 mates)
+    //   pair  9    right contig, 30 bp away             -> reference   (2 mates)
+    //   pair  10   wrong genome                         -> wrong       (2 mates)
+    let meta = format!(
+        "ID\tSample\tTool\tAlignment\tTruth\tContig2Genome\tScoring\n\
+         ds\ts1\tapprox\t{approx}\t{gold}\t{c2g}\tfull\n",
+        approx = fixture("approx.sam"),
+        gold = fixture("gold.sam"),
+        c2g = fixture("reference.contig2genome.tsv"),
+    );
+    let prefix = run_align("gold_sam", &meta, &[]);
+    let summary = read_tsv(&prefix.with_extension("align_summary.tsv"));
+    let row = row_for(&summary, "approx");
+
+    assert_eq!(number(row, "total"), 20.0);
+    assert_eq!(number(row, "aligned"), 20.0);
+
+    // (a) the right reference: everything except pair 10, which went to the other genome.
+    assert_eq!(number(row, "reference_pct"), 100.0 * 18.0 / 20.0);
+    // (b) the right position within the window: pair 9 is 30 bp out, beyond the default 100? no --
+    //     30 <= 100, so it counts. Pairs 1-8 and 9 = 18 mates.
+    assert_eq!(number(row, "position_pct"), 100.0 * 18.0 / 20.0);
+    // (c) the identical alignment: only the 12 mates of pairs 1-6.
+    assert_eq!(number(row, "exact_pct"), 100.0 * 12.0 / 20.0);
+}
+
+#[test]
+fn the_exact_benchmark_separates_a_shifted_alignment_from_a_reshaped_one() {
+    // Tightening the window to 0 makes (b) demand the exact start, which pair 9 (30 bp out) fails.
+    // (c) is still stricter: pairs 7-8 share gold's start but not its CIGAR.
+    let meta = format!(
+        "ID\tSample\tTool\tAlignment\tTruth\tContig2Genome\tScoring\n\
+         ds\ts1\tapprox\t{approx}\t{gold}\t{c2g}\tfull\n",
+        approx = fixture("approx.sam"),
+        gold = fixture("gold.sam"),
+        c2g = fixture("reference.contig2genome.tsv"),
+    );
+    let prefix = run_align("gold_sam_tight", &meta, &["--tolerance", "0"]);
+    let summary = read_tsv(&prefix.with_extension("align_summary.tsv"));
+    let row = row_for(&summary, "approx");
+
+    // pair 9 now fails the window, leaving pairs 1-8 = 16 mates.
+    assert_eq!(number(row, "position_pct"), 100.0 * 16.0 / 20.0);
+    // ...and of those, only pairs 1-6 reproduce gold's CIGAR.
+    assert_eq!(number(row, "exact_pct"), 100.0 * 12.0 / 20.0);
+    assert!(
+        number(row, "exact_pct") < number(row, "position_pct"),
+        "the exact benchmark must be strictly harder than the windowed one"
+    );
+}
+
+#[test]
+fn a_truth_tsv_leaves_the_exact_benchmark_undefined() {
+    // A TSV records where a read came from, not how it aligns, so the third column must stay empty
+    // rather than reporting 0% -- which would read as "never reproduces the gold alignment".
+    let meta = format!(
+        "ID\tSample\tTool\tAlignment\tTruth\tContig2Genome\tScoring\n\
+         ds\ts1\tgood\t{good}\t{truth}\t{c2g}\tfull\n",
+        good = fixture("good.sam"),
+        truth = fixture("reads.truth.tsv"),
+        c2g = fixture("reference.contig2genome.tsv"),
+    );
+    let prefix = run_align("tsv_no_exact", &meta, &[]);
+    let summary = read_tsv(&prefix.with_extension("align_summary.tsv"));
+    let row = row_for(&summary, "good");
+
+    assert_eq!(
+        row["exact_pct"], "",
+        "a TSV truth cannot answer benchmark (c)"
+    );
+    assert!(
+        number(row, "position_pct") > 0.0,
+        "but it still answers (a) and (b)"
+    );
+}
+
+#[test]
 fn a_truth_that_shares_no_read_is_an_error_not_a_zero_score() {
     let dir = unique_temp_dir("benchpro_align_mismatch");
     fs::create_dir_all(&dir).expect("create temp dir");
