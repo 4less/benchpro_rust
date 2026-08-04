@@ -31,17 +31,14 @@ use std::path::{Path, PathBuf};
 
 use log::{debug, info, warn};
 
-use crate::options::{AlignArgs, ScoringMode};
+use crate::options::AlignArgs;
 
 use error::{AlignError, AlignResult};
 use meta::{AlignMeta, AlignRow};
-use metrics::{ReadVerdict, ScoringContext};
-use report::SampleResult;
+use metrics::ScoringContext;
+use report::{SampleResult, TaggedVerdict};
 use sam::ParsedAlignment;
 use truth::Truth;
-
-/// A per-read verdict tagged with the run it came from.
-type TaggedVerdict = (String, String, String, ScoringMode, ReadVerdict);
 
 /// Runs the alignment benchmark described by `args.meta`.
 ///
@@ -72,10 +69,25 @@ pub fn run_align(args: &AlignArgs) -> AlignResult<()> {
         return Ok(());
     }
 
+    // Which samples survive is decided from the samplesheet, before any scoring: a sample that
+    // will be dropped from the aggregates is not worth scoring, and settling it up front lets the
+    // per-read table be written group by group instead of accumulated.
+    let (retained, notes) = report::common_samples(&meta.rows);
+
     let mut results: Vec<SampleResult> = Vec::new();
-    let mut per_read: Vec<TaggedVerdict> = Vec::new();
+    let mut reads_writer = args
+        .per_read
+        .then(|| report::ReadsWriter::create(&output_path(&args.outprefix, "align_reads.tsv")))
+        .transpose()?;
 
     for ((dataset, sample), rows) in meta.groups() {
+        if !retained.contains(&(dataset.to_string(), sample.to_string())) {
+            debug!(
+                "Skipping {}/{}: not every contender produced it",
+                dataset, sample
+            );
+            continue;
+        }
         info!(
             "Scoring {}/{}: {} contender(s)",
             dataset,
@@ -84,19 +96,10 @@ pub fn run_align(args: &AlignArgs) -> AlignResult<()> {
         );
         let (group_results, group_reads) = score_group(dataset, sample, &rows, args)?;
         results.extend(group_results);
-        per_read.extend(group_reads);
+        if let Some(writer) = &mut reads_writer {
+            writer.append(&group_reads)?;
+        }
     }
-
-    let (results, notes) = report::restrict_to_common_samples(results);
-    // The per-read table exists to explain the aggregates, so it has to describe the same runs:
-    // rows for a sample that was dropped from the summary cannot reconstruct anything in it.
-    let retained: std::collections::HashSet<(&str, &str)> = results
-        .iter()
-        .map(|r| (r.dataset.as_str(), r.sample.as_str()))
-        .collect();
-    per_read.retain(|(dataset, sample, _, _, _)| {
-        retained.contains(&(dataset.as_str(), sample.as_str()))
-    });
 
     let summaries = report::summarize(&results, &notes);
     log_summary(&summaries);
@@ -114,11 +117,8 @@ pub fn run_align(args: &AlignArgs) -> AlignResult<()> {
         &mut report::mapq_frame(&summaries)?,
         &output_path(prefix, "align_mapq.tsv"),
     )?;
-    if args.per_read {
-        report::write(
-            &mut report::reads_frame(&per_read)?,
-            &output_path(prefix, "align_reads.tsv"),
-        )?;
+    if let Some(writer) = reads_writer {
+        writer.finish();
     }
 
     Ok(())

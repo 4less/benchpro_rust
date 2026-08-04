@@ -10,12 +10,15 @@
 //!   sample set is intersected across contenders and the note goes into the output.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::fs::File;
+use std::path::{Path, PathBuf};
 
 use log::{info, warn};
-use polars::prelude::{DataFrame, NamedFrom, Series};
+use polars::prelude::{CsvWriter, DataFrame, NamedFrom, SerWriter, Series};
 
 use crate::options::ScoringMode;
+
+use super::meta::AlignRow;
 use crate::utils::write_df;
 
 use super::base::{BaseMetrics, HeadToHead};
@@ -24,6 +27,9 @@ use super::error::{AlignError, AlignResult};
 use super::mapq::{self, MapqCount};
 use super::metrics::{pct, MappingScore, ReadVerdict};
 use super::sam::ParseCounters;
+
+/// A per-read verdict tagged with the run it came from.
+pub type TaggedVerdict = (String, String, String, ScoringMode, ReadVerdict);
 
 /// Everything scored for one contender on one sample.
 #[derive(Debug, Clone)]
@@ -145,33 +151,36 @@ impl ToolSummary {
     }
 }
 
-/// Drops samples that not every contender produced, per dataset.
+/// The `(dataset, sample)` pairs every contender produced, and a note per dataset that lost any.
 ///
-/// Aggregates are sums, and a sum over ten samples is not comparable with a sum over five. This can
-/// only ever make a comparison narrower, never wrong.
+/// Aggregates are sums, and a sum over ten samples is not comparable with a sum over five. Left
+/// alone that publishes nonsense that looks fine, so the sample set is intersected across
+/// contenders. This can only ever make a comparison narrower, never wrong.
+///
+/// Decided from the samplesheet rather than from results, so a sample that will be discarded is
+/// never scored at all — and so the per-read table can be written as each group finishes instead of
+/// being held in memory until the end.
 ///
 /// # Arguments
 ///
-/// * `results` - Every scored `(dataset, sample, tool)` result
+/// * `rows` - Every samplesheet row, in file order
 ///
 /// # Returns
 ///
-/// The retained results, and one note per dataset that lost samples.
-pub fn restrict_to_common_samples(
-    results: Vec<SampleResult>,
-) -> (Vec<SampleResult>, HashMap<String, String>) {
+/// The retained `(dataset, sample)` pairs, and one note per dataset that lost samples.
+pub fn common_samples(rows: &[AlignRow]) -> (HashSet<(String, String)>, HashMap<String, String>) {
     let mut per_dataset: HashMap<&str, HashMap<&str, HashSet<&str>>> = HashMap::new();
-    for result in &results {
+    for row in rows {
         per_dataset
-            .entry(&result.dataset)
+            .entry(&row.id)
             .or_default()
-            .entry(&result.tool)
+            .entry(&row.tool)
             .or_default()
-            .insert(&result.sample);
+            .insert(&row.sample);
     }
 
-    let mut keep: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut notes: HashMap<String, String> = HashMap::new();
+    let mut keep = HashSet::new();
+    let mut notes = HashMap::new();
 
     for (dataset, per_tool) in &per_dataset {
         let mut sets = per_tool.values();
@@ -182,35 +191,28 @@ pub fn restrict_to_common_samples(
         if per_tool.len() > 1 && common.len() < union.len() {
             let mut dropped: Vec<&str> = union.difference(&common).copied().collect();
             dropped.sort_unstable();
-            let note = format!(
-                "restricted to the {} sample(s) every contender produced; dropped {}",
-                common.len(),
-                dropped.join(", ")
+            notes.insert(
+                (*dataset).to_string(),
+                format!(
+                    "restricted to the {} sample(s) every contender produced; dropped {}",
+                    common.len(),
+                    dropped.join(", ")
+                ),
             );
             warn!(
-                "{}: sample(s) {} are missing for at least one contender — aggregating over the {} \
+                "{}: sample(s) {} are missing for at least one contender — scoring only the {} \
                  sample(s) every contender ran, so the totals stay comparable",
                 dataset,
                 dropped.join(", "),
                 common.len()
             );
-            notes.insert((*dataset).to_string(), note);
         }
-        keep.insert(
-            (*dataset).to_string(),
-            common.into_iter().map(str::to_string).collect(),
-        );
+        for sample in common {
+            keep.insert(((*dataset).to_string(), sample.to_string()));
+        }
     }
 
-    let retained = results
-        .into_iter()
-        .filter(|r| {
-            keep.get(&r.dataset)
-                .is_none_or(|samples| samples.contains(&r.sample))
-        })
-        .collect();
-
-    (retained, notes)
+    (keep, notes)
 }
 
 /// Pools per-sample results into one row per `(dataset, tool)`.
@@ -837,6 +839,87 @@ pub fn reads_frame(
     })
 }
 
+/// Appends the per-read table one group at a time.
+///
+/// The whole table is one row per truth read per contender — tens of millions of rows on a real
+/// marker-DB run. Building it in memory and handing Polars one frame costs the rows twice over;
+/// writing each `(dataset, sample)` group as it is scored bounds the cost to the largest group.
+pub struct ReadsWriter {
+    path: PathBuf,
+    file: File,
+    header_written: bool,
+    rows: usize,
+}
+
+impl ReadsWriter {
+    /// Creates (or truncates) the per-read table.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Destination
+    ///
+    /// # Returns
+    ///
+    /// A writer positioned at the start of an empty file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AlignError::Output`] when the file cannot be created.
+    pub fn create(path: &Path) -> AlignResult<Self> {
+        let file = File::create(path).map_err(|e| AlignError::Output {
+            path: path.to_path_buf(),
+            message: e.to_string(),
+        })?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            file,
+            header_written: false,
+            rows: 0,
+        })
+    }
+
+    /// Appends one group's verdicts.
+    ///
+    /// # Arguments
+    ///
+    /// * `rows` - The group's per-read verdicts; an empty slice is a no-op
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` once the rows are on disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AlignError::Output`] when the frame cannot be assembled or written.
+    pub fn append(&mut self, rows: &[TaggedVerdict]) -> AlignResult<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let mut frame = reads_frame(rows)?;
+        CsvWriter::new(&mut self.file)
+            .include_header(!self.header_written)
+            .with_separator(b'\t')
+            .finish(&mut frame)
+            .map_err(|e| AlignError::Output {
+                path: self.path.clone(),
+                message: e.to_string(),
+            })?;
+        self.header_written = true;
+        self.rows += rows.len();
+        Ok(())
+    }
+
+    /// Reports what was written.
+    ///
+    /// # Returns
+    ///
+    /// The path and the row count.
+    pub fn finish(self) -> (PathBuf, usize) {
+        info!("Wrote {} ({} rows)", self.path.display(), self.rows);
+        (self.path, self.rows)
+    }
+}
+
 /// Writes a frame as a TSV.
 ///
 /// # Arguments
@@ -920,29 +1003,62 @@ mod tests {
         }
     }
 
+    /// A samplesheet row naming a `(dataset, sample, tool)`; paths are irrelevant to the
+    /// restriction, which is decided from the sheet's shape alone.
+    fn meta_row(dataset: &str, sample: &str, tool: &str) -> AlignRow {
+        AlignRow {
+            id: dataset.to_string(),
+            sample: sample.to_string(),
+            tool: tool.to_string(),
+            alignment: "a.sam".into(),
+            format: crate::align::meta::AlignmentFormat::Sam,
+            truth: "t.tsv".into(),
+            reference: None,
+            contig2genome: None,
+            peer: None,
+            scoring: ScoringMode::Species,
+            sep: "_".to_string(),
+        }
+    }
+
     #[test]
     fn common_sample_restriction_drops_the_odd_sample_out() {
-        let results = vec![
-            result("ds", "s1", "a", 10, 10, 10),
-            result("ds", "s2", "a", 10, 10, 10),
-            result("ds", "s1", "b", 10, 10, 5),
+        let rows = vec![
+            meta_row("ds", "s1", "a"),
+            meta_row("ds", "s2", "a"),
+            meta_row("ds", "s1", "b"),
         ];
-        let (kept, notes) = restrict_to_common_samples(results);
+        let (kept, notes) = common_samples(&rows);
 
-        assert_eq!(kept.len(), 2, "s2 has no 'b' result, so it is dropped");
-        assert!(kept.iter().all(|r| r.sample == "s1"));
+        assert_eq!(kept.len(), 1, "s2 has no 'b' row, so it is never scored");
+        assert!(kept.contains(&("ds".to_string(), "s1".to_string())));
         assert!(notes["ds"].contains("dropped s2"), "{:?}", notes);
     }
 
     #[test]
     fn a_single_contender_keeps_every_sample() {
-        let results = vec![
-            result("ds", "s1", "a", 10, 10, 10),
-            result("ds", "s2", "a", 10, 10, 10),
-        ];
-        let (kept, notes) = restrict_to_common_samples(results);
+        let rows = vec![meta_row("ds", "s1", "a"), meta_row("ds", "s2", "a")];
+        let (kept, notes) = common_samples(&rows);
         assert_eq!(kept.len(), 2);
         assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn datasets_are_restricted_independently() {
+        // One dataset losing a sample must not narrow another's.
+        let rows = vec![
+            meta_row("ds1", "s1", "a"),
+            meta_row("ds1", "s2", "a"),
+            meta_row("ds1", "s1", "b"),
+            meta_row("ds2", "s9", "a"),
+            meta_row("ds2", "s9", "b"),
+        ];
+        let (kept, notes) = common_samples(&rows);
+
+        assert!(kept.contains(&("ds1".to_string(), "s1".to_string())));
+        assert!(!kept.contains(&("ds1".to_string(), "s2".to_string())));
+        assert!(kept.contains(&("ds2".to_string(), "s9".to_string())));
+        assert!(notes.contains_key("ds1") && !notes.contains_key("ds2"));
     }
 
     #[test]
@@ -953,8 +1069,7 @@ mod tests {
             result("ds", "s1", "a", 10, 10, 10),      // 100% of 10
             result("ds", "s2", "a", 1000, 1000, 500), // 50% of 1000
         ];
-        let (kept, notes) = restrict_to_common_samples(results);
-        let summaries = summarize(&kept, &notes);
+        let summaries = summarize(&results, &HashMap::new());
 
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].samples, 2);
@@ -989,8 +1104,7 @@ mod tests {
             result("ds", "s1", "a", 10, 10, 10),
             result("ds", "s1", "b", 10, 8, 4),
         ];
-        let (kept, notes) = restrict_to_common_samples(results);
-        let summaries = summarize(&kept, &notes);
+        let summaries = summarize(&results, &HashMap::new());
 
         let summary = summary_frame(&summaries).unwrap();
         assert_eq!(summary.height(), 2);
@@ -1004,7 +1118,7 @@ mod tests {
             .iter()
             .any(|n| n.as_str() == "position_pct"));
 
-        assert_eq!(samples_frame(&kept).unwrap().height(), 2);
+        assert_eq!(samples_frame(&results).unwrap().height(), 2);
         assert_eq!(mapq_frame(&summaries).unwrap().height(), 2);
     }
 
