@@ -568,21 +568,19 @@ The lesson for any future parity work: **`aligned == records` on every test inpu
 denominators.** Inputs where a tool places reads the truth does not cover are now part of the
 fixture set.
 
-### Open question — `mappable_base` is spec-vs-source conflicted
+### Resolved — `mappable_base`: both denominators are reported
 
-§8.5 of this document specifies `mappable_base` (the most any one contender got right at MAPQ 0) as
-the MAPQ curve's recall denominator, quoting `report.py::mappable_base`. The implementation follows
-it. But `bench.py:1697-1701` has since **reversed that decision** and uses the truth size, with the
-comment that `mappable_base` is
+§8.5 specifies `mappable_base` (the most any one contender got right at MAPQ 0) as the MAPQ curve's
+recall denominator, quoting `report.py`. `bench.py` has since reversed that, using the truth size,
+because a field-relative denominator "silently rescales everyone's recall" when a contender is added
+or removed.
 
-> a tool-dependent, moving denominator: the field's own best result decides the scale every member
-> of the field is then measured on. Adding or removing a contender silently rescales everyone's
-> recall.
-
-That is a real defect in the current behaviour: adding a contender to a samplesheet moves every
-other contender's `mapq_best_cutoff` and `mapq_best_f1`. The code was left spec-conformant rather
-than silently switched. **Decide which rule wins**; if the Python's current one does, the change is
-`mapq::curve`'s denominator and the stale rationale at `mapq.rs:131-139`.
+Both objections are real — an absolute denominator caps recall near 5% on a marker reference,
+dominates F1 and pins every tool's optimal cutoff at 0; a field-relative one moves when the field
+does. Rather than pick, the curve reports **both**: `recall_mappable_pct`/`f1_mappable` and
+`recall_total_pct`/`f1_total`, with the F1-optimal cutoff under each in the summary
+(`mapq_best_cutoff_mappable`, `mapq_best_cutoff_total`). Where they disagree, the disagreement is
+information. A unit test pins the case where they choose different cutoffs.
 
 ### Smaller divergences, recorded rather than fixed
 

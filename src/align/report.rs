@@ -117,13 +117,31 @@ impl ToolSummary {
         pct(self.score.correct, self.score.total)
     }
 
-    /// The MAPQ cutoff maximising F1, with its recall and precision.
+    /// The pooled precision/recall curve, carrying both recall denominators.
     ///
     /// # Returns
     ///
-    /// The best point of the pooled curve, or `None` when there is no curve.
-    pub fn best_f1(&self) -> Option<mapq::MapqPoint> {
-        mapq::best_f1(&mapq::curve(&self.mapq_counts, self.mappable))
+    /// One point per MAPQ cutoff, ascending.
+    pub fn curve(&self) -> Vec<mapq::MapqPoint> {
+        mapq::curve(&self.mapq_counts, self.mappable, self.score.total)
+    }
+
+    /// The cutoff maximising F1 against the field-relative recall.
+    ///
+    /// # Returns
+    ///
+    /// The best point, or `None` when there is no curve.
+    pub fn best_f1_mappable(&self) -> Option<mapq::MapqPoint> {
+        mapq::best_by(&self.curve(), mapq::MapqPoint::f1_mappable)
+    }
+
+    /// The cutoff maximising F1 against the absolute recall.
+    ///
+    /// # Returns
+    ///
+    /// The best point, or `None` when there is no curve.
+    pub fn best_f1_total(&self) -> Option<mapq::MapqPoint> {
+        mapq::best_by(&self.curve(), mapq::MapqPoint::f1_total)
     }
 }
 
@@ -378,7 +396,10 @@ fn sample_sd(values: &[f64]) -> f64 {
 pub fn summary_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
     let stratified: Vec<Option<u64>> = summaries.iter().map(|s| s.score.reference).collect();
     let has_strata = stratified.iter().any(Option::is_some);
-    let best: Vec<Option<mapq::MapqPoint>> = summaries.iter().map(|s| s.best_f1()).collect();
+    let best_mappable: Vec<Option<mapq::MapqPoint>> =
+        summaries.iter().map(|s| s.best_f1_mappable()).collect();
+    let best_total: Vec<Option<mapq::MapqPoint>> =
+        summaries.iter().map(|s| s.best_f1_total()).collect();
 
     let mut columns = vec![
         Series::new("dataset".into(), strings(summaries, |s| s.dataset.clone())),
@@ -557,15 +578,36 @@ pub fn summary_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
                 .map(|s| s.clip.as_ref().map(|c| c.unknown))
                 .collect::<Vec<Option<u64>>>(),
         ),
+        // Both denominators are reported rather than one being chosen: the field-relative one is
+        // the only one under which this cutoff is meaningful on a marker reference, and the
+        // absolute one is the only one that does not move when a contender joins or leaves.
         Series::new(
-            "mapq_best_cutoff".into(),
-            best.iter()
+            "mapq_best_cutoff_mappable".into(),
+            best_mappable
+                .iter()
                 .map(|b| b.map(|p| p.mapq as u32))
                 .collect::<Vec<_>>(),
         ),
         Series::new(
-            "mapq_best_f1".into(),
-            best.iter().map(|b| b.map(|p| p.f1())).collect::<Vec<_>>(),
+            "mapq_best_f1_mappable".into(),
+            best_mappable
+                .iter()
+                .map(|b| b.map(|p| p.f1_mappable()))
+                .collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "mapq_best_cutoff_total".into(),
+            best_total
+                .iter()
+                .map(|b| b.map(|p| p.mapq as u32))
+                .collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "mapq_best_f1_total".into(),
+            best_total
+                .iter()
+                .map(|b| b.map(|p| p.f1_total()))
+                .collect::<Vec<_>>(),
         ),
         Series::new(
             "note".into(),
@@ -690,21 +732,24 @@ pub fn mapq_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
     let mut cutoff = Vec::new();
     let mut correct = Vec::new();
     let mut kept = Vec::new();
-    let mut recall = Vec::new();
+    let mut recall_mappable = Vec::new();
+    let mut recall_total = Vec::new();
     let mut precision = Vec::new();
-    let mut f1 = Vec::new();
+    let mut f1_mappable = Vec::new();
+    let mut f1_total = Vec::new();
 
     for summary in summaries {
-        let points = mapq::curve(&summary.mapq_counts, summary.mappable);
-        for (count, point) in summary.mapq_counts.iter().zip(points.iter()) {
+        for point in summary.curve() {
             dataset.push(summary.dataset.clone());
             tool.push(summary.tool.clone());
             cutoff.push(point.mapq as u32);
-            correct.push(count.correct);
-            kept.push(count.kept);
-            recall.push(point.recall_pct);
+            correct.push(point.correct);
+            kept.push(point.kept);
+            recall_mappable.push(point.recall_mappable_pct);
+            recall_total.push(point.recall_total_pct);
             precision.push(point.precision_pct);
-            f1.push(point.f1());
+            f1_mappable.push(point.f1_mappable());
+            f1_total.push(point.f1_total());
         }
     }
 
@@ -714,9 +759,11 @@ pub fn mapq_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
         Series::new("mapq".into(), cutoff),
         Series::new("correct".into(), correct),
         Series::new("kept".into(), kept),
-        Series::new("recall_pct".into(), recall),
         Series::new("precision_pct".into(), precision),
-        Series::new("f1".into(), f1),
+        Series::new("recall_mappable_pct".into(), recall_mappable),
+        Series::new("recall_total_pct".into(), recall_total),
+        Series::new("f1_mappable".into(), f1_mappable),
+        Series::new("f1_total".into(), f1_total),
     ])
     .map_err(|e| AlignError::Output {
         path: "align_mapq.tsv".into(),

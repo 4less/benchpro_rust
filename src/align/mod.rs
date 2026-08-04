@@ -449,10 +449,18 @@ fn log_summary(summaries: &[report::ToolSummary]) {
                 Box::new(|s: &report::ToolSummary| format!("{:.2}%", s.recall_pct())),
             ),
             (
-                "best MAPQ cutoff (F1)",
+                "best MAPQ cutoff (of mappable)",
                 Box::new(|s: &report::ToolSummary| {
-                    s.best_f1()
-                        .map(|p| format!("{} ({:.1})", p.mapq, p.f1()))
+                    s.best_f1_mappable()
+                        .map(|p| format!("{} (F1 {:.1})", p.mapq, p.f1_mappable()))
+                        .unwrap_or_else(|| "n/a".to_string())
+                }),
+            ),
+            (
+                "best MAPQ cutoff (of truth)",
+                Box::new(|s: &report::ToolSummary| {
+                    s.best_f1_total()
+                        .map(|p| format!("{} (F1 {:.1})", p.mapq, p.f1_total()))
                         .unwrap_or_else(|| "n/a".to_string())
                 }),
             ),

@@ -272,6 +272,19 @@ fn the_mapq_curve_trades_recall_for_precision() {
     let top = good.last().expect("a curve point");
     assert_eq!(number(top, "mapq"), 60.0);
     assert_eq!(number(top, "precision_pct"), 100.0);
+
+    // Both recall denominators are reported, and they differ: the field-relative one divides by
+    // what the best contender achieved, the absolute one by the whole truth.
+    assert!(number(top, "recall_mappable_pct") >= number(top, "recall_total_pct"));
+    for column in [
+        "recall_mappable_pct",
+        "recall_total_pct",
+        "f1_mappable",
+        "f1_total",
+    ] {
+        let value = number(top, column);
+        assert!((0.0..=100.0).contains(&value), "{column} = {value}");
+    }
 }
 
 #[test]

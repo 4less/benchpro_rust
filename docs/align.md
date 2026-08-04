@@ -156,12 +156,21 @@ reported, never a mix — a mixed comparison would measure bookkeeping rather th
 At each cutoff, only alignments with `MAPQ >= q` are kept. An aligner whose MAPQ is informative
 trades a little recall for a lot of precision; one whose MAPQ is noise moves along a flat line.
 
-!!! warning "The curve's recall denominator is field-relative"
-    Recall on this curve is measured against the *most any one contender got right*, not against the
-    truth size. On a marker reference only a few percent of whole-genome reads can land in a marker
-    at all, so an all-reads denominator caps recall near 5% and pins every tool's F1-optimal cutoff
-    at 0. The cost is that **adding or removing a contender rescales everyone's curve**. The
-    `recall_pct` column in the summary is unaffected — it always divides by the truth size.
+Recall is reported against **two denominators**, because neither is right on its own and the choice
+changes which cutoff looks best:
+
+| Column | Divides by | Property |
+|---|---|---|
+| `recall_mappable_pct`, `f1_mappable` | the most any one contender got right | the only denominator under which the F1-optimal cutoff is meaningful on a marker reference — but **field-relative**, so adding or removing a contender rescales it |
+| `recall_total_pct`, `f1_total` | every read in the truth | fixed and comparable across runs with different fields — but on a marker reference it caps near 5%, dominates F1, and pins the optimal cutoff at 0 |
+
+The summary carries the F1-optimal cutoff under each: `mapq_best_cutoff_mappable` /
+`mapq_best_f1_mappable` and `mapq_best_cutoff_total` / `mapq_best_f1_total`. They can disagree, and
+when they do, the disagreement is the point — read the one whose denominator suits the question you
+are asking.
+
+The summary's own `recall_pct` is a separate, mapping-level number and always divides by the truth
+size.
 
 ### Clip geometry (`--clip-geometry`)
 

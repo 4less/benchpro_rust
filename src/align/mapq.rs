@@ -26,31 +26,58 @@ pub struct MapqCount {
 }
 
 /// One plotted point of the curve.
+///
+/// Recall is reported against **both** denominators, because neither is right on its own and the
+/// choice changes which cutoff looks best:
+///
+/// * `recall_mappable_pct` divides by the most any one contender got right ("how many of these
+///   reads can be placed at all"). On a marker reference only a few percent of whole-genome reads
+///   can land in a marker, so this is the only denominator under which the F1-optimal cutoff is not
+///   pinned at 0 — but it is field-relative, so adding or removing a contender rescales it.
+/// * `recall_total_pct` divides by every read in the truth. Fixed, and comparable across runs with
+///   different fields, but on a marker reference it caps near 5% and dominates F1.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MapqPoint {
     /// The cutoff.
     pub mapq: u8,
-    /// `100 * correct / mappable_base`.
-    pub recall_pct: f64,
-    /// `100 * correct / kept`.
-    pub precision_pct: f64,
     /// Alignments surviving the cutoff.
     pub kept: u64,
+    /// Correct alignments surviving the cutoff.
+    pub correct: u64,
+    /// `100 * correct / kept`.
+    pub precision_pct: f64,
+    /// `100 * correct / mappable_base` — field-relative.
+    pub recall_mappable_pct: f64,
+    /// `100 * correct / truth size` — absolute.
+    pub recall_total_pct: f64,
 }
 
 impl MapqPoint {
-    /// Harmonic mean of recall and precision.
+    /// F1 over precision and the field-relative recall.
     ///
     /// # Returns
     ///
-    /// The F1 score, or 0 when both are 0.
-    pub fn f1(&self) -> f64 {
-        let sum = self.recall_pct + self.precision_pct;
-        if sum == 0.0 {
-            0.0
-        } else {
-            2.0 * self.recall_pct * self.precision_pct / sum
-        }
+    /// The harmonic mean, or 0 when both are 0.
+    pub fn f1_mappable(&self) -> f64 {
+        harmonic_mean(self.recall_mappable_pct, self.precision_pct)
+    }
+
+    /// F1 over precision and the absolute recall.
+    ///
+    /// # Returns
+    ///
+    /// The harmonic mean, or 0 when both are 0.
+    pub fn f1_total(&self) -> f64 {
+        harmonic_mean(self.recall_total_pct, self.precision_pct)
+    }
+}
+
+/// Harmonic mean of two percentages, 0 when both are 0.
+fn harmonic_mean(a: f64, b: f64) -> f64 {
+    if a + b == 0.0 {
+        0.0
+    } else {
+        2.0 * a * b / (a + b)
     }
 }
 
@@ -157,41 +184,45 @@ pub fn mappable_base<'a>(per_tool: impl Iterator<Item = &'a [MapqCount]>) -> u64
 /// # Arguments
 ///
 /// * `counts` - Cumulative counts from [`counts`]
-/// * `mappable` - Recall denominator from [`mappable_base`]
+/// * `mappable` - Field-relative denominator from [`mappable_base`]
+/// * `total` - Reads in the truth
 ///
 /// # Returns
 ///
-/// One point per cutoff, ascending in MAPQ. Empty when there is no denominator.
-pub fn curve(counts: &[MapqCount], mappable: u64) -> Vec<MapqPoint> {
-    if mappable == 0 {
+/// One point per cutoff, ascending in MAPQ. Empty when neither denominator is usable.
+pub fn curve(counts: &[MapqCount], mappable: u64, total: u64) -> Vec<MapqPoint> {
+    if mappable == 0 && total == 0 {
         return Vec::new();
     }
     counts
         .iter()
         .map(|c| MapqPoint {
             mapq: c.mapq,
-            recall_pct: pct(c.correct, mappable),
-            precision_pct: pct(c.correct, c.kept),
             kept: c.kept,
+            correct: c.correct,
+            precision_pct: pct(c.correct, c.kept),
+            recall_mappable_pct: pct(c.correct, mappable),
+            recall_total_pct: pct(c.correct, total),
         })
         .collect()
 }
 
-/// The cutoff that maximises F1.
+/// The cutoff maximising the F1 selected by `score`.
 ///
 /// Ties go to the *lower* cutoff: when filtering harder buys nothing, do not throw reads away.
 ///
 /// # Arguments
 ///
 /// * `points` - A curve from [`curve`]
+/// * `score` - Which F1 to maximise, e.g. [`MapqPoint::f1_mappable`]
 ///
 /// # Returns
 ///
 /// The best point, or `None` for an empty curve.
-pub fn best_f1(points: &[MapqPoint]) -> Option<MapqPoint> {
+pub fn best_by(points: &[MapqPoint], score: impl Fn(&MapqPoint) -> f64) -> Option<MapqPoint> {
     let mut best: Option<MapqPoint> = None;
     for point in points {
-        if best.is_none_or(|b| point.f1() > b.f1() + 1e-12) {
+        if best.is_none_or(|b| score(point) > score(&b) + 1e-12) {
             best = Some(*point);
         }
     }
@@ -261,6 +292,18 @@ mod tests {
         }
     }
 
+    /// A curve point with the given field-relative recall and precision.
+    fn point(mapq: u8, recall_mappable_pct: f64, precision_pct: f64) -> MapqPoint {
+        MapqPoint {
+            mapq,
+            kept: 0,
+            correct: 0,
+            precision_pct,
+            recall_mappable_pct,
+            recall_total_pct: recall_mappable_pct / 10.0,
+        }
+    }
+
     fn species_context() -> ScoringContext<'static> {
         ScoringContext {
             scoring: ScoringMode::Species,
@@ -326,12 +369,15 @@ mod tests {
     fn an_informative_mapq_trades_recall_for_precision() {
         let (records, truth) = fixture();
         let counts = counts(&records, &truth, &species_context());
-        let points = curve(&counts, mappable_base([counts.as_slice()].into_iter()));
+        let points = curve(&counts, mappable_base([counts.as_slice()].into_iter()), 4);
 
         assert_eq!(points[0].precision_pct, 50.0);
-        assert_eq!(points[0].recall_pct, 100.0);
+        // Two of the four truth reads are placed correctly, and both contenders-of-one manage
+        // that, so field-relative recall is 100% where absolute recall is 50%.
+        assert_eq!(points[0].recall_mappable_pct, 100.0);
+        assert_eq!(points[0].recall_total_pct, 50.0);
         assert_eq!(points.last().unwrap().precision_pct, 100.0);
-        assert_eq!(points.last().unwrap().recall_pct, 100.0);
+        assert_eq!(points.last().unwrap().recall_mappable_pct, 100.0);
     }
 
     #[test]
@@ -362,6 +408,7 @@ mod tests {
                 correct: 0,
                 kept: 5
             }],
+            0,
             0
         )
         .is_empty());
@@ -375,53 +422,29 @@ mod tests {
             correct: 40,
             kept: 50,
         }];
-        let points = curve(&counts, 40);
-        assert_eq!(points[0].recall_pct, 100.0);
+        let points = curve(&counts, 40, 100);
+        assert_eq!(points[0].recall_mappable_pct, 100.0);
+        assert_eq!(
+            points[0].recall_total_pct, 40.0,
+            "the same point against the truth size"
+        );
         assert_eq!(points[0].precision_pct, 80.0);
     }
 
     #[test]
     fn best_f1_breaks_ties_toward_the_lower_cutoff() {
-        let points = vec![
-            MapqPoint {
-                mapq: 0,
-                recall_pct: 90.0,
-                precision_pct: 90.0,
-                kept: 10,
-            },
-            MapqPoint {
-                mapq: 1,
-                recall_pct: 90.0,
-                precision_pct: 90.0,
-                kept: 10,
-            },
-        ];
-        assert_eq!(best_f1(&points).unwrap().mapq, 0);
+        let points = vec![point(0, 90.0, 90.0), point(1, 90.0, 90.0)];
+        assert_eq!(best_by(&points, MapqPoint::f1_mappable).unwrap().mapq, 0);
     }
 
     #[test]
     fn best_f1_picks_the_maximum() {
         let points = vec![
-            MapqPoint {
-                mapq: 0,
-                recall_pct: 100.0,
-                precision_pct: 50.0,
-                kept: 20,
-            },
-            MapqPoint {
-                mapq: 30,
-                recall_pct: 90.0,
-                precision_pct: 95.0,
-                kept: 11,
-            },
-            MapqPoint {
-                mapq: 60,
-                recall_pct: 10.0,
-                precision_pct: 100.0,
-                kept: 1,
-            },
+            point(0, 100.0, 50.0),
+            point(30, 90.0, 95.0),
+            point(60, 10.0, 100.0),
         ];
-        assert_eq!(best_f1(&points).unwrap().mapq, 30);
+        assert_eq!(best_by(&points, MapqPoint::f1_mappable).unwrap().mapq, 30);
     }
 
     #[test]
@@ -451,6 +474,23 @@ mod tests {
         let counts = counts(&records, &truth, &context);
         assert_eq!(counts[0].correct, 0);
         assert_eq!(counts[0].kept, 1);
+    }
+
+    #[test]
+    fn the_two_denominators_can_choose_different_cutoffs() {
+        // The whole reason both are reported, and the exact failure the marker-DB argument
+        // describes. Absolute recall is a tenth of the field-relative one here, so it is small
+        // beside precision and dominates F1: every tightening of the cutoff costs more recall than
+        // it gains precision, and the optimum collapses to 0. Measured against what the field
+        // actually achieved, the same curve peaks in the middle, where it is useful.
+        let points = vec![
+            point(0, 100.0, 50.0),
+            point(30, 90.0, 95.0),
+            point(60, 40.0, 100.0),
+        ];
+
+        assert_eq!(best_by(&points, MapqPoint::f1_mappable).unwrap().mapq, 30);
+        assert_eq!(best_by(&points, MapqPoint::f1_total).unwrap().mapq, 0);
     }
 
     #[test]
