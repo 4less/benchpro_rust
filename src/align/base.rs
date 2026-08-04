@@ -301,6 +301,7 @@ mod tests {
             mapq: 60,
             nm,
             counts: cigar::count(cigar_str.as_bytes()),
+            clip_ends: cigar::clip_ends(cigar_str.as_bytes()),
             malformed: false,
             cigar: None,
             seq: None,

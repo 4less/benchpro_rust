@@ -91,6 +91,11 @@ pub struct AlignArgs {
     #[arg(long, default_value_t = false)]
     pub per_read: bool,
 
+    /// Classify each clipped alignment as dovetailing off a contig edge or contained within it.
+    /// Needs contig lengths, taken from the reference's `.fai` or the SAM's `@SQ` header.
+    #[arg(long, default_value_t = false)]
+    pub clip_geometry: bool,
+
     /// Seed for reservoir and replay sampling, so runs are reproducible.
     #[arg(long, default_value_t = 0, value_name = "INT")]
     pub seed: u64,

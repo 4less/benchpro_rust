@@ -45,6 +45,9 @@ pub struct AlnRecord {
     pub nm: Option<i64>,
     /// CIGAR base counts.
     pub counts: CigarCounts,
+    /// Leading and trailing clip lengths, kept for every record because the clip geometry needs
+    /// which end was clipped and the CIGAR itself is only retained for a sample.
+    pub clip_ends: (u64, u64),
     /// SEQ length disagrees with what the CIGAR consumes: the record cannot be interpreted.
     pub malformed: bool,
     /// CIGAR, retained only for records selected for the reference replay.
@@ -241,6 +244,50 @@ impl SplitMix64 {
     }
 }
 
+/// Reads the `@SQ` reference-sequence lengths from a SAM header.
+///
+/// A fallback for contig lengths when no reference FASTA is given. The header is at the top of the
+/// file, so this stops at the first alignment record rather than reading the whole SAM.
+///
+/// # Arguments
+///
+/// * `path` - SAM file, optionally gzipped
+///
+/// # Returns
+///
+/// Contig name to length, empty when the file carries no `@SQ` lines.
+///
+/// # Errors
+///
+/// Returns [`AlignError::Io`] when the file cannot be read.
+pub fn header_lengths(path: &Path) -> AlignResult<HashMap<Box<str>, u64>> {
+    let reader = BufReader::with_capacity(1 << 20, open(path)?);
+    let mut lengths = HashMap::new();
+
+    for line in reader.lines() {
+        let line = line.map_err(|e| AlignError::io(path, e))?;
+        if !line.starts_with('@') {
+            break;
+        }
+        if !line.starts_with("@SQ") {
+            continue;
+        }
+        let (mut name, mut length) = (None, None);
+        for field in line.split('\t') {
+            if let Some(value) = field.strip_prefix("SN:") {
+                name = Some(value);
+            } else if let Some(value) = field.strip_prefix("LN:") {
+                length = value.parse::<u64>().ok();
+            }
+        }
+        if let (Some(name), Some(length)) = (name, length) {
+            lengths.insert(name.into(), length);
+        }
+    }
+
+    Ok(lengths)
+}
+
 /// Parses an alignment file into primary records.
 ///
 /// # Arguments
@@ -358,6 +405,7 @@ fn consume_record(record: &RefSamRecord, offset: u64, keep_seq: bool, state: &mu
     }
 
     let counts = cigar::count(cigar);
+    let clip_ends = cigar::clip_ends(cigar);
     let seq = record.seq();
     // SAM requires SEQ length to equal the CIGAR's query consumption (soft clips count, hard do
     // not). A mismatch means the record cannot be interpreted: emitted, but broken.
@@ -377,6 +425,7 @@ fn consume_record(record: &RefSamRecord, offset: u64, keep_seq: bool, state: &mu
         mapq: record.try_mapq().unwrap_or(0),
         nm,
         counts,
+        clip_ends,
         malformed,
         cigar: None,
         seq: None,
@@ -459,6 +508,7 @@ fn parse_paf(path: &Path) -> AlignResult<ParsedAlignment> {
                 mapq,
                 nm: None,
                 counts: CigarCounts::default(),
+                clip_ends: (0, 0),
                 malformed: false,
                 cigar: None,
                 seq: None,
@@ -680,6 +730,24 @@ mod tests {
 
         let parsed = parse_alignment(&path, AlignmentFormat::Sam, true, 0, 1, 0).unwrap();
         assert_eq!(parsed.records.len(), 4);
+    }
+
+    #[test]
+    fn header_lengths_come_from_the_sq_lines() {
+        let path = temp_file("header.sam", SAM);
+        let lengths = header_lengths(&path).unwrap();
+
+        assert_eq!(lengths.len(), 1);
+        assert_eq!(lengths[&Box::from("ctg1")], 1000);
+    }
+
+    #[test]
+    fn a_sam_without_a_header_yields_no_lengths() {
+        let path = temp_file(
+            "headerless.sam",
+            "r1\t0\tctg1\t1\t60\t4M\t*\t0\t0\tACGT\tIIII\n",
+        );
+        assert!(header_lengths(&path).unwrap().is_empty());
     }
 
     #[test]

@@ -267,6 +267,18 @@ impl Reference {
         self.index.get(name).map(|entry| entry.length)
     }
 
+    /// Every loaded contig's length.
+    ///
+    /// # Returns
+    ///
+    /// A map from contig name to length, for callers that need geometry rather than bases.
+    pub fn lengths(&self) -> HashMap<Box<str>, u64> {
+        self.index
+            .iter()
+            .map(|(name, entry)| (name.clone(), entry.length))
+            .collect()
+    }
+
     /// Fetches reference bases `[start, end)`, uppercased and clipped to the contig.
     ///
     /// # Arguments
@@ -483,6 +495,7 @@ mod tests {
             mapq: 60,
             nm: None,
             counts: cigar::count(cigar.as_bytes()),
+            clip_ends: cigar::clip_ends(cigar.as_bytes()),
             malformed: false,
             cigar: Some(cigar.into()),
             seq: Some(seq.into()),

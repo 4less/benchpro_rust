@@ -517,6 +517,7 @@ mod tests {
             no_replay: false,
             threads: 0,
             per_read: false,
+            clip_geometry: false,
             seed: 0,
             validate_meta: false,
         }

@@ -340,6 +340,7 @@ mod tests {
                 matches: 100,
                 ..Default::default()
             },
+            clip_ends: (0, 0),
             malformed: false,
             cigar: None,
             seq: None,

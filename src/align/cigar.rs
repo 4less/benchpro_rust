@@ -153,6 +153,32 @@ pub fn count(cigar: &[u8]) -> CigarCounts {
     c
 }
 
+/// Leading and trailing clip lengths.
+///
+/// The total clip is not enough to tell a legitimate clip from a suspicious one: what matters is
+/// *which end* was clipped and whether the clipped bases would have fallen off the contig (see
+/// [`crate::align::clip`]).
+///
+/// # Arguments
+///
+/// * `cigar` - The CIGAR field
+///
+/// # Returns
+///
+/// `(leading, trailing)` clipped bases, soft and hard counted together. A CIGAR that is entirely
+/// clip counts once, as leading.
+pub fn clip_ends(cigar: &[u8]) -> (u64, u64) {
+    let ops: Vec<CigarOp> = ops(cigar).collect();
+    let is_clip = |op: &CigarOp| matches!(op.op, b'S' | b'H');
+    let leading = ops.first().filter(|op| is_clip(op)).map_or(0, |op| op.len);
+    let trailing = if ops.len() > 1 {
+        ops.last().filter(|op| is_clip(op)).map_or(0, |op| op.len)
+    } else {
+        0
+    };
+    (leading, trailing)
+}
+
 /// Recomputes an alignment's edit distance against the reference bases it claims.
 ///
 /// This is what makes the identity numbers tool independent. protal emits no `NM` tag at all, and a
@@ -251,6 +277,17 @@ mod tests {
     fn malformed_cigar_stops_rather_than_skipping_bytes() {
         assert_eq!(ops(b"10M?5I").count(), 1);
         assert_eq!(ops(b"M").count(), 0);
+    }
+
+    #[test]
+    fn clip_ends_splits_by_which_end_was_clipped() {
+        assert_eq!(clip_ends(b"10S90M"), (10, 0));
+        assert_eq!(clip_ends(b"90M10S"), (0, 10));
+        assert_eq!(clip_ends(b"5H10S70M15S"), (5, 15));
+        assert_eq!(clip_ends(b"100M"), (0, 0));
+        assert_eq!(clip_ends(b"*"), (0, 0));
+        // A CIGAR that is nothing but clip must not be counted at both ends.
+        assert_eq!(clip_ends(b"100S"), (100, 0));
     }
 
     #[test]

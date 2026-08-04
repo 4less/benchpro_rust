@@ -16,6 +16,7 @@
 
 pub mod base;
 pub mod cigar;
+pub mod clip;
 pub mod error;
 pub mod mapq;
 pub mod meta;
@@ -160,6 +161,16 @@ fn score_group(
 
     replay_against_references(rows, &mut parsed, args)?;
 
+    // Contig lengths for the clip geometry, from the reference's .fai where there is one and the
+    // SAM's own @SQ header otherwise -- so the geometry is available without a reference too.
+    let contig_lengths: Vec<HashMap<Box<str>, u64>> = if args.clip_geometry {
+        rows.iter()
+            .map(|row| contig_lengths_for(row))
+            .collect::<AlignResult<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+
     // Score each contender, then fill in the recall denominator once the whole field is known.
     let mut scored = Vec::with_capacity(rows.len());
     let mut reads = Vec::new();
@@ -234,6 +245,15 @@ fn score_group(
                 })
         });
 
+        let clip = args
+            .clip_geometry
+            .then(|| {
+                contig_lengths
+                    .get(index)
+                    .and_then(|lengths| clip::summarize(&alignment.records, lengths))
+            })
+            .flatten();
+
         scored.push(SampleResult {
             dataset: dataset.to_string(),
             sample: sample.to_string(),
@@ -245,6 +265,7 @@ fn score_group(
             mappable: 0,
             base,
             h2h,
+            clip,
         });
     }
 
@@ -320,6 +341,24 @@ fn replay_against_references(
     }
 
     Ok(())
+}
+
+/// Contig lengths for one contender, for the clip geometry.
+///
+/// Prefers the reference's `.fai`, which is authoritative; falls back to the SAM's own `@SQ`
+/// header, which every well-formed SAM carries. A contig in neither is reported as unknown rather
+/// than guessed at.
+fn contig_lengths_for(row: &AlignRow) -> AlignResult<HashMap<Box<str>, u64>> {
+    if let Some(reference) = &row.reference {
+        let opened = reference::Reference::open(reference, None)?;
+        if !opened.is_empty() {
+            return Ok(opened.lengths());
+        }
+    }
+    if row.format.has_alignments() {
+        return sam::header_lengths(&row.alignment);
+    }
+    Ok(HashMap::new())
 }
 
 /// Appends a suffix to the output prefix.

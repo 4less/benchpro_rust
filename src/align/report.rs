@@ -19,6 +19,7 @@ use crate::options::ScoringMode;
 use crate::utils::write_df;
 
 use super::base::{BaseMetrics, HeadToHead};
+use super::clip::ClipGeometry;
 use super::error::{AlignError, AlignResult};
 use super::mapq::{self, MapqCount};
 use super::metrics::{pct, MappingScore, ReadVerdict};
@@ -48,6 +49,8 @@ pub struct SampleResult {
     pub base: Option<BaseMetrics>,
     /// Base-level comparison against the row's peer, when one was named.
     pub h2h: Option<HeadToHead>,
+    /// Clip geometry, when `--clip-geometry` asked for it.
+    pub clip: Option<ClipGeometry>,
 }
 
 impl SampleResult {
@@ -96,6 +99,8 @@ pub struct ToolSummary {
     pub base: Option<BaseMetrics>,
     /// Head-to-head averaged over the samples that have one.
     pub h2h: Option<HeadToHead>,
+    /// Clip geometry pooled over the samples that have it.
+    pub clip: Option<ClipGeometry>,
     /// Note explaining any restriction applied to the sample set.
     pub note: Option<String>,
 }
@@ -228,6 +233,7 @@ pub fn summarize(results: &[SampleResult], notes: &HashMap<String, String>) -> V
                 correct_pct_sd: None,
                 base: pool_base(group),
                 h2h: pool_h2h(group),
+                clip: pool_clip(group),
                 note: notes.get(&key.0).cloned(),
             };
 
@@ -321,6 +327,18 @@ fn pool_h2h(group: &[&SampleResult]) -> Option<HeadToHead> {
         worse: weighted_by_common(|h| h.worse),
         nm_delta: weighted_by_common(|h| h.nm_delta),
     })
+}
+
+/// Pools clip geometry across the samples that have it.
+fn pool_clip(group: &[&SampleResult]) -> Option<ClipGeometry> {
+    let mut pooled: Option<ClipGeometry> = None;
+    for geometry in group.iter().filter_map(|r| r.clip.as_ref()) {
+        match &mut pooled {
+            Some(total) => total.add(geometry),
+            None => pooled = Some(geometry.clone()),
+        }
+    }
+    pooled
 }
 
 /// Weighted mean, or `None` when nothing carries weight.
@@ -497,6 +515,41 @@ pub fn summary_frame(summaries: &[ToolSummary]) -> AlignResult<DataFrame> {
         Series::new("h2h_equal".into(), h2h(|h| h.equal)),
         Series::new("h2h_worse".into(), h2h(|h| h.worse)),
         Series::new("h2h_nm_delta".into(), h2h(|h| h.nm_delta)),
+        Series::new(
+            "clip_dovetail_pct".into(),
+            summaries
+                .iter()
+                .map(|s| s.clip.as_ref().map(|c| c.dovetail_pct()))
+                .collect::<Vec<Option<f64>>>(),
+        ),
+        Series::new(
+            "clip_contained_pct".into(),
+            summaries
+                .iter()
+                .map(|s| s.clip.as_ref().map(|c| c.contained_pct()))
+                .collect::<Vec<Option<f64>>>(),
+        ),
+        Series::new(
+            "clip_dovetail_mean_bases".into(),
+            summaries
+                .iter()
+                .map(|s| s.clip.as_ref().and_then(|c| c.dovetail_mean_bases))
+                .collect::<Vec<Option<f64>>>(),
+        ),
+        Series::new(
+            "clip_contained_mean_bases".into(),
+            summaries
+                .iter()
+                .map(|s| s.clip.as_ref().and_then(|c| c.contained_mean_bases))
+                .collect::<Vec<Option<f64>>>(),
+        ),
+        Series::new(
+            "clip_unknown_contig".into(),
+            summaries
+                .iter()
+                .map(|s| s.clip.as_ref().map(|c| c.unknown))
+                .collect::<Vec<Option<u64>>>(),
+        ),
         Series::new(
             "mapq_best_cutoff".into(),
             best.iter()
@@ -809,6 +862,7 @@ mod tests {
             mappable: correct,
             base: None,
             h2h: None,
+            clip: None,
         }
     }
 
