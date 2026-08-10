@@ -171,22 +171,47 @@ impl BCVectors {
 type TaxonEntryMap<'a, T> = HashMap<&'a Taxon, EntriesRef<'a, T>>;
 type NamesEntryMap<'a, T> = HashMap<String, EntriesRef<'a, T>>;
 
+/// Markers a profiler uses to say "I decline to name this taxon at this rank".
+///
+/// Different profilers spell the same thing differently: MetaPhlAn and Kraken2
+/// emit `UNCLASSIFIED`, while mOTUs4 writes the placeholder species
+/// `s__Unknown <Genus> mOTUv4.0_000152` for a bin it resolved to genus but
+/// could not name. Both denote an absent name, so both must be scored the same
+/// way — otherwise a tool is charged a false positive purely for being explicit
+/// about what it could not resolve.
+const UNRESOLVED_TAXON_MARKERS: [&str; 2] = ["UNCLASSIFIED", "UNKNOWN"];
+
 /// Returns `true` for taxon names that should be excluded from FP/FN scoring.
 ///
-/// This covers two cases for any rank:
+/// This covers, for any rank:
 /// * bare rank prefix with no name (`s__`, `g__`, …)
-/// * rank prefix followed by UNCLASSIFIED (`s__UNCLASSIFIED`, …)
-/// * bare `UNCLASSIFIED` with no rank prefix
+/// * rank prefix followed by an unresolved marker (`s__UNCLASSIFIED`,
+///   `s__Unknown Selenomonas mOTUv4.0_000152`, …)
+/// * a bare unresolved marker with no rank prefix
+///
+/// Note this is deliberately evaluated per rank, against the name at the rank
+/// being scored. A lineage such as `g__Selenomonas;s__Unknown …` is therefore
+/// skipped at species level but still scores normally as `g__Selenomonas` at
+/// genus level — the name is missing at one rank, not the whole lineage.
 fn is_unscored_taxon_name(name: &str) -> bool {
     let trimmed = name.trim();
-    if trimmed.eq_ignore_ascii_case("UNCLASSIFIED") {
+    if UNRESOLVED_TAXON_MARKERS
+        .iter()
+        .any(|marker| trimmed.eq_ignore_ascii_case(marker))
+    {
         return true;
     }
     let Some((_, rest)) = trimmed.split_once("__") else {
         return false;
     };
     let rest = rest.trim();
-    rest.is_empty() || rest.to_ascii_uppercase().contains("UNCLASSIFIED")
+    if rest.is_empty() {
+        return true;
+    }
+    let upper = rest.to_ascii_uppercase();
+    UNRESOLVED_TAXON_MARKERS
+        .iter()
+        .any(|marker| upper.contains(marker))
 }
 
 // Keep the old name as an alias so call sites that already use it continue to compile.
@@ -1396,6 +1421,32 @@ mod tests {
         // Real taxa must not be filtered
         assert!(!is_unscored_taxon_name("s__Lactobacillus"));
         assert!(!is_unscored_taxon_name("Bacteria"));
+    }
+
+    #[test]
+    fn test_unscored_taxon_name_unknown_is_treated_like_unclassified() {
+        // mOTUs4 placeholder species: resolved to genus, unnamed at species.
+        assert!(is_unscored_taxon_name(
+            "s__Unknown Selenomonas mOTUv4.0_000152"
+        ));
+        assert!(is_unscored_taxon_name(
+            "s__Unknown Limosilactobacillus mOTUv4.0_000611"
+        ));
+        // Casing variants, and the bare marker, mirroring the UNCLASSIFIED cases
+        assert!(is_unscored_taxon_name("s__unknown"));
+        assert!(is_unscored_taxon_name("g__UNKNOWN"));
+        assert!(is_unscored_taxon_name("UNKNOWN"));
+        assert!(is_unscored_taxon_name("unknown"));
+
+        // The genus half of the very same mOTUs lineage must STILL be scored:
+        // the name is missing at species level only, so genus-level results
+        // must be unaffected by this rule.
+        assert!(!is_unscored_taxon_name("g__Selenomonas"));
+        assert!(!is_unscored_taxon_name("g__Limosilactobacillus"));
+
+        // Real binomials that merely look similar must not be filtered.
+        assert!(!is_unscored_taxon_name("s__Escherichia coli"));
+        assert!(!is_unscored_taxon_name("s__Bacteroides sp900541275"));
     }
 
     #[test]
