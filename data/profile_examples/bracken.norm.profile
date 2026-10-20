@@ -1,0 +1,231 @@
+#source_profile	data/profile_examples/bracken.profile
+#detected_format	tool
+#detected_tool	bracken
+#detected_version	X
+identifier	lineage	abundance	vertical_coverage
+Corynebacterium glutamicum	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium glutamicum	0.2175	
+Corynebacterium pseudotuberculosis	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium pseudotuberculosis	0.05134	
+Corynebacterium variabile	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium variabile	0.01746	
+Corynebacterium ulcerans	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium ulcerans	0.01324	
+Corynebacterium flavescens	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium flavescens	0.00898	
+Corynebacterium maris	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium maris	0.00537	
+Corynebacterium diphtheriae	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium diphtheriae	0.00435	
+Corynebacterium aurimucosum	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium aurimucosum	0.00349	
+Corynebacterium atypicum	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium atypicum	0.00246	
+Corynebacterium camporealensis	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium camporealensis	0.0022	
+Corynebacterium terpenotabidum	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium terpenotabidum	0.00205	
+Corynebacterium humireducens	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium humireducens	0.00105	
+Corynebacterium halotolerans	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium halotolerans	0.00098	
+Corynebacterium suranareeae	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium suranareeae	0.00097	
+Corynebacterium casei	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium casei	0.00093	
+Corynebacterium kroppenstedtii	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium kroppenstedtii	0.00075	
+Corynebacterium crudilactis	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium crudilactis	0.00069	
+Corynebacterium ureicelerivorans	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium ureicelerivorans	0.00069	
+Corynebacterium frankenforstense	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium frankenforstense	0.00066	
+Corynebacterium deserti	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium deserti	0.00054	
+Corynebacterium marinum	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium marinum	0.00042	
+Corynebacterium simulans	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium simulans	0.0004	
+Corynebacterium resistens	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium resistens	0.00039	
+Corynebacterium sphenisci	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium sphenisci	0.00039	
+Corynebacterium testudinoris	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium testudinoris	0.00034	
+Corynebacterium callunae	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium callunae	0.00027	
+Corynebacterium faecale	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium faecale	0.00015	
+Corynebacterium sp. SCR221107	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium sp. SCR221107	0.00007	
+Corynebacterium efficiens	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium efficiens	0.00012	
+Corynebacterium stationis	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium stationis	0.00006	
+Corynebacterium striatum	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium striatum	0.00006	
+Corynebacterium tuberculostearicum	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium tuberculostearicum	0.00005	
+Corynebacterium silvaticum	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium silvaticum	0.00005	
+Corynebacterium hindlerae	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium hindlerae	0.00004	
+Corynebacterium occultum	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium occultum	0.00004	
+[Brevibacterium] flavum	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|[Brevibacterium] flavum	0.00203	
+Corynebacterium kalinowskii	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium kalinowskii	0.00004	
+Corynebacterium renale	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium renale	0.00003	
+Corynebacterium durum	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium durum	0.00003	
+Corynebacterium felinum	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium felinum	0.00003	
+Corynebacterium urealyticum	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium urealyticum	0.00003	
+Corynebacterium breve	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium breve	0.00003	
+Corynebacterium epidermidicanis	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium epidermidicanis	0.00003	
+Corynebacterium mustelae	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium mustelae	0.00003	
+Corynebacterium ammoniagenes	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium ammoniagenes	0.00003	
+Corynebacterium jeikeium	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium jeikeium	0.00003	
+Corynebacterium propinquum	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium propinquum	0.00003	
+Corynebacterium accolens	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium accolens	0.00003	
+Corynebacterium riegelii	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium riegelii	0.00003	
+Corynebacterium atrinae	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium atrinae	0.00003	
+Corynebacterium comes	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium comes	0.00003	
+Corynebacterium gerontici	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium gerontici	0.00003	
+Corynebacterium cystitidis	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium cystitidis	0.00002	
+Corynebacterium canis	Actinomycetota|Actinomycetes|Mycobacteriales|Corynebacteriaceae|Corynebacterium|Corynebacterium canis	0.00002	
+Propionibacterium freudenreichii	Actinomycetota|Actinomycetes|Propionibacteriales|Propionibacteriaceae|Propionibacterium|Propionibacterium freudenreichii	0.00116	
+Pseudarthrobacter phenanthrenivorans	Actinomycetota|Actinomycetes|Micrococcales|Micrococcaceae|Pseudarthrobacter|Pseudarthrobacter phenanthrenivorans	0.00068	
+Staphylococcus aureus	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus aureus	0.16835	
+Staphylococcus lugdunensis	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus lugdunensis	0.03085	
+Staphylococcus epidermidis	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus epidermidis	0.00231	
+Staphylococcus warneri	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus warneri	0.00188	
+Staphylococcus argenteus	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus argenteus	0.00148	
+Staphylococcus coagulans	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus coagulans	0.00129	
+Staphylococcus schweitzeri	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus schweitzeri	0.00105	
+Staphylococcus simiae	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus simiae	0.00059	
+Staphylococcus sp. IVB6181	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus sp. IVB6181	0.00006	
+Staphylococcus sp. 17KM0847	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus sp. 17KM0847	0.00006	
+Staphylococcus ursi	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus ursi	0.00003	
+Staphylococcus sp. MZ8	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus sp. MZ8	0.00025	
+Staphylococcus sp. MZ9	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus sp. MZ9	0.00086	
+Staphylococcus pasteuri	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus pasteuri	0.00039	
+Staphylococcus haemolyticus	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus haemolyticus	0.00028	
+Staphylococcus hominis	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus hominis	0.00026	
+Staphylococcus capitis	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus capitis	0.00023	
+Staphylococcus pseudintermedius	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus pseudintermedius	0.00016	
+Staphylococcus delphini	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus delphini	0.00005	
+Staphylococcus equorum	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus equorum	0.00022	
+Staphylococcus saccharolyticus	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus saccharolyticus	0.00018	
+Staphylococcus caprae	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus caprae	0.00015	
+Staphylococcus arlettae	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus arlettae	0.00012	
+Staphylococcus simulans	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus simulans	0.00012	
+Staphylococcus devriesei	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus devriesei	0.00011	
+Staphylococcus saprophyticus	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus saprophyticus	0.00011	
+Staphylococcus gallinarum	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus gallinarum	0.0001	
+Staphylococcus xylosus	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus xylosus	0.00009	
+Staphylococcus edaphicus	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus edaphicus	0.00009	
+Staphylococcus cohnii	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus cohnii	0.00009	
+Staphylococcus pettenkoferi	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus pettenkoferi	0.00008	
+Staphylococcus chromogenes	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus chromogenes	0.00008	
+Staphylococcus nepalensis	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus nepalensis	0.00008	
+Staphylococcus felis	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus felis	0.00007	
+Staphylococcus auricularis	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus auricularis	0.00007	
+Staphylococcus agnetis	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus agnetis	0.00007	
+Staphylococcus schleiferi	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus schleiferi	0.00006	
+Staphylococcus lloydii	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus lloydii	0.00006	
+Staphylococcus kloosii	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus kloosii	0.00006	
+Staphylococcus hyicus	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus hyicus	0.00006	
+Staphylococcus carnosus	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus carnosus	0.00006	
+Staphylococcus shinii	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus shinii	0.00005	
+Staphylococcus ratti	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus ratti	0.00005	
+Staphylococcus succinus	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus succinus	0.00005	
+Staphylococcus condimenti	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus condimenti	0.00005	
+Staphylococcus lutrae	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus lutrae	0.00005	
+Staphylococcus rostri	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus rostri	0.00004	
+Staphylococcus pseudoxylosus	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus pseudoxylosus	0.00004	
+Staphylococcus debuckii	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus debuckii	0.00004	
+Staphylococcus casei	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus casei	0.00004	
+Staphylococcus muscae	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus muscae	0.00003	
+Staphylococcus piscifermentans	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Staphylococcus|Staphylococcus piscifermentans	0.00003	
+Mammaliicoccus sciuri	Bacillota|Bacilli|Bacillales|Staphylococcaceae|Mammaliicoccus|Mammaliicoccus sciuri	0.00003	
+Alicyclobacillus acidocaldarius	Bacillota|Bacilli|Bacillales|Alicyclobacillaceae|Alicyclobacillus|Alicyclobacillus acidocaldarius	0.00279	
+Streptococcus pneumoniae	Bacillota|Bacilli|Lactobacillales|Streptococcaceae|Streptococcus|Streptococcus pneumoniae	0.0034	
+Streptococcus anginosus	Bacillota|Bacilli|Lactobacillales|Streptococcaceae|Streptococcus|Streptococcus anginosus	0.00157	
+Streptococcus pyogenes	Bacillota|Bacilli|Lactobacillales|Streptococcaceae|Streptococcus|Streptococcus pyogenes	0.00055	
+Streptococcus gallolyticus	Bacillota|Bacilli|Lactobacillales|Streptococcaceae|Streptococcus|Streptococcus gallolyticus	0.00042	
+Streptococcus agalactiae	Bacillota|Bacilli|Lactobacillales|Streptococcaceae|Streptococcus|Streptococcus agalactiae	0.0004	
+Lactococcus lactis	Bacillota|Bacilli|Lactobacillales|Streptococcaceae|Lactococcus|Lactococcus lactis	0.0004	
+Enterococcus faecium	Bacillota|Bacilli|Lactobacillales|Enterococcaceae|Enterococcus|Enterococcus faecium	0.00008	
+Enterococcus faecalis	Bacillota|Bacilli|Lactobacillales|Enterococcaceae|Enterococcus|Enterococcus faecalis	0.00003	
+Deinococcus radiodurans	Deinococcota|Deinococci|Deinococcales|Deinococcaceae|Deinococcus|Deinococcus radiodurans	0.001	
+Deinococcus gobiensis	Deinococcota|Deinococci|Deinococcales|Deinococcaceae|Deinococcus|Deinococcus gobiensis	0.00066	
+Salmonella enterica	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Salmonella|Salmonella enterica	0.18347	
+Salmonella bongori	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Salmonella|Salmonella bongori	0.00167	
+Salmonella sp. SA14318	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Salmonella|Salmonella sp. SA14318	0.00007	
+Salmonella sp. 2018103	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Salmonella|Salmonella sp. 2018103	0.00006	
+Citrobacter amalonaticus	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Citrobacter|Citrobacter amalonaticus	0.04703	
+Citrobacter freundii	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Citrobacter|Citrobacter freundii	0.00038	
+Citrobacter portucalensis	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Citrobacter|Citrobacter portucalensis	0.00011	
+Citrobacter braakii	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Citrobacter|Citrobacter braakii	0.00019	
+Citrobacter werkmanii	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Citrobacter|Citrobacter werkmanii	0.00004	
+Citrobacter sp. RHB25-C09	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Citrobacter|Citrobacter sp. RHB25-C09	0.00006	
+Citrobacter enshiensis	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Citrobacter|Citrobacter enshiensis	0.00006	
+Citrobacter sp. R56	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Citrobacter|Citrobacter sp. R56	0.00005	
+Citrobacter farmeri	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Citrobacter|Citrobacter farmeri	0.0001	
+Citrobacter rodentium	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Citrobacter|Citrobacter rodentium	0.00007	
+Citrobacter koseri	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Citrobacter|Citrobacter koseri	0.00011	
+Citrobacter tructae	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Citrobacter|Citrobacter tructae	0.00003	
+Klebsiella quasipneumoniae	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Klebsiella|Klebsiella quasipneumoniae	0.01707	
+Klebsiella pneumoniae	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Klebsiella|Klebsiella pneumoniae	0.01901	
+Klebsiella variicola	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Klebsiella|Klebsiella variicola	0.0013	
+Klebsiella aerogenes	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Klebsiella|Klebsiella aerogenes	0.00031	
+Klebsiella africana	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Klebsiella|Klebsiella africana	0.00025	
+Klebsiella quasivariicola	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Klebsiella|Klebsiella quasivariicola	0.00024	
+Klebsiella oxytoca	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Klebsiella|Klebsiella oxytoca	0.00022	
+Klebsiella michiganensis	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Klebsiella|Klebsiella michiganensis	0.00023	
+Klebsiella huaxiensis	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Klebsiella|Klebsiella huaxiensis	0.00014	
+Klebsiella electrica	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Klebsiella|Klebsiella electrica	0.00007	
+Klebsiella grimontii	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Klebsiella|Klebsiella grimontii	0.00007	
+Klebsiella ornithinolytica	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Klebsiella|Klebsiella ornithinolytica	0.00687	
+Klebsiella planticola	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Klebsiella|Klebsiella planticola	0.00027	
+Klebsiella terrigena	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Klebsiella|Klebsiella terrigena	0.00004	
+Escherichia coli	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Escherichia|Escherichia coli	0.03809	
+Escherichia albertii	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Escherichia|Escherichia albertii	0.00072	
+Escherichia fergusonii	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Escherichia|Escherichia fergusonii	0.00046	
+Escherichia marmotae	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Escherichia|Escherichia marmotae	0.00036	
+Escherichia sp. E4742	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Escherichia|Escherichia sp. E4742	0.00027	
+Shigella sonnei	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Shigella|Shigella sonnei	0.00172	
+Shigella flexneri	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Shigella|Shigella flexneri	0.00119	
+Shigella dysenteriae	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Shigella|Shigella dysenteriae	0.00042	
+Shigella boydii	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Shigella|Shigella boydii	0.00032	
+Enterobacter hormaechei	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Enterobacter|Enterobacter hormaechei	0.00039	
+Enterobacter asburiae	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Enterobacter|Enterobacter asburiae	0.0001	
+Enterobacter cloacae	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Enterobacter|Enterobacter cloacae	0.0001	
+Enterobacter ludwigii	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Enterobacter|Enterobacter ludwigii	0.0001	
+Enterobacter roggenkampii	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Enterobacter|Enterobacter roggenkampii	0.0001	
+Enterobacter kobei	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Enterobacter|Enterobacter kobei	0.00008	
+Enterobacter mori	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Enterobacter|Enterobacter mori	0.00004	
+Kosakonia cowanii	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Kosakonia|Kosakonia cowanii	0.00006	
+Kosakonia sacchari	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Kosakonia|Kosakonia sacchari	0.00004	
+Leclercia adecarboxylata	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Leclercia|Leclercia adecarboxylata	0.00009	
+Cronobacter sakazakii	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Cronobacter|Cronobacter sakazakii	0.00006	
+Kluyvera intermedia	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Kluyvera|Kluyvera intermedia	0.00005	
+Cedecea neteri	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Cedecea|Cedecea neteri	0.00006	
+Pluralibacter gergoviae	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Pluralibacter|Pluralibacter gergoviae	0.00003	
+[Enterobacter] lignolyticus	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Pluralibacter|[Enterobacter] lignolyticus	0.00003	
+Lelliottia amnigena	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Lelliottia|Lelliottia amnigena	0.00003	
+Atlantibacter hermannii	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Atlantibacter|Atlantibacter hermannii	0.00003	
+Pseudocitrobacter corydidari	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Pseudocitrobacter|Pseudocitrobacter corydidari	0.00003	
+Trabulsiella odontotermitis	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Trabulsiella|Trabulsiella odontotermitis	0.00003	
+Superficieibacter sp. HKU1	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Superficieibacter|Superficieibacter sp. HKU1	0.00003	
+Scandinavium goeteborgense	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Scandinavium|Scandinavium goeteborgense	0.00003	
+Jejuibacter calystegiae	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Jejuibacter|Jejuibacter calystegiae	0.00003	
+Yokenella regensburgei	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Yokenella|Yokenella regensburgei	0.00003	
+Siccibacter colletis	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Siccibacter|Siccibacter colletis	0.00002	
+Shimwellia blattae	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Enterobacteriaceae|Shimwellia|Shimwellia blattae	0.00002	
+Serratia symbiotica	Pseudomonadota|Gammaproteobacteria|Enterobacterales|Yersiniaceae|Serratia|Serratia symbiotica	0.00003	
+Pseudomonas aeruginosa	Pseudomonadota|Gammaproteobacteria|Pseudomonadales|Pseudomonadaceae|Pseudomonas|Pseudomonas aeruginosa	0.00271	
+Pseudomonas monteilii	Pseudomonadota|Gammaproteobacteria|Pseudomonadales|Pseudomonadaceae|Pseudomonas|Pseudomonas monteilii	0.00021	
+Pseudomonas putida	Pseudomonadota|Gammaproteobacteria|Pseudomonadales|Pseudomonadaceae|Pseudomonas|Pseudomonas putida	0.00008	
+Thiopseudomonas alkaliphila	Pseudomonadota|Gammaproteobacteria|Pseudomonadales|Pseudomonadaceae|Thiopseudomonas|Thiopseudomonas alkaliphila	0.0002	
+[Haemophilus] ducreyi	Pseudomonadota|Gammaproteobacteria|Pasteurellales|Pasteurellaceae|Haemophilus|[Haemophilus] ducreyi	0.00076	
+Haemophilus influenzae	Pseudomonadota|Gammaproteobacteria|Pasteurellales|Pasteurellaceae|Haemophilus|Haemophilus influenzae	0.0001	
+Actinobacillus suis	Pseudomonadota|Gammaproteobacteria|Pasteurellales|Pasteurellaceae|Actinobacillus|Actinobacillus suis	0.00036	
+Actinobacillus pleuropneumoniae	Pseudomonadota|Gammaproteobacteria|Pasteurellales|Pasteurellaceae|Actinobacillus|Actinobacillus pleuropneumoniae	0.00024	
+Mannheimia haemolytica	Pseudomonadota|Gammaproteobacteria|Pasteurellales|Pasteurellaceae|Mannheimia|Mannheimia haemolytica	0.00038	
+Pasteurella multocida	Pseudomonadota|Gammaproteobacteria|Pasteurellales|Pasteurellaceae|Pasteurella|Pasteurella multocida	0.00035	
+Faucicola osloensis	Pseudomonadota|Gammaproteobacteria|Moraxellales|Moraxellaceae|Faucicola|Faucicola osloensis	0.00005	
+Neisseria meningitidis	Pseudomonadota|Betaproteobacteria|Neisseriales|Neisseriaceae|Neisseria|Neisseria meningitidis	0.08957	
+Neisseria gonorrhoeae	Pseudomonadota|Betaproteobacteria|Neisseriales|Neisseriaceae|Neisseria|Neisseria gonorrhoeae	0.00138	
+Neisseria lactamica	Pseudomonadota|Betaproteobacteria|Neisseriales|Neisseriaceae|Neisseria|Neisseria lactamica	0.00083	
+Neisseria sp. Marseille-Q6792	Pseudomonadota|Betaproteobacteria|Neisseriales|Neisseriaceae|Neisseria|Neisseria sp. Marseille-Q6792	0.00015	
+Neisseria sp. oral taxon 014	Pseudomonadota|Betaproteobacteria|Neisseriales|Neisseriaceae|Neisseria|Neisseria sp. oral taxon 014	0.00005	
+Neisseria sp. KEM232	Pseudomonadota|Betaproteobacteria|Neisseriales|Neisseriaceae|Neisseria|Neisseria sp. KEM232	0.00003	
+Neisseria sp. Marseille-Q5346	Pseudomonadota|Betaproteobacteria|Neisseriales|Neisseriaceae|Neisseria|Neisseria sp. Marseille-Q5346	0.00003	
+Neisseria subflava	Pseudomonadota|Betaproteobacteria|Neisseriales|Neisseriaceae|Neisseria|Neisseria subflava	0.00018	
+Neisseria cinerea	Pseudomonadota|Betaproteobacteria|Neisseriales|Neisseriaceae|Neisseria|Neisseria cinerea	0.00012	
+Neisseria sicca	Pseudomonadota|Betaproteobacteria|Neisseriales|Neisseriaceae|Neisseria|Neisseria sicca	0.0001	
+Neisseria elongata	Pseudomonadota|Betaproteobacteria|Neisseriales|Neisseriaceae|Neisseria|Neisseria elongata	0.00007	
+Neisseria mucosa	Pseudomonadota|Betaproteobacteria|Neisseriales|Neisseriaceae|Neisseria|Neisseria mucosa	0.00006	
+Neisseria chenwenguii	Pseudomonadota|Betaproteobacteria|Neisseriales|Neisseriaceae|Neisseria|Neisseria chenwenguii	0.00004	
+Neisseria lisongii	Pseudomonadota|Betaproteobacteria|Neisseriales|Neisseriaceae|Neisseria|Neisseria lisongii	0.00004	
+Neisseria flavescens	Pseudomonadota|Betaproteobacteria|Neisseriales|Neisseriaceae|Neisseria|Neisseria flavescens	0.00004	
+Neisseria macacae	Pseudomonadota|Betaproteobacteria|Neisseriales|Neisseriaceae|Neisseria|Neisseria macacae	0.00004	
+Neisseria animalis	Pseudomonadota|Betaproteobacteria|Neisseriales|Neisseriaceae|Neisseria|Neisseria animalis	0.00003	
+Neisseria brasiliensis	Pseudomonadota|Betaproteobacteria|Neisseriales|Neisseriaceae|Neisseria|Neisseria brasiliensis	0.00003	
+Neisseria dentiae	Pseudomonadota|Betaproteobacteria|Neisseriales|Neisseriaceae|Neisseria|Neisseria dentiae	0.00003	
+Ralstonia solanacearum	Pseudomonadota|Betaproteobacteria|Burkholderiales|Burkholderiaceae|Ralstonia|Ralstonia solanacearum	0.00531	
+Ralstonia syzygii	Pseudomonadota|Betaproteobacteria|Burkholderiales|Burkholderiaceae|Ralstonia|Ralstonia syzygii	0.00027	
+Ralstonia pseudosolanacearum	Pseudomonadota|Betaproteobacteria|Burkholderiales|Burkholderiaceae|Ralstonia|Ralstonia pseudosolanacearum	0.00013	
+Delftia tsuruhatensis	Pseudomonadota|Betaproteobacteria|Burkholderiales|Comamonadaceae|Delftia|Delftia tsuruhatensis	0.00076	
+Delftia acidovorans	Pseudomonadota|Betaproteobacteria|Burkholderiales|Comamonadaceae|Delftia|Delftia acidovorans	0.00025	
+Paucibacter sp. KCTC 42545	Pseudomonadota|Betaproteobacteria|Burkholderiales|Sphaerotilaceae|Roseateles|Paucibacter sp. KCTC 42545	0.00077	
+Sphingobium sp. TKS	Pseudomonadota|Alphaproteobacteria|Sphingomonadales|Sphingobiaceae|Sphingobium|Sphingobium sp. TKS	0.00091	
+Tardibacter chloracetimidivorans	Pseudomonadota|Alphaproteobacteria|Sphingomonadales|Sphingomonadaceae|Tardibacter|Tardibacter chloracetimidivorans	0.0005	
+Sphingomonas sp. MM-1	Pseudomonadota|Alphaproteobacteria|Sphingomonadales|Sphingomonadaceae|Sphingomonas|Sphingomonas sp. MM-1	0.00007	
+Elizabethkingia anophelis	Bacteroidota|Flavobacteriia|Flavobacteriales|Weeksellaceae|Elizabethkingia|Elizabethkingia anophelis	0.00063	
+Homo sapiens	Chordata|Mammalia|Primates|Hominidae|Homo|Homo sapiens	0.00004	
