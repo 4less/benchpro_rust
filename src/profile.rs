@@ -588,6 +588,7 @@ pub fn binary_classification_helper<'a, TREF: AsRef<Taxon>>(
     alternative_match_pairs.for_each(|(gold, prediction)| {
         let entry = fn_return.tps.entry(gold).or_insert(TPMapValue::default());
 
+        matched_gold_stds.insert(gold);
         matched_predictions.insert(prediction);
         if let Some(list) = &mut entry.secondary {
             list.push(prediction);
@@ -1150,7 +1151,7 @@ impl<T: Taxonomy> Profile<T> {
             joined_df_alt.with_column(Series::new(
                 "AllowAlternatives".into(),
                 std::iter::repeat(true)
-                    .take(joined_df.height())
+                    .take(joined_df_alt.height())
                     .collect_vec(),
             ))?;
             joined_df.vstack(&joined_df_alt)
@@ -1705,5 +1706,204 @@ s__Akkermansia muciniphila_A";
         assert_eq!(result1, true);
         assert_eq!(result2, true);
         assert_eq!(result3, false);
+    }
+
+    fn species_entry<T: Taxonomy>(lineage: &str, abundance: f64) -> Entry<T> {
+        Entry::<T> {
+            taxon_name: None,
+            lineage: Some(T::lineage_from_string(lineage, None)),
+            alternative_names: None,
+            abundance,
+            rank: TaxonomicRank::Species,
+        }
+    }
+
+    fn profile_of<T: Taxonomy>(taxa: Vec<Entry<T>>) -> Profile<T> {
+        Profile::<T> {
+            unstructured_meta: Vec::new(),
+            meta: HashMap::new(),
+            taxa,
+        }
+    }
+
+    /// Collects rows as (Type, Name, Rank, AllowAlternatives) ->
+    /// (PredictionAbundance, GoldStdAbundance, PredictionCount, GoldStdCount).
+    fn bc_rows(df: &DataFrame) -> HashMap<(String, String, String, bool), (f64, f64, i64, i64)> {
+        let ty = df.column("Type").unwrap().str().unwrap();
+        let name = df.column("Name").unwrap().str().unwrap();
+        let rank = df.column("Rank").unwrap().str().unwrap();
+        let alt = df.column("AllowAlternatives").unwrap().bool().unwrap();
+        let pa = df.column("PredictionAbundance").unwrap().f64().unwrap();
+        let ga = df.column("GoldStdAbundance").unwrap().f64().unwrap();
+        let pc = df.column("PredictionCount").unwrap().i64().unwrap();
+        let gc = df.column("GoldStdCount").unwrap().i64().unwrap();
+        (0..df.height())
+            .map(|i| {
+                let key = (
+                    ty.get(i).unwrap().to_string(),
+                    name.get(i).unwrap().to_string(),
+                    rank.get(i).unwrap().to_string(),
+                    alt.get(i).unwrap(),
+                );
+                let value = (
+                    pa.get(i).unwrap(),
+                    ga.get(i).unwrap(),
+                    pc.get(i).unwrap(),
+                    gc.get(i).unwrap(),
+                );
+                (key, value)
+            })
+            .collect()
+    }
+
+    fn assert_row(
+        rows: &HashMap<(String, String, String, bool), (f64, f64, i64, i64)>,
+        key: (&str, &str, TaxonomicRank, bool),
+        expected: (f64, f64, i64, i64),
+    ) {
+        let lookup = (
+            key.0.to_string(),
+            key.1.to_string(),
+            key.2.to_string(),
+            key.3,
+        );
+        let actual = rows
+            .get(&lookup)
+            .unwrap_or_else(|| panic!("Missing row {:?} in {:?}", lookup, rows.keys()));
+        assert!(
+            (actual.0 - expected.0).abs() < 1e-12,
+            "{:?}: {:?}",
+            lookup,
+            actual
+        );
+        assert!(
+            (actual.1 - expected.1).abs() < 1e-12,
+            "{:?}: {:?}",
+            lookup,
+            actual
+        );
+        assert_eq!(
+            (actual.2, actual.3),
+            (expected.2, expected.3),
+            "{:?}",
+            lookup
+        );
+    }
+
+    fn gtdb_prediction_and_gold() -> (Profile<GTDB>, Profile<GTDB>) {
+        let prediction = profile_of(vec![
+            species_entry::<GTDB>("d__B;p__P;c__C;o__O;f__F;g__G1;s__G1 a", 0.5),
+            species_entry::<GTDB>("d__B;p__P;c__C;o__O;f__F;g__G1;s__G1 b", 0.3),
+            species_entry::<GTDB>("d__B;p__P;c__C;o__O;f__F;g__G2;s__G2 c", 0.2),
+        ]);
+        let gold_std = profile_of(vec![
+            species_entry::<GTDB>("d__B;p__P;c__C;o__O;f__F;g__G1;s__G1 a", 0.6),
+            species_entry::<GTDB>("d__B;p__P;c__C;o__O;f__F;g__G1;s__G1 b", 0.3),
+            species_entry::<GTDB>("d__B;p__P;c__C;o__O;f__F;g__G3;s__G3 d", 0.1),
+        ]);
+        (prediction, gold_std)
+    }
+
+    #[test]
+    fn test_binary_classification_exact_counts_and_abundances() {
+        type R = TaxonomicRank;
+        let (prediction, gold_std) = gtdb_prediction_and_gold();
+
+        let df = prediction
+            .binary_classification(&gold_std, &[R::Genus, R::Species], false)
+            .unwrap();
+        let rows = bc_rows(&df);
+        assert_eq!(df.height(), 7);
+
+        assert_row(
+            &rows,
+            ("TP", "s__G1 a", R::Species, false),
+            (0.5, 0.6, 1, 1),
+        );
+        assert_row(
+            &rows,
+            ("TP", "s__G1 b", R::Species, false),
+            (0.3, 0.3, 1, 1),
+        );
+        assert_row(
+            &rows,
+            ("FP", "s__G2 c", R::Species, false),
+            (0.2, 0.0, 1, 0),
+        );
+        assert_row(
+            &rows,
+            ("FN", "s__G3 d", R::Species, false),
+            (0.0, 0.1, 0, 1),
+        );
+
+        // Genus abundance is the sum over its species.
+        assert_row(&rows, ("TP", "g__G1", R::Genus, false), (0.8, 0.9, 2, 2));
+        assert_row(&rows, ("FP", "g__G2", R::Genus, false), (0.2, 0.0, 1, 0));
+        assert_row(&rows, ("FN", "g__G3", R::Genus, false), (0.0, 0.1, 0, 1));
+    }
+
+    #[test]
+    fn test_binary_classification_alternatives_without_alt_names_matches_exact() {
+        type R = TaxonomicRank;
+        let (prediction, gold_std) = gtdb_prediction_and_gold();
+
+        let df = prediction
+            .binary_classification(&gold_std, &[R::Species], true)
+            .unwrap();
+        let rows = bc_rows(&df);
+        assert_eq!(df.height(), 8);
+
+        for alt in [false, true] {
+            assert_row(&rows, ("TP", "s__G1 a", R::Species, alt), (0.5, 0.6, 1, 1));
+            assert_row(&rows, ("TP", "s__G1 b", R::Species, alt), (0.3, 0.3, 1, 1));
+            assert_row(&rows, ("FP", "s__G2 c", R::Species, alt), (0.2, 0.0, 1, 0));
+            assert_row(&rows, ("FN", "s__G3 d", R::Species, alt), (0.0, 0.1, 0, 1));
+        }
+    }
+
+    #[test]
+    fn test_binary_classification_helper_alternative_match_is_not_fn() {
+        type R = TaxonomicRank;
+        let gold_a = Taxon::with_name_and_rank("s__A", &R::Species);
+        let gold_c = Taxon::with_name_and_rank("s__C", &R::Species);
+        let mut pred_x = Taxon::with_name_and_rank("s__X", &R::Species);
+        pred_x.alternative_names = Some(vec!["s__A".to_string()]);
+
+        let gold_std: HashSet<Taxon> = [gold_a.clone(), gold_c.clone()].into_iter().collect();
+        let prediction: HashSet<Taxon> = [pred_x].into_iter().collect();
+
+        let data = binary_classification_helper(&prediction, &gold_std);
+
+        assert!(data.tps.contains_key(&gold_a));
+        assert!(data.fps.is_empty());
+        assert_eq!(data.fns, [&gold_c].into_iter().collect::<HashSet<_>>());
+    }
+
+    #[test]
+    fn test_binary_classification_with_ambiguous_ncbi_prediction() {
+        type R = TaxonomicRank;
+        let prediction = profile_of(vec![species_entry::<NCBI>(
+            "d__Bacteria|g__G1|(s__X/s__A)",
+            1.0,
+        )]);
+        let gold_std = profile_of(vec![
+            species_entry::<NCBI>("d__Bacteria|g__G1|s__A", 0.6),
+            species_entry::<NCBI>("d__Bacteria|g__G2|s__C", 0.4),
+        ]);
+
+        let df = prediction
+            .binary_classification(&gold_std, &[R::Species], true)
+            .expect("Exact and alternative frames differ in height; must still combine");
+        let rows = bc_rows(&df);
+
+        // Exact matching: the ambiguous call does not match anything.
+        assert_row(&rows, ("FP", "s__X", R::Species, false), (1.0, 0.0, 1, 0));
+        assert_row(&rows, ("FN", "s__A", R::Species, false), (0.0, 0.6, 0, 1));
+        assert_row(&rows, ("FN", "s__C", R::Species, false), (0.0, 0.4, 0, 1));
+
+        // Alternative matching: s__X counts as s__A.
+        assert_row(&rows, ("TP", "s__A", R::Species, true), (1.0, 0.6, 1, 1));
+        assert_row(&rows, ("FN", "s__C", R::Species, true), (0.0, 0.4, 0, 1));
+        assert_eq!(df.height(), 5);
     }
 }

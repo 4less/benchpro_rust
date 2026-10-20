@@ -333,7 +333,10 @@ fn rank_values(values: &[f64]) -> Vec<f64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{bray_curtis_similarity, l2_similarity, pearson_correlation, spearman_correlation};
+    use super::{
+        bray_curtis_similarity, f1_score, l2_similarity, pearson_correlation, precision,
+        sensitivity, spearman_correlation,
+    };
 
     fn approx_eq(left: f64, right: f64, tol: f64) -> bool {
         (left - right).abs() <= tol
@@ -378,6 +381,53 @@ mod tests {
         let gold = vec![1.0, 2.0, 3.0];
         let corr = pearson_correlation(&pred, &gold);
         assert!(corr.is_nan());
+    }
+
+    #[test]
+    fn test_f1_sensitivity_precision() {
+        assert!(approx_eq(f1_score(2, 1, 1), 4.0 / 6.0, 1e-12));
+        assert!(approx_eq(sensitivity(2, 5, 1), 2.0 / 3.0, 1e-12));
+        assert!(approx_eq(precision(2, 1, 5), 2.0 / 3.0, 1e-12));
+        assert!(approx_eq(f1_score(3, 0, 0), 1.0, 1e-12));
+        assert!(approx_eq(f1_score(0, 2, 3), 0.0, 1e-12));
+        assert!(approx_eq(sensitivity(0, 0, 4), 0.0, 1e-12));
+        assert!(approx_eq(precision(0, 4, 0), 0.0, 1e-12));
+    }
+
+    #[test]
+    fn test_bray_curtis_similarity_partial_overlap() {
+        let sim = bray_curtis_similarity(&[0.5, 0.5], &[0.6, 0.4]);
+        assert!(approx_eq(sim, 0.9, 1e-12));
+    }
+
+    #[test]
+    fn test_l2_similarity_partial_overlap() {
+        let sim = l2_similarity(&[0.6, 0.8], &[0.8, 0.6]);
+        assert!(approx_eq(sim, 1.0 - 0.08_f64.sqrt() / 2.0, 1e-12));
+    }
+
+    #[test]
+    fn test_pearson_correlation_known_value() {
+        let corr = pearson_correlation(&[1.0, 2.0, 3.0, 4.0], &[2.0, 4.0, 5.0, 9.0]);
+        assert!(approx_eq(corr, 11.0 / 130.0_f64.sqrt(), 1e-12));
+    }
+
+    #[test]
+    fn test_pearson_correlation_too_short_is_nan() {
+        assert!(pearson_correlation(&[1.0], &[1.0]).is_nan());
+    }
+
+    #[test]
+    fn test_spearman_correlation_with_ties() {
+        // Ranks with ties: [1, 2.5, 2.5, 4] vs [1, 2, 3, 4].
+        let corr = spearman_correlation(&[1.0, 2.0, 2.0, 3.0], &[1.0, 2.0, 3.0, 4.0]);
+        assert!(approx_eq(corr, 4.5 / 22.5_f64.sqrt(), 1e-12));
+    }
+
+    #[test]
+    fn test_spearman_correlation_is_rank_based() {
+        let corr = spearman_correlation(&[1.0, 10.0, 100.0], &[0.1, 0.2, 0.3]);
+        assert!(approx_eq(corr, 1.0, 1e-12));
     }
 
     #[test]
