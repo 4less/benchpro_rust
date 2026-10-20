@@ -2,6 +2,11 @@
 
 This is a CLI tool, so the goal is to build a binary and put it on your PATH. No admin rights are required.
 
+## Requirements
+
+Benchpro needs Rust **nightly**. Install Rust with [rustup](https://rustup.rs); the repository's
+`rust-toolchain.toml` then selects nightly automatically. A stable-only toolchain fails to compile.
+
 ## Option A: Build in place with Cargo
 
 From the repo root:

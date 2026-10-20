@@ -550,7 +550,8 @@ impl ProfileHandler {
     ///
     /// Returns `ProfileHandlerError` when meta parsing fails.
     pub fn from_meta(path: impl AsRef<Path>) -> Result<Self, ProfileHandlerError> {
-        let polars_df = Meta::polars_from_path(&path).expect("Meta file not valid");
+        let polars_df = Meta::polars_from_path(&path)
+            .map_err(|e| ProfileHandlerError::GenericError(e.to_string()))?;
         let meta = Meta::from_polars_df(polars_df)
             .map_err(|e| ProfileHandlerError::GenericError(e.to_string()))?;
 

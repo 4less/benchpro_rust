@@ -5,8 +5,8 @@ use polars::{
     frame::DataFrame,
     io::SerReader,
     prelude::{
-        col, lit, CsvParseOptions, CsvReadOptions, DataFrameJoinOps, Expr, IntoLazy, NamedFrom,
-        PlSmallStr,
+        col, lit, CsvParseOptions, CsvReadOptions, DataFrameJoinOps, DataType, Expr, IntoLazy,
+        NamedFrom, PlSmallStr,
     },
     series::Series,
 };
@@ -161,7 +161,65 @@ pub struct MetaEntry {
 }
 
 impl Meta {
-    const REQUIRED_FIELDS: &[&str] = &["ID", "Sample", "Tool", "Profile", "GoldStd"];
+    const REQUIRED_FIELDS: &[&str] = &[
+        "ID",
+        "Sample",
+        "Tool",
+        "Taxonomy",
+        "Profile",
+        "GoldStd",
+        "GoldStdTree",
+    ];
+
+    /// Checks that all required per-sample meta columns are present.
+    ///
+    /// # Arguments
+    ///
+    /// * `meta` - Raw meta DataFrame
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when every required column exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MetaError::MissingColumns` naming each missing column, with a hint when a
+    /// column only differs in case.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let df = df!("ID" => ["r1"]).unwrap();
+    /// assert!(Meta::check_required_columns(&df).is_err());
+    /// ```
+    pub fn check_required_columns(meta: &DataFrame) -> Result<(), MetaError> {
+        let present = meta
+            .get_column_names()
+            .iter()
+            .map(|name| name.to_string())
+            .collect::<Vec<_>>();
+
+        let missing = Self::REQUIRED_FIELDS
+            .iter()
+            .filter(|&&field| !present.iter().any(|name| name == field))
+            .map(
+                |&field| match present.iter().find(|name| name.eq_ignore_ascii_case(field)) {
+                    Some(name) => format!("{} (found '{}'; names are case-sensitive)", field, name),
+                    None => field.to_string(),
+                },
+            )
+            .collect::<Vec<_>>();
+
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(MetaError::MissingColumns(format!(
+                "Meta file is missing required column(s): {}. Found columns: {}",
+                missing.join(", "),
+                present.join(", ")
+            )))
+        }
+    }
 
     /// Builds a `Meta` from an in-memory DataFrame.
     ///
@@ -180,6 +238,8 @@ impl Meta {
         if Self::is_matrix_format(&meta) {
             return Self::from_matrix_df(meta);
         }
+        Self::check_required_columns(&meta)?;
+        let meta = Self::meta_columns_as_strings(meta)?;
         let mut entries = vec![MetaEntry::default(); meta.height()];
 
         debug!("Height: {} .. {}", meta.height(), entries.len());
@@ -191,51 +251,55 @@ impl Meta {
                 debug!("{} -> {:?}", name, MetaColumn::from_string(&name));
             });
 
-        MetaColumn::iter().for_each(|col| {
+        for col in MetaColumn::iter() {
             let column_series = meta.column(col.to_str());
 
             if let Ok(cs) = column_series {
-                cs.str()
-                    .unwrap()
-                    .iter()
-                    .enumerate()
-                    .for_each(|(row_index, entry)| {
-                        let entry = entry.expect("Expect string ");
-                        let meta_entry = &mut entries[row_index];
-                        match col {
-                            MetaColumn::ID => meta_entry.id = entry.to_string(),
-                            MetaColumn::Sample => meta_entry.sample = entry.to_string(),
-                            MetaColumn::Dataset => meta_entry.dataset = Some(entry.to_string()),
-                            MetaColumn::Tool => meta_entry.tool = entry.to_string(),
-                            MetaColumn::Taxonomy => meta_entry.taxonomy = entry.to_string(),
-                            MetaColumn::Profile => {
-                                meta_entry.profile = PathBuf::from(entry.to_string())
-                            }
-                            MetaColumn::ProfileColumns => {
-                                meta_entry.profile_columns = Some(entry.to_string())
-                            }
-                            MetaColumn::GoldStd => {
-                                meta_entry.goldstd = PathBuf::from(entry.to_string())
-                            }
-                            MetaColumn::GoldStdColumns => {
-                                meta_entry.goldstd_columns = Some(entry.to_string())
-                            }
-                            MetaColumn::GoldStdTree => {
-                                meta_entry.goldstd_tree = match entry {
-                                    entry if entry == "NA" || entry == "" => None,
-                                    _ => Some(PathBuf::from(entry.to_string())),
-                                }
-                            }
-                            MetaColumn::AvailableTaxa => {
-                                meta_entry.taxa_list = match entry {
-                                    entry if entry == "NA" || entry == "" => None,
-                                    _ => Some(PathBuf::from(entry.to_string())),
-                                }
+                for (row_index, entry) in cs.str().unwrap().iter().enumerate() {
+                    let entry = entry.ok_or_else(|| {
+                        MetaError::DataError(format!(
+                            "Meta file row {}: column '{}' is empty. Fill it in, or write NA \
+                             if the column allows missing values (GoldStdTree, \
+                             AvailableSpecies).",
+                            row_index + 2,
+                            col.to_str()
+                        ))
+                    })?;
+                    let meta_entry = &mut entries[row_index];
+                    match col {
+                        MetaColumn::ID => meta_entry.id = entry.to_string(),
+                        MetaColumn::Sample => meta_entry.sample = entry.to_string(),
+                        MetaColumn::Dataset => meta_entry.dataset = Some(entry.to_string()),
+                        MetaColumn::Tool => meta_entry.tool = entry.to_string(),
+                        MetaColumn::Taxonomy => meta_entry.taxonomy = entry.to_string(),
+                        MetaColumn::Profile => {
+                            meta_entry.profile = PathBuf::from(entry.to_string())
+                        }
+                        MetaColumn::ProfileColumns => {
+                            meta_entry.profile_columns = Some(entry.to_string())
+                        }
+                        MetaColumn::GoldStd => {
+                            meta_entry.goldstd = PathBuf::from(entry.to_string())
+                        }
+                        MetaColumn::GoldStdColumns => {
+                            meta_entry.goldstd_columns = Some(entry.to_string())
+                        }
+                        MetaColumn::GoldStdTree => {
+                            meta_entry.goldstd_tree = match entry {
+                                entry if entry == "NA" || entry == "" => None,
+                                _ => Some(PathBuf::from(entry.to_string())),
                             }
                         }
-                    });
+                        MetaColumn::AvailableTaxa => {
+                            meta_entry.taxa_list = match entry {
+                                entry if entry == "NA" || entry == "" => None,
+                                _ => Some(PathBuf::from(entry.to_string())),
+                            }
+                        }
+                    }
+                }
             }
-        });
+        }
 
         Ok(Self { raw: meta, entries })
     }
@@ -273,27 +337,58 @@ impl Meta {
         )
     }
 
-    fn df_from_text(path: impl AsRef<Path>) -> DataFrame {
+    /// Casts known meta columns to strings so numeric cells (e.g. an ID of `1`) parse.
+    fn meta_columns_as_strings(mut meta: DataFrame) -> Result<DataFrame, MetaError> {
+        for col in MetaColumn::iter() {
+            let name = col.to_str();
+            let Ok(series) = meta.column(name) else {
+                continue;
+            };
+            if series.dtype() == &DataType::String {
+                continue;
+            }
+            let cast = series.cast(&DataType::String).map_err(|e| {
+                MetaError::DataError(format!(
+                    "Meta column '{}' cannot be read as text: {}",
+                    name, e
+                ))
+            })?;
+            meta.with_column(cast)
+                .map_err(|e| MetaError::DataError(e.to_string()))?;
+        }
+        Ok(meta)
+    }
+
+    fn df_from_text(path: impl AsRef<Path>) -> Result<DataFrame, MetaError> {
         let separator = match path.as_ref().extension().and_then(|ext| ext.to_str()) {
             Some("tsv") => b'\t',
             _ => b',',
         };
-        let df = CsvReadOptions::default()
+        CsvReadOptions::default()
             .with_parse_options(CsvParseOptions::default().with_separator(separator))
             .try_into_reader_with_file_path(Some(path.as_ref().to_path_buf()))
-            .expect("Cannot read file")
-            .finish()
-            .unwrap();
-        df
+            .and_then(|reader| reader.finish())
+            .map_err(|e| {
+                MetaError::DataError(format!(
+                    "Cannot read meta file '{}': {}",
+                    path.as_ref().display(),
+                    e
+                ))
+            })
     }
 
-    fn df_from_xlsx(path: impl AsRef<Path>) -> DataFrame {
-        // Open the Excel file
-        let mut workbook: Xlsx<_> = calamine::open_workbook(path).expect("Cannot open Excel file");
+    fn df_from_xlsx(path: impl AsRef<Path>) -> Result<DataFrame, MetaError> {
+        let read_error = |e: String| {
+            MetaError::DataError(format!(
+                "Cannot read meta file '{}': {}",
+                path.as_ref().display(),
+                e
+            ))
+        };
+        let mut workbook: Xlsx<_> = calamine::open_workbook(path.as_ref())
+            .map_err(|e: calamine::XlsxError| read_error(e.to_string()))?;
 
-        let df = workbook_to_dataframe(&mut workbook);
-
-        df.unwrap()
+        workbook_to_dataframe(&mut workbook).map_err(|e| read_error(e.to_string()))
     }
 
     /// Validates required columns and consistency constraints.
@@ -826,16 +921,32 @@ Taxonomy\n{}\nConflicting rows:\n{}",
     /// # Returns
     ///
     /// DataFrame if the file can be read.
-    pub fn polars_from_path(path: impl AsRef<Path>) -> Option<DataFrame> {
-        let ext = match path.as_ref().extension() {
-            Some(ext) => ext,
-            None => panic!("File needs to be either .xlsx, .csv, or .tsv. Found not extension"),
-        };
-        match ext.to_str() {
-            Some("xlsx") => Some(Self::df_from_xlsx(path)),
-            Some("tsv") => Some(Self::df_from_text(path)),
-            Some("csv") => Some(Self::df_from_text(path)),
-            _ => panic!("Found extension is not valid ({:?})", ext),
+    ///
+    /// # Errors
+    ///
+    /// Returns `MetaError::DataError` when the file is missing, has an unsupported
+    /// extension, or cannot be parsed.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let df = Meta::polars_from_path("data/test_data/meta/meta.xlsx")?;
+    /// ```
+    pub fn polars_from_path(path: impl AsRef<Path>) -> Result<DataFrame, MetaError> {
+        let path = path.as_ref();
+        if !path.is_file() {
+            return Err(MetaError::DataError(format!(
+                "Meta file not found: '{}'",
+                path.display()
+            )));
+        }
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some("xlsx") => Self::df_from_xlsx(path),
+            Some("tsv") | Some("csv") => Self::df_from_text(path),
+            _ => Err(MetaError::DataError(format!(
+                "Meta file '{}' must end in .xlsx, .csv or .tsv",
+                path.display()
+            ))),
         }
     }
 
@@ -853,16 +964,7 @@ Taxonomy\n{}\nConflicting rows:\n{}",
     ///
     /// Returns `MetaError` when loading or validation fails.
     pub fn from_path(path: impl AsRef<Path>) -> MetaResult {
-        let ext = match path.as_ref().extension() {
-            Some(ext) => ext,
-            None => panic!("File needs to be either .xlsx, .csv, or .tsv. Found not extension"),
-        };
-        let entries = match ext.to_str() {
-            Some("xlsx") => Self::df_from_xlsx(path),
-            Some("tsv") => Self::df_from_text(path),
-            Some("csv") => Self::df_from_text(path),
-            _ => panic!("Found extension is not valid ({:?})", ext),
-        };
+        let entries = Self::polars_from_path(path)?;
         let is_matrix = Self::is_matrix_format(&entries);
         let meta = Self::from_polars_df(entries)?;
         if is_matrix {
@@ -1002,7 +1104,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use polars::frame::DataFrame;
+    use polars::{frame::DataFrame, prelude::NamedFrom, series::Series};
 
     use super::{Meta, MetaEntry};
 
@@ -1094,5 +1196,79 @@ mod tests {
         };
 
         assert!(meta.validate_paths().is_ok());
+    }
+
+    fn per_sample_df(columns: &[(&str, Option<&str>)]) -> DataFrame {
+        DataFrame::new(
+            columns
+                .iter()
+                .map(|(name, value)| Series::new((*name).into(), &[*value]))
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    fn full_row() -> Vec<(&'static str, Option<&'static str>)> {
+        vec![
+            ("ID", Some("r1")),
+            ("Sample", Some("s1")),
+            ("Tool", Some("tool")),
+            ("Taxonomy", Some("GTDB")),
+            ("Profile", Some("p.tsv")),
+            ("GoldStd", Some("g.tsv")),
+            ("GoldStdTree", Some("NA")),
+        ]
+    }
+
+    #[test]
+    fn test_missing_columns_are_named_with_case_hint() {
+        let mut row = full_row();
+        row.retain(|(name, _)| *name != "Taxonomy");
+        row.iter_mut()
+            .filter(|(name, _)| *name == "GoldStd")
+            .for_each(|entry| entry.0 = "goldstd");
+
+        let err = Meta::from_polars_df(per_sample_df(&row))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("Taxonomy"), "{}", err);
+        assert!(err.contains("GoldStd (found 'goldstd'"), "{}", err);
+    }
+
+    #[test]
+    fn test_empty_cell_reports_row_and_column() {
+        let mut row = full_row();
+        row.iter_mut()
+            .filter(|(name, _)| *name == "Tool")
+            .for_each(|entry| entry.1 = None);
+
+        let err = Meta::from_polars_df(per_sample_df(&row))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("row 2: column 'Tool' is empty"), "{}", err);
+    }
+
+    #[test]
+    fn test_numeric_id_column_is_read_as_text() {
+        let mut df = per_sample_df(&full_row());
+        df.with_column(Series::new("ID".into(), &[7i64])).unwrap();
+
+        let meta = Meta::from_polars_df(df).unwrap();
+        assert_eq!(meta.entries[0].id, "7");
+    }
+
+    #[test]
+    fn test_polars_from_path_missing_file_and_bad_extension() {
+        let err = Meta::polars_from_path("does/not/exist.xlsx")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Meta file not found"), "{}", err);
+
+        let err = Meta::polars_from_path("Cargo.toml")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must end in .xlsx, .csv or .tsv"), "{}", err);
     }
 }

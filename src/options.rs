@@ -16,7 +16,13 @@ pub const LOGO: &str = "
 #[command(max_term_width = 120)]
 pub struct Args {
     /// Log level: debug, info, warning, error
-    #[arg(long, default_value = "info", global = true)]
+    #[arg(
+        long,
+        default_value = "info",
+        global = true,
+        ignore_case = true,
+        value_parser = ["debug", "info", "warn", "warning", "error"]
+    )]
     pub log_level: String,
 
     /// Subcommand to run.
@@ -100,12 +106,13 @@ pub enum NormalizeOutputFormat {
 /// Shared benchmark arguments used by multiple subcommands.
 #[derive(ClapArgs, Debug, Clone)]
 pub struct CommonArgs {
-    /// Meta file
+    /// Meta file (.xlsx, .csv or .tsv) listing prediction and gold standard profiles.
     #[arg(short = 'm', long)]
     pub meta: Option<String>,
 
     /// Output prefix for all files. E.g. '--outprefix output_folder/output' will produce
-    /// the files output_folder/output_summary_stats.tsv and output_folder/output_sample_stats.tsv.
+    /// output_folder/output.tsv (summary per sample and rank) and
+    /// output_folder/output_detailed.tsv (one row per taxon). The folder must exist.
     /// Optional when using --validate-meta.
     #[arg(short = 'o', long)]
     pub outprefix: Option<String>,

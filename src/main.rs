@@ -43,12 +43,7 @@ fn main() {
         "info" => "info",
         "warn" | "warning" => "warn",
         "error" => "error",
-        other => {
-            panic!(
-                "Invalid --log-level '{}'. Use: debug, info, warning, error.",
-                other
-            );
-        }
+        other => unreachable!("clap rejects --log-level '{}'", other),
     };
     let env = Env::default().default_filter_or(level);
     env_logger::Builder::from_env(env).init();

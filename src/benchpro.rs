@@ -37,13 +37,54 @@ pub fn run(args: &CommonArgs) {
         validate_meta_only(args);
         return;
     }
-    if args.outprefix.is_none() {
+    let Some(outprefix) = args.outprefix.as_deref() else {
         error!("--outprefix is required unless --validate-meta is used");
         exit(2);
+    };
+    if args.meta.is_none() {
+        error!("--meta is required");
+        exit(2);
     }
-    match &args.meta {
-        Some(_) => meta_based_workflow(args),
-        None => meta_free_workflow(args),
+    if let Err(message) = check_output_prefix(outprefix) {
+        error!("{}", message);
+        exit(2);
+    }
+    meta_based_workflow(args);
+}
+
+/// Checks that the folder for `outprefix` exists, so a run does not fail after computing.
+///
+/// # Arguments
+///
+/// * `outprefix` - Output prefix such as `results/run1`
+///
+/// # Returns
+///
+/// `Ok(())` when output files can be created next to the prefix.
+///
+/// # Errors
+///
+/// Returns a user-facing message when the output folder is missing.
+///
+/// # Examples
+///
+/// ```ignore
+/// assert!(check_output_prefix("run1").is_ok());
+/// assert!(check_output_prefix("missing_dir/run1").is_err());
+/// ```
+fn check_output_prefix(outprefix: &str) -> Result<(), String> {
+    let folder = match Path::new(outprefix).parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => return Ok(()),
+    };
+    if folder.is_dir() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Output folder '{}' does not exist. Create it with: mkdir -p {}",
+            folder.display(),
+            folder.display()
+        ))
     }
 }
 
@@ -212,7 +253,6 @@ fn normalize_profile_or_panic(
 fn compute_abundance_metrics(df: &DataFrame) -> PolarsResult<DataFrame> {
     let rank_col = df.column("Rank")?.str()?;
     let id_col = df.column("ID")?.str()?;
-    let name_col = df.column("Name")?.str()?;
     let allow_alternatives_col = df.column("AllowAlternatives")?.bool()?;
     let adjusted_col = df.column("Adjusted")?.str()?;
     let type_col = df.column("Type")?.str()?;
@@ -224,7 +264,6 @@ fn compute_abundance_metrics(df: &DataFrame) -> PolarsResult<DataFrame> {
     for row_index in 0..df.height() {
         let rank = rank_col.get(row_index).unwrap_or("");
         let id = id_col.get(row_index).unwrap_or("");
-        let name = name_col.get(row_index).unwrap_or("");
         let allow_alternatives = allow_alternatives_col.get(row_index).unwrap_or(false);
         let adjusted = adjusted_col.get(row_index).unwrap_or("");
         let bc_type = type_col.get(row_index).unwrap_or("");
@@ -243,11 +282,6 @@ fn compute_abundance_metrics(df: &DataFrame) -> PolarsResult<DataFrame> {
             prediction_tp: Vec::new(),
             gold_std_tp: Vec::new(),
         });
-
-        println!(
-            "{} Taxon: {}, Gold: {}, Prediction: {}",
-            bc_type, name, gold_abundance, pred_abundance
-        );
 
         entry.prediction.push(pred_abundance);
         entry.gold_std.push(gold_abundance);
@@ -275,8 +309,6 @@ fn compute_abundance_metrics(df: &DataFrame) -> PolarsResult<DataFrame> {
         let pearson_score = pearson_correlation(&values.prediction, &values.gold_std);
         let spearman_score = spearman_correlation(&values.prediction, &values.gold_std);
 
-        println!("Rank: {}, ID: {}\n{:?}", rank, id, values);
-
         let l2_score_tp = if values.prediction_tp.is_empty() {
             f64::NAN
         } else {
@@ -292,8 +324,10 @@ fn compute_abundance_metrics(df: &DataFrame) -> PolarsResult<DataFrame> {
         } else {
             spearman_correlation(&values.prediction_tp, &values.gold_std_tp)
         };
-        println!(
-            "l2 {}\npc {}\nsc{}\nbc {}\nl2tp {}\npctp {}\nsctp {}",
+        debug!(
+            "{} {}: l2 {} pc {} sc {} bc {} l2tp {} pctp {} sctp {}",
+            rank,
+            id,
             l2_score,
             pearson_score,
             spearman_score,
@@ -302,11 +336,6 @@ fn compute_abundance_metrics(df: &DataFrame) -> PolarsResult<DataFrame> {
             pearson_score_tp,
             spearman_score_tp
         );
-
-        if pearson_score_tp < 0.0 {
-            println!("Pearson score: {}", pearson_score_tp);
-            exit(1);
-        }
 
         ranks.push(rank);
         ids.push(id);
@@ -476,14 +505,29 @@ pub fn meta_based_workflow(args: &CommonArgs) {
 
     let handler = match ProfileHandler::from_meta(path) {
         Ok(handler) => handler,
-        Err(e) => panic!("Failed to load profiles: {}", e),
+        Err(e) => {
+            error!("Failed to load meta file '{}': {}", path.display(), e);
+            exit(1);
+        }
     };
 
-    let tree_handler = TreeHandler::from_meta(&handler.meta);
+    if args.adjusted
+        && handler
+            .meta
+            .raw
+            .column(MetaColumn::Dataset.to_str())
+            .is_err()
+    {
+        error!("--adjusted needs a 'Dataset' column in the meta file");
+        exit(2);
+    }
 
-    let tree_handler = match tree_handler {
+    let tree_handler = match TreeHandler::from_meta(&handler.meta) {
         Ok(th) => th,
-        Err(e) => panic!("{}", e),
+        Err(e) => {
+            error!("Failed to load GoldStdTree: {}", e);
+            exit(1);
+        }
     };
 
     ///////////////////////////////////////////////////////////////////////
@@ -637,19 +681,11 @@ pub fn meta_based_workflow(args: &CommonArgs) {
     info!("File written to: {}", file_name_bc);
 }
 
-/// Placeholder for a meta-free workflow.
-/// Execute the meta-free workflow (not implemented).
-///
-/// # Arguments
-///
-/// * `args` - Parsed CLI arguments
-pub fn meta_free_workflow(_args: &CommonArgs) {}
-
 #[cfg(test)]
 mod tests {
     use polars::prelude::{DataFrame, NamedFrom, Series};
 
-    use super::add_binary_classification;
+    use super::{add_binary_classification, check_output_prefix};
 
     fn approx_eq(left: f64, right: f64) -> bool {
         (left - right).abs() <= 1e-12
@@ -684,5 +720,14 @@ mod tests {
         // Two TP points always lie on a line.
         assert!(approx_eq(get_f64("PearsonCorrelationTP"), 1.0));
         assert!(approx_eq(get_f64("SpearmanCorrelationTP"), 1.0));
+    }
+
+    #[test]
+    fn test_check_output_prefix() {
+        assert!(check_output_prefix("run1").is_ok());
+        assert!(check_output_prefix("src/run1").is_ok());
+
+        let err = check_output_prefix("no_such_folder_xyz/run1").unwrap_err();
+        assert!(err.contains("mkdir -p no_such_folder_xyz"), "{}", err);
     }
 }

@@ -767,9 +767,7 @@ fn find_column_name(df: &DataFrame, expected: &str) -> Option<String> {
 }
 
 fn load_strain_jobs(path: &Path) -> Result<Vec<StrainJob>, StrainError> {
-    let df = Meta::polars_from_path(path).ok_or_else(|| {
-        StrainError::Meta(format!("Failed to read meta file '{}'", path.display()))
-    })?;
+    let df = Meta::polars_from_path(path).map_err(|e| StrainError::Meta(e.to_string()))?;
 
     let id_col = find_column_name(&df, StrainMetaColumns::ID).ok_or_else(|| {
         StrainError::Meta(format!(
@@ -872,12 +870,7 @@ fn load_strain_jobs(path: &Path) -> Result<Vec<StrainJob>, StrainError> {
 fn load_genome_groups(
     path: &Path,
 ) -> Result<BTreeMap<String, Vec<SampleInfo>>, StrainError> {
-    let df = Meta::polars_from_path(path).ok_or_else(|| {
-        StrainError::Meta(format!(
-            "Failed to read sample meta file '{}'",
-            path.display()
-        ))
-    })?;
+    let df = Meta::polars_from_path(path).map_err(|e| StrainError::Meta(e.to_string()))?;
 
     let id_col = find_column_name(&df, SampleMetaColumns::ID).ok_or_else(|| {
         StrainError::Meta(format!(

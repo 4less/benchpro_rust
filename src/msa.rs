@@ -211,8 +211,7 @@ pub fn run_msa(args: &MsaArgs) -> Result<(), MsaError> {
 }
 
 fn load_msa_jobs(path: &Path) -> Result<Vec<MsaJob>, MsaError> {
-    let df = Meta::polars_from_path(path)
-        .ok_or_else(|| MsaError::Meta(format!("Failed to read meta file '{}'", path.display())))?;
+    let df = Meta::polars_from_path(path).map_err(|e| MsaError::Meta(e.to_string()))?;
 
     let id_col = find_column_name(&df, MsaMetaColumns::ID).ok_or_else(|| {
         MsaError::Meta(format!(
@@ -266,9 +265,7 @@ fn load_msa_jobs(path: &Path) -> Result<Vec<MsaJob>, MsaError> {
 }
 
 fn load_msa_genome_groups(path: &Path) -> Result<BTreeMap<String, Vec<String>>, MsaError> {
-    let df = Meta::polars_from_path(path).ok_or_else(|| {
-        MsaError::Meta(format!("Failed to read MSA meta file '{}'", path.display()))
-    })?;
+    let df = Meta::polars_from_path(path).map_err(|e| MsaError::Meta(e.to_string()))?;
 
     let id_col = find_column_name(&df, MsaSampleColumns::ID).ok_or_else(|| {
         MsaError::Meta(format!(

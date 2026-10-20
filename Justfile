@@ -6,7 +6,7 @@ install:
 
 sylph-debug:
     mkdir -p sandbox/output
-    cargo run -- --meta ./data/input/meta_debug_sylph_mouse.xlsx --outprefix sandbox/output/sylph_debug
+    cargo run -- profile --meta ./data/input/meta_debug_sylph_mouse.xlsx --outprefix sandbox/output/sylph_debug
     
 merge-test-r214:
     #!/usr/bin/env bash
