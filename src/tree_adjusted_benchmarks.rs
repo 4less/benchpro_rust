@@ -139,13 +139,13 @@ pub fn get_adjusted_benchmarks(
                 .data()
                 .iter()
                 .map(|r| {
-                    let abundance: f64 = match (r.goldstd_abundance, r.prediction_abundance) {
-                        (None, None) => 0f64,
-                        (None, Some(p)) => p,
-                        (Some(g), None) => g,
-                        (Some(g), Some(_)) => g,
+                    // FP rows carry a gold abundance of 0.0, so pick by type, not presence.
+                    let abundance = if r.bc_type == BC::FP {
+                        r.prediction_abundance
+                    } else {
+                        r.goldstd_abundance
                     };
-                    (r.name.clone(), abundance)
+                    (r.name.clone(), abundance.unwrap_or(0f64))
                 })
                 .collect::<HashMap<_, _>>();
 
@@ -216,4 +216,150 @@ pub fn get_adjusted_benchmarks(
     }
 
     all_dfs
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, fs, sync::Mutex};
+
+    use phylotree::tree::Tree;
+    use polars::prelude::{DataFrame, NamedFrom, Series};
+
+    use super::get_adjusted_benchmarks;
+    use crate::{
+        meta::Meta,
+        profile_handler::ProfileHandler,
+        tree_handler::{Name2Id, TreeHandler},
+    };
+
+    /// Pairs at distance 0.02: (fn1, fp1) with fn1 undetectable, (fn3, fp3) with fn3
+    /// detectable. fp2 and fn2 have no neighbor within the 0.04 threshold.
+    const NEWICK: &str = "((s__fn1:0.01,s__fp1:0.01):0.5,(s__tp:0.3,s__fp2:0.3):0.5,\
+(s__fn3:0.01,s__fp3:0.01):0.5,s__fn2:1.0);";
+
+    fn tree_handler_for(path: &str) -> TreeHandler {
+        let tree = Tree::from_newick(NEWICK).unwrap();
+        let name2id = tree
+            .get_leaves()
+            .iter()
+            .map(|id| (tree.get(id).unwrap().name.clone().unwrap(), *id))
+            .collect::<Name2Id>();
+        let mut tree_map = HashMap::new();
+        tree_map.insert(path.to_string(), (name2id, tree));
+        TreeHandler { tree_map }
+    }
+
+    fn profile_handler_for(path: &str) -> ProfileHandler {
+        let raw = DataFrame::new(vec![
+            Series::new("ID".into(), &["S1"]),
+            Series::new("GoldStdTree".into(), &[path]),
+        ])
+        .unwrap();
+        ProfileHandler {
+            meta: Meta {
+                raw,
+                entries: Vec::new(),
+            },
+            prediction_map: HashMap::new(),
+            gold_std_map: HashMap::new(),
+            available_taxa: HashMap::new(),
+        }
+    }
+
+    fn detailed_df() -> DataFrame {
+        let rows: &[(&str, &str, f64, f64, &str)] = &[
+            ("s__tp", "TP", 0.2, 0.2, "True"),
+            ("s__fp1", "FP", 0.3, 0.0, "False"),
+            ("s__fn1", "FN", 0.0, 0.25, "False"),
+            ("s__fp2", "FP", 0.1, 0.0, "False"),
+            ("s__fn2", "FN", 0.0, 0.15, "False"),
+            ("s__fp3", "FP", 0.4, 0.0, "False"),
+            ("s__fn3", "FN", 0.0, 0.4, "True"),
+        ];
+        let n = rows.len();
+        DataFrame::new(vec![
+            Series::new("Name".into(), rows.iter().map(|r| r.0).collect::<Vec<_>>()),
+            Series::new("Type".into(), rows.iter().map(|r| r.1).collect::<Vec<_>>()),
+            Series::new(
+                "PredictionAbundance".into(),
+                rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+            ),
+            Series::new(
+                "GoldStdAbundance".into(),
+                rows.iter().map(|r| r.3).collect::<Vec<_>>(),
+            ),
+            Series::new(
+                "PredictionCount".into(),
+                rows.iter().map(|r| (r.2 > 0.0) as i64).collect::<Vec<_>>(),
+            ),
+            Series::new(
+                "GoldStdCount".into(),
+                rows.iter().map(|r| (r.3 > 0.0) as i64).collect::<Vec<_>>(),
+            ),
+            Series::new(
+                "DetectableTaxon".into(),
+                rows.iter().map(|r| r.4).collect::<Vec<_>>(),
+            ),
+            Series::new("ValidTaxon".into(), vec!["false"; n]),
+            Series::new("Rank".into(), vec!["Species"; n]),
+            Series::new("ID".into(), vec!["S1"; n]),
+            Series::new("AllowAlternatives".into(), vec![false; n]),
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn test_adjusted_reclassifies_fp_close_to_undetectable_fn() {
+        let dir = std::env::temp_dir().join(format!("benchpro_adjusted_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let tree_path = dir.join("tree.nwk");
+        fs::write(&tree_path, NEWICK).unwrap();
+        let tree_path = tree_path.to_str().unwrap();
+
+        let profile_handler = profile_handler_for(tree_path);
+        let tree_handler = Mutex::new(tree_handler_for(tree_path));
+
+        let df = get_adjusted_benchmarks(
+            &detailed_df(),
+            &profile_handler.meta,
+            &tree_handler,
+            &profile_handler,
+        )
+        .unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        let names = df.column("Name").unwrap().str().unwrap();
+        let types = df.column("Type").unwrap().str().unwrap();
+        let pred = df.column("PredictionAbundance").unwrap().f64().unwrap();
+        let gold = df.column("GoldStdAbundance").unwrap().f64().unwrap();
+        let rows: HashMap<&str, (&str, f64, f64)> = (0..df.height())
+            .map(|i| {
+                let value = (
+                    types.get(i).unwrap(),
+                    pred.get(i).unwrap(),
+                    gold.get(i).unwrap(),
+                );
+                (names.get(i).unwrap(), value)
+            })
+            .collect();
+
+        assert_eq!(rows.len(), 7);
+        assert_eq!(rows["s__tp"].0, "TP");
+
+        // FP within threshold of an undetectable FN: the FP becomes FFP and the FN becomes
+        // a TP carrying the FP's abundance.
+        assert_eq!(rows["s__fp1"].0, "FFP");
+        assert_eq!(rows["s__fn1"], ("TP", 0.3, 0.25));
+
+        // No neighbor within the threshold: unchanged.
+        assert_eq!(rows["s__fp2"].0, "FP");
+        assert_eq!(rows["s__fn2"].0, "FN");
+
+        // FN is detectable by the tool, so a nearby FP is a genuine error.
+        assert_eq!(rows["s__fp3"].0, "FP");
+        assert_eq!(rows["s__fn3"].0, "FN");
+
+        let alt = df.column("AllowAlternatives").unwrap().bool().unwrap();
+        assert!(alt.into_iter().all(|v| v == Some(false)));
+    }
 }

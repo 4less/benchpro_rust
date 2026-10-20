@@ -218,7 +218,7 @@ impl DetailedDataRow {
                 }
             }
             DetailedColumn::DetectableTaxon => {
-                self.valid_taxon = match value.to_lowercase().as_str() {
+                self.detectable_taxon = match value.to_lowercase().as_str() {
                     "true" => Some(true),
                     "false" => Some(false),
                     "1" => Some(true),
@@ -516,5 +516,21 @@ impl DetailedData {
     {
         self.data.sort_by(compare);
         self.init_map();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DetailedColumn, DetailedDataRow};
+
+    #[test]
+    fn test_set_field_detectable_taxon_sets_detectable_not_valid() {
+        let mut row = DetailedDataRow::default();
+        row.set_field(DetailedColumn::ValidTaxon, "false").unwrap();
+        row.set_field(DetailedColumn::DetectableTaxon, "True")
+            .unwrap();
+
+        assert_eq!(row.detectable_taxon, Some(true));
+        assert_eq!(row.valid_taxon, Some(false));
     }
 }
