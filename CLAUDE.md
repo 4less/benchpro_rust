@@ -21,7 +21,7 @@ cargo clippy
 cargo fmt
 
 # Install locally (via Justfile)
-just install-local
+just install
 ```
 
 ## Architecture
