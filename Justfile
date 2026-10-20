@@ -1,6 +1,6 @@
 set shell := ["bash", "-cu"]
 
-install-local:
+install:
     cargo install --locked --path . --root ~/.local
     install -m 755 scripts/benchpro_visualize_monophyly.R ~/.local/bin/benchpro_visualize_monophyly
 
