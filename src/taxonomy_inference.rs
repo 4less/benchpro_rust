@@ -25,7 +25,7 @@ use log::{info, warn};
 use polars::prelude::{NamedFrom, Series};
 use regex::Regex;
 
-use crate::meta::{Meta, MetaColumn, MetaColumnStrings};
+use crate::meta::{Meta, MetaColumn, MetaColumnStrings, MetaEntry};
 
 /// Maximum number of data lines scanned per profile.
 const MAX_SCAN_LINES: usize = 200_000;
@@ -634,6 +634,182 @@ pub const WARN_GIVEN_CONFLICT: &str = "Taxonomy column contradicts the profile c
 pub const WARN_MEDIUM: &str = "taxonomy inferred with medium confidence";
 /// Prediction names are missing from the gold standard's release.
 pub const WARN_RELEASE_GAP: &str = "prediction names missing from the gold standard's release";
+/// Rows of one tool use different taxonomies (only when mismatches are allowed).
+pub const WARN_TOOL_MIX: &str = "rows of one tool use different taxonomies";
+/// Rows of one tool best match releases that do not overlap.
+pub const WARN_TOOL_RELEASE: &str = "rows of one tool match different releases";
+/// A row's prediction had too little evidence and took its tool's taxonomy.
+pub const WARN_FROM_TOOL: &str = "taxonomy taken from other rows of the same tool";
+
+type Inferences = Vec<(Option<FileInference>, Option<FileInference>)>;
+
+fn confident_family(f: &Option<FileInference>) -> Option<TaxonomyFamily> {
+    f.as_ref()
+        .filter(|f| f.confidence >= Confidence::Medium)
+        .and_then(|f| f.family)
+}
+
+/// Checks that all rows of one `Tool` use one taxonomy, since a tool run with one database
+/// writes every profile in that database's taxonomy.
+///
+/// # Arguments
+///
+/// * `entries` - Meta entries
+/// * `inferences` - (prediction, gold standard) inference per entry
+/// * `allow_mismatch` - Downgrade taxonomy mixes to warnings
+///
+/// # Returns
+///
+/// `(families, errors, warnings)`: the single taxonomy of each consistent tool, error
+/// messages, and `(entry index, warning)` pairs.
+fn tool_consensus(
+    entries: &[MetaEntry],
+    inferences: &Inferences,
+    allow_mismatch: bool,
+) -> (
+    HashMap<String, TaxonomyFamily>,
+    Vec<String>,
+    Vec<(usize, RowWarning)>,
+) {
+    let mut by_tool: Vec<(&str, Vec<usize>)> = Vec::new();
+    for (i, entry) in entries.iter().enumerate() {
+        match by_tool.iter_mut().find(|(tool, _)| *tool == entry.tool) {
+            Some((_, rows)) => rows.push(i),
+            None => by_tool.push((entry.tool.as_str(), vec![i])),
+        }
+    }
+
+    let mut families = HashMap::new();
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    let ids = |rows: &[usize]| {
+        let ids = rows
+            .iter()
+            .map(|&i| entries[i].id.as_str())
+            .collect::<Vec<_>>();
+        let shown = ids.iter().take(5).copied().collect::<Vec<_>>().join(", ");
+        match ids.len() {
+            n if n > 5 => format!("{} and {} more", shown, n - 5),
+            _ => shown,
+        }
+    };
+
+    for (tool, rows) in &by_tool {
+        // Family per row: the given Taxonomy, else a confident inference.
+        let mut by_family: Vec<(TaxonomyFamily, Vec<usize>)> = Vec::new();
+        for &i in rows {
+            let given = TaxonomyFamily::from_label(&entries[i].taxonomy);
+            let family = if entries[i].taxonomy.is_empty() {
+                confident_family(&inferences[i].0)
+            } else {
+                given
+            };
+            if let Some(family) = family {
+                match by_family.iter_mut().find(|(f, _)| *f == family) {
+                    Some((_, r)) => r.push(i),
+                    None => by_family.push((family, vec![i])),
+                }
+            }
+        }
+        match by_family.as_slice() {
+            [] => {}
+            [(family, _)] => {
+                families.insert(tool.to_string(), *family);
+            }
+            mixed => {
+                let parts = mixed
+                    .iter()
+                    .map(|(f, r)| format!("{} in {} row(s) ({})", f, r.len(), ids(r)))
+                    .collect::<Vec<_>>();
+                let message = format!(
+                    "tool '{}' mixes taxonomies: {}. All profiles of one tool and database must \
+                     use one taxonomy. Check these rows, or give different databases different \
+                     Tool names (e.g. MetaPhlAn4 and MetaPhlAn4_GTDB).",
+                    tool,
+                    parts.join("; ")
+                );
+                if allow_mismatch {
+                    for &i in rows {
+                        warnings.push((
+                            i,
+                            RowWarning {
+                                kind: WARN_TOOL_MIX,
+                                message: message.clone(),
+                            },
+                        ));
+                    }
+                } else {
+                    errors.push(message);
+                }
+            }
+        }
+
+        let mut labels: Vec<(&str, Vec<usize>)> = Vec::new();
+        for &i in rows.iter().filter(|&&i| !entries[i].taxonomy.is_empty()) {
+            let label = entries[i].taxonomy.as_str();
+            match labels.iter_mut().find(|(l, _)| *l == label) {
+                Some((_, r)) => r.push(i),
+                None => labels.push((label, vec![i])),
+            }
+        }
+        if labels.len() > 1 && by_family.len() <= 1 {
+            let parts = labels
+                .iter()
+                .map(|(l, r)| format!("'{}' in {} row(s) ({})", l, r.len(), ids(r)))
+                .collect::<Vec<_>>();
+            errors.push(format!(
+                "tool '{}' has different Taxonomy values: {}. One tool and database has one \
+                 taxonomy release; use one value, or give different databases different Tool \
+                 names.",
+                tool,
+                parts.join("; ")
+            ));
+        }
+
+        // Releases: one database matches one release, but a single sample's best release is
+        // estimated from few names, so disagreement is only a warning.
+        let candidates = rows
+            .iter()
+            .map(|&i| {
+                inferences[i]
+                    .0
+                    .as_ref()
+                    .map(|f| f.release_candidates.clone())
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        if candidates.len() > 1 && candidates.iter().all(|c| !c.is_empty()) {
+            let common = candidates[0]
+                .iter()
+                .filter(|v| candidates.iter().all(|c| c.contains(v)))
+                .count();
+            if common == 0 {
+                let parts = rows
+                    .iter()
+                    .zip(&candidates)
+                    .take(5)
+                    .map(|(&i, c)| format!("{}: {}", entries[i].id, describe_versions(c)))
+                    .collect::<Vec<_>>();
+                let message = format!(
+                    "tool '{}': no release matches all its rows best ({}). One database \
+                     should match one release; check for mixed databases.",
+                    tool,
+                    parts.join("; ")
+                );
+                for &i in rows {
+                    warnings.push((
+                        i,
+                        RowWarning {
+                            kind: WARN_TOOL_RELEASE,
+                            message: message.clone(),
+                        },
+                    ));
+                }
+            }
+        }
+    }
+    (families, errors, warnings)
+}
 
 /// Resolves taxonomy for every meta row: infers missing values and checks given ones.
 ///
@@ -706,21 +882,28 @@ pub fn resolve_meta(
             .map(|e| infer(e, index.as_ref()))
     };
 
+    let inferences: Inferences = meta
+        .entries
+        .iter()
+        .map(|e| (infer_path(&e.profile), infer_path(&e.goldstd)))
+        .collect();
+    let (tool_families, mut errors, tool_warnings) =
+        tool_consensus(&meta.entries, &inferences, options.allow_taxonomy_mismatch);
+
     let mut rows = Vec::with_capacity(meta.entries.len());
-    let mut errors = Vec::new();
-    for entry in &meta.entries {
-        let profile = infer_path(&entry.profile);
-        let goldstd = infer_path(&entry.goldstd);
+    for (index, (entry, (profile, goldstd))) in meta.entries.iter().zip(inferences).enumerate() {
         let mut row = RowTaxonomy {
             id: entry.id.clone(),
             ..Default::default()
         };
+        row.warnings.extend(
+            tool_warnings
+                .iter()
+                .filter(|(i, _)| *i == index)
+                .map(|(_, w)| w.clone()),
+        );
 
-        let confident = |f: &Option<FileInference>| {
-            f.as_ref()
-                .filter(|f| f.confidence >= Confidence::Medium)
-                .and_then(|f| f.family)
-        };
+        let confident = confident_family;
 
         if let (Some(p), Some(g)) = (confident(&profile), confident(&goldstd)) {
             if p != g {
@@ -769,18 +952,26 @@ pub fn resolve_meta(
             }
         } else {
             row.source = "inferred".to_string();
+            let tool_family = tool_families.get(&entry.tool).copied();
+            let from_tool = confident(&profile).is_none() && tool_family.is_some();
+            let profile_family = confident(&profile).or(tool_family);
             match (&profile, &goldstd) {
-                (Some(p), Some(g))
-                    if p.family.is_some()
-                        && p.confidence >= Confidence::Medium
-                        && g.family.is_some()
-                        && g.confidence >= Confidence::Medium =>
-                {
-                    let family = p.family.unwrap();
+                (Some(p), Some(g)) if profile_family.is_some() && confident(&goldstd).is_some() => {
+                    let family = profile_family.unwrap();
                     row.taxonomy = match (&p.release, &g.release) {
-                        (Some(a), Some(b)) if a == b => a.clone(),
+                        (Some(a), Some(b)) if a == b && !from_tool => a.clone(),
                         _ => family.to_string(),
                     };
+                    if from_tool {
+                        row.warnings.push(RowWarning {
+                            kind: WARN_FROM_TOOL,
+                            message: format!(
+                                "row '{}': prediction has too little evidence ({}); using {}, \
+                                 the taxonomy of the other rows of tool '{}'.",
+                                entry.id, p.evidence, family, entry.tool
+                            ),
+                        });
+                    }
                     for (what, f) in [("prediction", p), ("gold standard", g)] {
                         if f.confidence == Confidence::Medium {
                             row.warnings.push(RowWarning {
@@ -1173,5 +1364,50 @@ mod tests {
         )
         .unwrap();
         assert_eq!((missing, release.as_str()), (1, "g-r214"));
+    }
+
+    #[test]
+    fn test_tool_mixing_taxonomies_is_an_error() {
+        let gtdb = write_profile("tool_mix_gtdb.tsv", GTDB_LINES);
+        let ncbi = write_profile("tool_mix_ncbi.tsv", NCBI_LINES);
+        // Each row is consistent on its own, but one tool cannot use both taxonomies.
+        let mut meta = meta_for(&[("r1", None, &gtdb, &gtdb), ("r2", None, &ncbi, &ncbi)]);
+
+        let err = resolve_meta(&mut meta, &InferenceOptions::default()).unwrap_err();
+        assert!(err.contains("tool 'tool' mixes taxonomies"), "{}", err);
+        assert!(err.contains("GTDB in 1 row(s) (r1)"), "{}", err);
+        assert!(err.contains("NCBI in 1 row(s) (r2)"), "{}", err);
+    }
+
+    #[test]
+    fn test_tool_with_different_given_releases_is_an_error() {
+        let gtdb = write_profile("tool_release_gtdb.tsv", GTDB_LINES);
+        let mut meta = meta_for(&[
+            ("r1", Some("GTDB r207"), &gtdb, &gtdb),
+            ("r2", Some("GTDB r214"), &gtdb, &gtdb),
+        ]);
+
+        let err = resolve_meta(&mut meta, &InferenceOptions::default()).unwrap_err();
+        assert!(
+            err.contains("tool 'tool' has different Taxonomy values"),
+            "{}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_low_evidence_row_takes_taxonomy_of_its_tool() {
+        let gtdb = write_profile("tool_borrow_gtdb.tsv", GTDB_LINES);
+        let plain = write_profile(
+            "tool_borrow_plain.tsv",
+            &["Bacteria\t1.0", "Firmicutes\t0.5"],
+        );
+        let mut meta = meta_for(&[("r1", None, &gtdb, &gtdb), ("r2", None, &plain, &gtdb)]);
+
+        let rows = resolve_meta(&mut meta, &InferenceOptions::default()).unwrap();
+
+        assert_eq!(rows[1].taxonomy, "GTDB");
+        assert!(rows[1].warnings.iter().any(|w| w.kind == WARN_FROM_TOOL));
+        assert!(rows[0].warnings.is_empty());
     }
 }

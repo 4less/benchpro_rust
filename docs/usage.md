@@ -68,6 +68,10 @@ Benchpro stops (exit 1) when:
 - a row has no `Taxonomy` and its taxonomy cannot be inferred with confidence;
 - a prediction and its gold standard look like different taxonomies (GTDB vs NCBI), since
   their names cannot match; override with `--allow-taxonomy-mismatch`;
+- rows of one `Tool` use different taxonomies, or different `Taxonomy` values (e.g.
+  `GTDB r207` and `GTDB r214`). One tool with one database has one taxonomy; give different
+  databases different `Tool` names, such as `MetaPhlAn4` and `MetaPhlAn4_GTDB`. The family mix
+  can be overridden with `--allow-taxonomy-mismatch`;
 - no row could be evaluated.
 
 Benchpro warns, and keeps going, when:
@@ -75,6 +79,8 @@ Benchpro warns, and keeps going, when:
 - a given `Taxonomy` contradicts a file's contents (the given value is used);
 - a taxonomy was inferred with only medium confidence;
 - with an index, a prediction uses names missing from the gold standard's release;
+- with an index, the rows of one tool share no best-matching release;
+- a row's prediction had too little evidence and took the taxonomy of its tool's other rows;
 - `--adjusted` skips rows without `GoldStdTree` or runs without `AvailableSpecies`;
 - a row has 0 true positives at species level (usually a naming mismatch);
 - a row could not be evaluated because a profile failed to load.

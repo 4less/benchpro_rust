@@ -28,6 +28,20 @@ Confidence:
 A taxonomy is only inferred with high or medium confidence. Otherwise Benchpro stops and asks
 for a `Taxonomy` value for that row, showing the evidence it found.
 
+## One taxonomy per tool
+
+A tool run with one database writes every profile in that database's taxonomy. Benchpro
+therefore treats the `Tool` column as "tool + database" and checks all its rows together:
+
+- rows of one tool that use different taxonomies (given or inferred) are an **error**, as are
+  different `Taxonomy` values within one tool;
+- a row whose prediction has too little evidence takes the taxonomy of its tool's other rows,
+  with a warning naming the tool;
+- with an index, Benchpro warns when the rows of one tool share no best-matching release. This
+  is only a warning because one sample's best release is estimated from few names.
+
+Use different `Tool` names for different databases, e.g. `MetaPhlAn4` and `MetaPhlAn4_GTDB`.
+
 ## Index evidence (optional)
 
 With a [taxdet](https://github.com/4less/ncbi-taxdump-analyzer) index, Benchpro also looks up
