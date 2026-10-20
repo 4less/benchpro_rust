@@ -644,3 +644,45 @@ pub fn meta_based_workflow(args: &CommonArgs) {
 ///
 /// * `args` - Parsed CLI arguments
 pub fn meta_free_workflow(_args: &CommonArgs) {}
+
+#[cfg(test)]
+mod tests {
+    use polars::prelude::{DataFrame, NamedFrom, Series};
+
+    use super::add_binary_classification;
+
+    fn approx_eq(left: f64, right: f64) -> bool {
+        (left - right).abs() <= 1e-12
+    }
+
+    #[test]
+    fn test_add_binary_classification_summary_metrics() {
+        let df = DataFrame::new(vec![
+            Series::new("Name".into(), &["s__a", "s__b", "s__c", "s__d"]),
+            Series::new("Type".into(), &["TP", "TP", "FP", "FN"]),
+            Series::new("PredictionAbundance".into(), &[0.5, 0.3, 0.2, 0.0]),
+            Series::new("GoldStdAbundance".into(), &[0.6, 0.3, 0.0, 0.1]),
+            Series::new("Rank".into(), &["species"; 4]),
+            Series::new("ID".into(), &["S1"; 4]),
+            Series::new("AllowAlternatives".into(), &[false; 4]),
+            Series::new("Adjusted".into(), &["False"; 4]),
+        ])
+        .unwrap();
+
+        let summary = add_binary_classification(df).unwrap();
+        assert_eq!(summary.height(), 1);
+
+        let get_u32 = |name: &str| summary.column(name).unwrap().u32().unwrap().get(0).unwrap();
+        let get_f64 = |name: &str| summary.column(name).unwrap().f64().unwrap().get(0).unwrap();
+
+        assert_eq!((get_u32("TP"), get_u32("FP"), get_u32("FN")), (2, 1, 1));
+        assert!(approx_eq(get_f64("F1"), 4.0 / 6.0));
+        assert!(approx_eq(get_f64("Sensitivity"), 2.0 / 3.0));
+        assert!(approx_eq(get_f64("Precision"), 2.0 / 3.0));
+        // |0.5-0.6| + 0 + 0.2 + 0.1 = 0.4 over a total of 2.0.
+        assert!(approx_eq(get_f64("BrayCurtisSimilarity"), 0.8));
+        // Two TP points always lie on a line.
+        assert!(approx_eq(get_f64("PearsonCorrelationTP"), 1.0));
+        assert!(approx_eq(get_f64("SpearmanCorrelationTP"), 1.0));
+    }
+}
