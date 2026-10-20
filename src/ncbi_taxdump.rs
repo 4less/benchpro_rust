@@ -5,6 +5,8 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use log::info;
+
 /// NCBI taxonomy helper backed by `nodes.dmp` and `names.dmp`.
 #[derive(Debug, Default)]
 pub struct NcbiTaxdump {
@@ -196,6 +198,13 @@ impl NcbiTaxdump {
     fn download_and_extract(root: &Path) -> Result<(), String> {
         let archive_path = root.join("new_taxdump.tar.gz");
         let url = "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/new_taxdump/new_taxdump.tar.gz";
+        info!(
+            "Downloading the NCBI taxdump once (needed to add lineages to taxid-only profiles \
+             such as Bracken): {} -> {} (about 700 MB on disk). To use an existing copy of \
+             nodes.dmp and names.dmp, set BENCHPRO_NCBI_DIR.",
+            url,
+            root.display()
+        );
 
         let curl_status = Command::new("curl")
             .args(["-L", "-o"])
@@ -229,6 +238,7 @@ impl NcbiTaxdump {
             ));
         }
 
+        info!("NCBI taxdump ready in {}", root.display());
         Ok(())
     }
 }

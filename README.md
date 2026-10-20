@@ -41,4 +41,6 @@ Check a meta file without running the benchmark:
 benchpro profile --meta my_meta.tsv --validate-meta
 ```
 
+More examples, from a minimal meta file to common mistakes: `examples/` (`just --list` shows one recipe per demo; `just examples` runs all).
+
 Other subcommands: `strain`, `merge`, `msa`, `normalize`. Run `benchpro <subcommand> --help`.

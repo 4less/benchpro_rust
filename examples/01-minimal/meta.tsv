@@ -1,0 +1,5 @@
+ID	Sample	Tool	Profile	GoldStd
+sylph_3	gastrointestinal_3	sylph	data/test_data/profiles/predictions/sylph/Gastrointestinal_3.profile	data/test_data/profiles/gold_standard/GTDB/r214/abundance_3_gtdb.profile
+sylph_4	gastrointestinal_4	sylph	data/test_data/profiles/predictions/sylph/Gastrointestinal_4.profile	data/test_data/profiles/gold_standard/GTDB/r214/abundance_4_gtdb.profile
+protal_3	gastrointestinal_3	protal	data/test_data/profiles/predictions/protal/3.profile	data/test_data/profiles/gold_standard/GTDB/r214/abundance_3_gtdb.profile
+protal_4	gastrointestinal_4	protal	data/test_data/profiles/predictions/protal/4.profile	data/test_data/profiles/gold_standard/GTDB/r214/abundance_4_gtdb.profile

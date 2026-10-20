@@ -6,7 +6,7 @@ use std::{
 };
 
 use itertools::izip;
-use log::{debug, info, warn};
+use log::{debug, warn};
 
 use crate::{
     common::{ChocoPhlAn, Custom, TaxonomicRank, GTDB, NCBI},
@@ -324,7 +324,7 @@ impl ProfileHandler {
             .map(|value| value.as_ref().to_owned())
             .unwrap_or_else(|| inferred_taxonomy.clone());
 
-        info!(
+        debug!(
             "Profile format detected: {}; taxonomy: {}; path: {}",
             profile_format_label(&detected),
             taxonomy_label,
@@ -332,7 +332,7 @@ impl ProfileHandler {
         );
 
         if let Some(profile) = load_profile_from_normalized(path.as_ref(), &inferred_taxonomy) {
-            info!(
+            debug!(
                 "Loaded profile through unified normalization path; taxonomy: {}; path: {}",
                 taxonomy_label,
                 path.as_ref().display()
@@ -341,7 +341,7 @@ impl ProfileHandler {
         }
 
         if columns.is_some() {
-            info!(
+            debug!(
                 "Using explicit column mapping from meta; taxonomy: {}; path: {}",
                 taxonomy_label,
                 path.as_ref().display()

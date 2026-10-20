@@ -8,6 +8,7 @@ nav:
   - Overview: index.md
   - Installation: installation.md
   - Usage: usage.md
+  - Examples: examples.md
   - Input Formats: input-formats.md
   - Taxonomy Detection: taxonomy-detection.md
   - Metrics and Adjustments: metrics.md

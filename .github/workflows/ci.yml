@@ -16,5 +16,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
+      # The examples test runs the Justfile's example-* recipes.
+      - uses: extractions/setup-just@v2
       - name: Tests
         run: cargo test --locked

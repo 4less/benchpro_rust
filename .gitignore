@@ -33,4 +33,7 @@ tmp/
 
 # Local tool state and run output
 .codex
+.just-tui-cluster-state
 /results/
+/examples/*/output/
+/examples/*/no-such-folder/

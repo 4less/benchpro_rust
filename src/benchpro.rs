@@ -224,12 +224,13 @@ struct AbundanceMetrics {
     gold_std_tp: Vec<f64>,
 }
 
+/// Normalizes abundances to fractions; returns whether a percent-scale profile was rescaled.
 fn normalize_profile_or_panic(
     profile: &mut ProfileWrapper,
     path: &Path,
     label: &str,
     ignore_error: bool,
-) {
+) -> bool {
     let report = match profile.normalize_abundances_with_checks(ABUNDANCE_SUM_TOLERANCE) {
         Ok(report) => report,
         Err(e) => {
@@ -240,7 +241,7 @@ fn normalize_profile_or_panic(
                     path.display(),
                     e
                 );
-                return;
+                return false;
             }
             panic!(
                 "Abundance normalization failed for {} profile {}: {}",
@@ -251,14 +252,9 @@ fn normalize_profile_or_panic(
         }
     };
 
-    let any_pre_over = report
-        .pre_sums
-        .values()
-        .any(|sum| *sum > 1.0 + ABUNDANCE_SUM_TOLERANCE);
-
     if report.applied {
-        warn!(
-            "Normalized abundance scale for {} profile {} pre={:?} post={:?}",
+        debug!(
+            "Rescaled {} profile {} from percentages: pre={:?} post={:?}",
             label,
             path.display(),
             report.pre_sums,
@@ -266,15 +262,23 @@ fn normalize_profile_or_panic(
         );
     }
 
-    if any_pre_over {
+    // Percent-scale sums are expected before rescaling; only sums still above 1 are a problem.
+    let mut over = report
+        .post_sums
+        .iter()
+        .filter(|(_, sum)| **sum > 1.0 + ABUNDANCE_SUM_TOLERANCE)
+        .map(|(rank, sum)| format!("{} {:.3}", rank, sum))
+        .collect::<Vec<_>>();
+    if !over.is_empty() {
+        over.sort();
         warn!(
-            "Rank abundance sums exceed 1.0 for {} profile {} pre={:?} post={:?}",
+            "Abundances of {} profile {} sum to more than 1 at some ranks: {}",
             label,
             path.display(),
-            report.pre_sums,
-            report.post_sums
+            over.join(", ")
         );
     }
+    report.applied
 }
 
 fn compute_abundance_metrics(df: &DataFrame) -> PolarsResult<DataFrame> {
@@ -410,6 +414,7 @@ pub fn get_taxon_df(
     debug!("Number of profiles: {}", handler.prediction_map.len());
     debug!("Number of gold profiles: {}", handler.gold_std_map.len());
 
+    let mut rescaled = HashSet::new();
     let mut dfs: Vec<DataFrame> = Vec::default();
     let _dfs_with_taxa: Vec<DataFrame> = Vec::default();
 
@@ -445,18 +450,14 @@ pub fn get_taxon_df(
             let mut prediction = prediction.clone();
             let mut goldstd = goldstd.clone();
 
-            normalize_profile_or_panic(
-                &mut prediction,
-                &row.profile,
-                "prediction",
-                ignore_abundance_error,
-            );
-            normalize_profile_or_panic(
-                &mut goldstd,
-                &row.goldstd,
-                "gold standard",
-                ignore_abundance_error,
-            );
+            for (profile, path, label) in [
+                (&mut prediction, &row.profile, "prediction"),
+                (&mut goldstd, &row.goldstd, "gold standard"),
+            ] {
+                if normalize_profile_or_panic(profile, path, label, ignore_abundance_error) {
+                    rescaled.insert(path.clone());
+                }
+            }
 
             debug!("Dataset: {} ... {:?}", row.id, row.goldstd);
             let df = prediction.binary_classification(&goldstd, allow_alternatives);
@@ -522,6 +523,12 @@ pub fn get_taxon_df(
             }
         }
     }
+    if !rescaled.is_empty() {
+        info!(
+            "Rescaled {} profile(s) from percentages to fractions",
+            rescaled.len()
+        );
+    }
     if dfs.is_empty() {
         error!("No row could be evaluated; see the warnings above");
         exit(1);
@@ -555,10 +562,12 @@ pub fn meta_based_workflow(args: &CommonArgs) {
         Err(ProfileHandlerError::TaxonomyError(details)) => {
             error!("Taxonomy problems in the meta file:");
             details.lines().for_each(|line| error!("  {}", line));
-            error!(
-                "Fix: add or correct the Taxonomy column for these rows, or use \
-                 --taxonomy-index <DIR> to check names against GTDB/NCBI releases."
-            );
+            if details.contains("cannot tell the taxonomy") {
+                error!(
+                    "Fix: add a Taxonomy column (GTDB or NCBI) for these rows, or use \
+                     --taxonomy-index <DIR> to check names against GTDB/NCBI releases."
+                );
+            }
             exit(1);
         }
         Err(e) => {

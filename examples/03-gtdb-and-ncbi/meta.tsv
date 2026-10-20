@@ -1,0 +1,5 @@
+ID	Sample	Tool	Profile	ProfileColumns	GoldStd	GoldStdColumns
+sylph_4	gastrointestinal_4	sylph	data/test_data/profiles/predictions/sylph/Gastrointestinal_4.profile	X|0|1	data/test_data/profiles/gold_standard/GTDB/r214/abundance_4_gtdb.profile	0|1|2
+MetaPhlAn4_GTDB_4	gastrointestinal_4	MetaPhlAn4_GTDB	data/test_data/profiles/predictions/MetaPhlAn4/GTDB/r207/4.profile_gtdb.tsv	X|0|1	data/test_data/profiles/gold_standard/GTDB/r207/abundance_4_gtdb.profile	0|1|2
+MetaPhlAn4_4	gastrointestinal_4	MetaPhlAn4	data/test_data/profiles/predictions/MetaPhlAn4/4.profile.tsv	0|2|4|1	data/test_data/profiles/gold_standard/NCBI/taxonomic_profile_4.txt	0|2|4|1
+mOTUs3_4	gastrointestinal_4	mOTUs3	data/test_data/profiles/predictions/mOTUs3/4.profile.tsv	0|2|4|1	data/test_data/profiles/gold_standard/NCBI/taxonomic_profile_4.txt	0|2|4|1
