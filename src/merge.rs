@@ -993,8 +993,8 @@ d__Bacteria;p__Firmicutes;s__Foo\t97.5
 
         let output_content = fs::read_to_string(output).expect("Failed to read output");
         assert!(
-            output_content.contains("\ns__UNCLASSIFIED\t2.5")
-                || output_content.contains("\ns__UNCLASSIFIED\t2.500000"),
+            output_content.contains("s__UNCLASSIFIED\t2.5\n")
+                || output_content.contains("s__UNCLASSIFIED\t2.500000\n"),
             "Expected s__UNCLASSIFIED row in merged matrix, got:\n{}",
             output_content
         );
