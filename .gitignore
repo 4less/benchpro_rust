@@ -30,3 +30,7 @@ Thumbs.db
 # Logs / temporary files
 *.log
 tmp/
+
+# Local tool state and run output
+.codex
+/results/
