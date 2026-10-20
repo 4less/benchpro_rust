@@ -16,34 +16,38 @@ This is the classic format where each row corresponds to one prediction profile 
 - `ID`: Unique row identifier.
 - `Sample`: Sample name.
 - `Tool`: Tool name.
-- `Taxonomy`: Chooses parsing rules; values starting with `GTDB` or `NCBI` have special handling
-  (see [Taxonomy parsing](#taxonomy-parsing)).
 - `Profile`: Path to the prediction profile file.
 - `GoldStd`: Path to the gold standard profile file.
-- `GoldStdTree`: Path to a Newick tree of the gold standard taxa, or `NA` if you have none.
 
 ### Optional columns
 
-- `Dataset`: Required when running with `--adjusted`.
-- `ProfileColumns`, `GoldStdColumns`
-- `AvailableSpecies`: Path to a list of species the tool can detect, or `NA`.
+Leaving a column out, or leaving a cell empty, never fails silently: Benchpro reports what it
+inferred or skipped in `<outprefix>_inputs.tsv` (see [Usage](usage.md#outputs)).
+
+| Column | If missing or empty |
+|---|---|
+| `Taxonomy` | Inferred per file from its contents; see [Taxonomy detection](taxonomy-detection.md). Values starting with `GTDB` or `NCBI` choose the parsing rules. |
+| `GoldStdTree` | `NA`. `--adjusted` skips the row and says so. |
+| `AvailableSpecies` | `NA`. Detectability is `Unknown`; `--adjusted` warns that its results are more lenient. |
+| `Dataset` | `NA`. |
+| `ProfileColumns`, `GoldStdColumns` | Columns are auto-detected. |
 
 ### Rules
 
 - Column names are case-sensitive: `GoldStd`, not `goldstd`.
-- Every cell needs a value. Use `NA` for "no file" in `GoldStdTree` and `AvailableSpecies`;
-  empty cells are rejected with the row number.
+- Required cells must not be empty; empty required cells are rejected with the row number.
 - Paths are relative to the folder you run Benchpro from, not to the meta file.
 
 ### Minimal example (`meta.tsv`)
 
 ```
-ID	Sample	Tool	Taxonomy	Profile	GoldStd	GoldStdTree
-mpa_s1	s1	MetaPhlAn4	GTDB	profiles/mpa/s1.tsv	gold/s1.profile	NA
-mpa_s2	s2	MetaPhlAn4	GTDB	profiles/mpa/s2.tsv	gold/s2.profile	NA
+ID	Sample	Tool	Profile	GoldStd
+mpa_s1	s1	MetaPhlAn4	profiles/mpa/s1.tsv	gold/s1.profile
+mpa_s2	s2	MetaPhlAn4	profiles/mpa/s2.tsv	gold/s2.profile
 ```
 
-Run `benchpro profile --meta meta.tsv --validate-meta` to check the file before a full run.
+Run `benchpro profile --meta meta.tsv --validate-meta` to check the file and see the inferred
+taxonomy of each row before a full run.
 
 ### Column format strings
 

@@ -72,7 +72,10 @@ pub fn get_adjusted_benchmarks(
             ["ID"],
             ["ID"],
         )
-        .expect("Cannot join with meta-data");
+        .expect("Cannot join with meta-data")
+        .lazy()
+        .filter(col("GoldStdTree").neq(lit("NA")))
+        .collect()?;
 
     let mut taxon_to_type: HashMap<String, BC> = HashMap::new();
     let mut taxon_to_detectable: HashMap<String, bool> = HashMap::new();
@@ -263,6 +266,7 @@ mod tests {
             prediction_map: HashMap::new(),
             gold_std_map: HashMap::new(),
             available_taxa: HashMap::new(),
+            taxonomy_rows: Vec::new(),
         }
     }
 

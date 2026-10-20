@@ -15,6 +15,7 @@ use crate::{
     normalize_detect::detect_profile,
     normalize_loader::load_normalized_for_kind,
     profile::{LoadProfile, Profile, ProfileWrapper},
+    taxonomy_inference::{resolve_meta, InferenceOptions, RowTaxonomy},
     utils::load_file_lineages_to_hashset,
 };
 
@@ -33,6 +34,8 @@ pub enum ProfileHandlerError {
 #[derive(Default)]
 pub struct ProfileHandler {
     pub meta: Meta,
+    /// Taxonomy decision (given or inferred) and evidence for each meta row.
+    pub taxonomy_rows: Vec<RowTaxonomy>,
     pub prediction_map: HashMap<String, ProfileWrapper>,
     pub gold_std_map: HashMap<String, ProfileWrapper>,
     pub available_taxa: HashMap<String, HashSet<String>>,
@@ -550,12 +553,43 @@ impl ProfileHandler {
     ///
     /// Returns `ProfileHandlerError` when meta parsing fails.
     pub fn from_meta(path: impl AsRef<Path>) -> Result<Self, ProfileHandlerError> {
+        Self::from_meta_with(path, &InferenceOptions::default())
+    }
+
+    /// Builds a handler, resolving missing or given taxonomies before loading profiles.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Meta file path
+    /// * `options` - Taxonomy inference options
+    ///
+    /// # Returns
+    ///
+    /// Loaded `ProfileHandler` with taxonomy decisions in `taxonomy_rows`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProfileHandlerError::TaxonomyError` listing every row whose taxonomy cannot
+    /// be determined or does not match between prediction and gold standard.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let handler = ProfileHandler::from_meta_with("meta.tsv", &InferenceOptions::default())?;
+    /// ```
+    pub fn from_meta_with(
+        path: impl AsRef<Path>,
+        options: &InferenceOptions,
+    ) -> Result<Self, ProfileHandlerError> {
         let polars_df = Meta::polars_from_path(&path)
             .map_err(|e| ProfileHandlerError::GenericError(e.to_string()))?;
-        let meta = Meta::from_polars_df(polars_df)
+        let mut meta = Meta::from_polars_df(polars_df)
             .map_err(|e| ProfileHandlerError::GenericError(e.to_string()))?;
+        let taxonomy_rows =
+            resolve_meta(&mut meta, options).map_err(ProfileHandlerError::TaxonomyError)?;
 
         let mut res = Self::default();
+        res.taxonomy_rows = taxonomy_rows;
         let _ = res.load_prediction_profiles(&meta, "Profile", "Taxonomy", "ProfileColumns");
         let _ = res.load_gold_profiles(&meta, "GoldStd", "Taxonomy", "GoldStdColumns");
         let _ = res.load_available_taxa(&meta);

@@ -136,6 +136,43 @@ pub struct CommonArgs {
     /// Ignore CAMI lineage length mismatches (use last lineage token as name)
     #[arg(long, default_value_t = false)]
     pub cami_ignore_lineage_error: bool,
+
+    /// Folder with taxdet indexes (gtdb_index/, ncbi_index/) used to confirm the taxonomy
+    /// and find the release of each profile. Default: ~/.taxdet/index if it exists.
+    #[arg(long, value_name = "DIR")]
+    pub taxonomy_index: Option<PathBuf>,
+
+    /// Do not use a taxonomy index, even if ~/.taxdet/index exists.
+    #[arg(long, default_value_t = false, conflicts_with = "taxonomy_index")]
+    pub no_taxonomy_index: bool,
+
+    /// Continue when a prediction and its gold standard appear to use different taxonomies.
+    #[arg(long, default_value_t = false)]
+    pub allow_taxonomy_mismatch: bool,
+}
+
+impl CommonArgs {
+    /// Taxonomy index folder to use: `--taxonomy-index`, else `~/.taxdet/index` if present.
+    ///
+    /// # Returns
+    ///
+    /// Index folder, or `None` when disabled or not found.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let dir = args.resolved_taxonomy_index();
+    /// ```
+    pub fn resolved_taxonomy_index(&self) -> Option<PathBuf> {
+        if self.no_taxonomy_index {
+            return None;
+        }
+        if let Some(dir) = &self.taxonomy_index {
+            return Some(dir.clone());
+        }
+        let default = PathBuf::from(std::env::var_os("HOME")?).join(".taxdet/index");
+        default.is_dir().then_some(default)
+    }
 }
 
 /// CLI arguments for the `merge` subcommand.

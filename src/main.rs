@@ -16,6 +16,7 @@ pub mod options;
 pub mod profile;
 pub mod profile_handler;
 pub mod taxonomic_profiling;
+pub mod taxonomy_inference;
 pub mod taxonomy;
 pub mod test_data;
 pub mod tree_adjusted_benchmarks;

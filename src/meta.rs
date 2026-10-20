@@ -161,15 +161,49 @@ pub struct MetaEntry {
 }
 
 impl Meta {
-    const REQUIRED_FIELDS: &[&str] = &[
-        "ID",
-        "Sample",
-        "Tool",
-        "Taxonomy",
-        "Profile",
-        "GoldStd",
-        "GoldStdTree",
-    ];
+    const REQUIRED_FIELDS: &[&str] = &["ID", "Sample", "Tool", "Profile", "GoldStd"];
+
+    /// Optional per-sample columns that default to `NA` when absent or empty.
+    const NA_DEFAULT_FIELDS: &[&str] = &["Dataset", "GoldStdTree", "AvailableSpecies"];
+
+    /// Adds missing optional columns and replaces empty cells in them.
+    ///
+    /// `Dataset`, `GoldStdTree` and `AvailableSpecies` default to `NA`. `Taxonomy` defaults
+    /// to an empty string, meaning "infer from the profile". `TaxonomySource` records
+    /// `given` for rows with a Taxonomy value.
+    fn fill_optional_columns(mut meta: DataFrame) -> Result<DataFrame, MetaError> {
+        let height = meta.height();
+        let values_or = |meta: &DataFrame, name: &str, default: &str| -> Vec<String> {
+            match meta.column(name).ok().and_then(|c| c.str().ok()) {
+                Some(values) => values
+                    .iter()
+                    .map(|v| match v.map(str::trim) {
+                        Some(v) if !v.is_empty() => v.to_string(),
+                        _ => default.to_string(),
+                    })
+                    .collect(),
+                None => vec![default.to_string(); height],
+            }
+        };
+        let to_error = |e: polars::error::PolarsError| MetaError::DataError(e.to_string());
+
+        for &name in Self::NA_DEFAULT_FIELDS {
+            let values = values_or(&meta, name, "NA");
+            meta.with_column(Series::new(name.into(), values))
+                .map_err(to_error)?;
+        }
+
+        let taxonomy = values_or(&meta, MetaColumnStrings::TAXONOMY, "");
+        let source = taxonomy
+            .iter()
+            .map(|t| if t.is_empty() { "" } else { "given" })
+            .collect::<Vec<_>>();
+        meta.with_column(Series::new(MetaColumnStrings::TAXONOMY.into(), taxonomy))
+            .map_err(to_error)?;
+        meta.with_column(Series::new("TaxonomySource".into(), source))
+            .map_err(to_error)?;
+        Ok(meta)
+    }
 
     /// Checks that all required per-sample meta columns are present.
     ///
@@ -240,6 +274,7 @@ impl Meta {
         }
         Self::check_required_columns(&meta)?;
         let meta = Self::meta_columns_as_strings(meta)?;
+        let meta = Self::fill_optional_columns(meta)?;
         let mut entries = vec![MetaEntry::default(); meta.height()];
 
         debug!("Height: {} .. {}", meta.height(), entries.len());
@@ -256,15 +291,17 @@ impl Meta {
 
             if let Ok(cs) = column_series {
                 for (row_index, entry) in cs.str().unwrap().iter().enumerate() {
-                    let entry = entry.ok_or_else(|| {
-                        MetaError::DataError(format!(
-                            "Meta file row {}: column '{}' is empty. Fill it in, or write NA \
-                             if the column allows missing values (GoldStdTree, \
-                             AvailableSpecies).",
+                    let Some(entry) = entry else {
+                        if !Self::REQUIRED_FIELDS.contains(&col.to_str()) {
+                            continue;
+                        }
+                        return Err(MetaError::DataError(format!(
+                            "Meta file row {}: column '{}' is empty. This column is required \
+                             for every row.",
                             row_index + 2,
                             col.to_str()
-                        ))
-                    })?;
+                        )));
+                    };
                     let meta_entry = &mut entries[row_index];
                     match col {
                         MetaColumn::ID => meta_entry.id = entry.to_string(),
@@ -1223,7 +1260,7 @@ mod tests {
     #[test]
     fn test_missing_columns_are_named_with_case_hint() {
         let mut row = full_row();
-        row.retain(|(name, _)| *name != "Taxonomy");
+        row.retain(|(name, _)| *name != "Sample");
         row.iter_mut()
             .filter(|(name, _)| *name == "GoldStd")
             .for_each(|entry| entry.0 = "goldstd");
@@ -1232,7 +1269,7 @@ mod tests {
             .err()
             .unwrap()
             .to_string();
-        assert!(err.contains("Taxonomy"), "{}", err);
+        assert!(err.contains("Sample"), "{}", err);
         assert!(err.contains("GoldStd (found 'goldstd'"), "{}", err);
     }
 
@@ -1270,5 +1307,22 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("must end in .xlsx, .csv or .tsv"), "{}", err);
+    }
+
+    #[test]
+    fn test_optional_columns_default_to_na_and_empty_taxonomy() {
+        let row = full_row()
+            .into_iter()
+            .filter(|(name, _)| !["Taxonomy", "GoldStdTree"].contains(name))
+            .collect::<Vec<_>>();
+
+        let meta = Meta::from_polars_df(per_sample_df(&row)).unwrap();
+        assert_eq!(meta.entries[0].taxonomy, "");
+        assert_eq!(meta.entries[0].goldstd_tree, None);
+        assert_eq!(meta.entries[0].taxa_list, None);
+        assert_eq!(meta.entries[0].dataset.as_deref(), Some("NA"));
+        for column in ["Dataset", "GoldStdTree", "AvailableSpecies", "TaxonomySource"] {
+            assert!(meta.raw.column(column).is_ok(), "missing {}", column);
+        }
     }
 }

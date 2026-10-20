@@ -9,6 +9,7 @@ nav:
   - Installation: installation.md
   - Usage: usage.md
   - Input Formats: input-formats.md
+  - Taxonomy Detection: taxonomy-detection.md
   - Metrics and Adjustments: metrics.md
 
 theme:

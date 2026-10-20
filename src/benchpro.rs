@@ -1,4 +1,11 @@
-use std::{collections::HashMap, fs::File, iter::repeat, path::Path, process::exit, sync::Mutex};
+use std::{
+    collections::{HashMap, HashSet},
+    fs::File,
+    iter::repeat,
+    path::Path,
+    process::exit,
+    sync::Mutex,
+};
 
 use itertools::{izip, Itertools};
 use log::{debug, error, info, warn};
@@ -18,7 +25,10 @@ use crate::{
     meta::{Meta, MetaColumn},
     options::CommonArgs,
     profile::{ProfileWrapper, ABUNDANCE_SUM_TOLERANCE},
-    profile_handler::ProfileHandler,
+    profile_handler::{ProfileHandler, ProfileHandlerError},
+    taxonomy_inference::{
+        describe_versions, resolve_meta, FileInference, InferenceOptions, RowTaxonomy,
+    },
     tree_adjusted_benchmarks::get_adjusted_benchmarks,
     tree_handler::TreeHandler,
     utils::{
@@ -97,7 +107,7 @@ fn validate_meta_only(args: &CommonArgs) {
         }
     };
 
-    let meta = match Meta::from_path(meta_path) {
+    let mut meta = match Meta::from_path(meta_path) {
         Ok(meta) => meta,
         Err(err) => {
             error!("Meta validation failed: {}", err);
@@ -108,6 +118,23 @@ fn validate_meta_only(args: &CommonArgs) {
     if let Err(err) = meta.validate_paths() {
         error!("Meta validation failed: {}", err);
         exit(1);
+    }
+
+    match resolve_meta(&mut meta, &inference_options(args)) {
+        Ok(rows) => {
+            for row in &rows {
+                info!(
+                    "Row '{}': Taxonomy {} ({})",
+                    row.id, row.taxonomy, row.source
+                );
+            }
+            log_taxonomy_warnings(&rows, &meta);
+        }
+        Err(details) => {
+            error!("Meta validation failed: taxonomy problems in the meta file:");
+            details.lines().for_each(|line| error!("  {}", line));
+            exit(1);
+        }
     }
 
     info!("Meta validation succeeded");
@@ -397,8 +424,21 @@ pub fn get_taxon_df(
                 .expect("Should be loaded...")
         });
 
-        if prediction.is_some() && !goldstd.is_some() {
-            warn!("Missing gold standard for row: {:?}", row);
+        let not_loaded = match (prediction.is_some(), goldstd.is_some()) {
+            (true, true) => None,
+            (false, true) => Some(format!("prediction '{}'", row.profile.display())),
+            (true, false) => Some(format!("gold standard '{}'", row.goldstd.display())),
+            (false, false) => Some(format!(
+                "prediction '{}' and gold standard '{}'",
+                row.profile.display(),
+                row.goldstd.display()
+            )),
+        };
+        if let Some(what) = not_loaded {
+            warn!(
+                "Row '{}' not evaluated: {} could not be loaded (see the error above)",
+                row.id, what
+            );
         }
 
         if let (Some(prediction), Some(goldstd)) = (prediction, goldstd) {
@@ -420,6 +460,9 @@ pub fn get_taxon_df(
 
             debug!("Dataset: {} ... {:?}", row.id, row.goldstd);
             let df = prediction.binary_classification(&goldstd, allow_alternatives);
+            if let Err(e) = &df {
+                warn!("Row '{}' not evaluated: {}", row.id, e);
+            }
 
             if let Ok(mut df) = df {
                 let _ = df.with_column(Series::new(
@@ -479,6 +522,10 @@ pub fn get_taxon_df(
             }
         }
     }
+    if dfs.is_empty() {
+        error!("No row could be evaluated; see the warnings above");
+        exit(1);
+    }
     let complete_df = if dfs.len() > 1 {
         dfs.into_iter()
             .reduce(|df1, df2| df1.vstack(&df2).unwrap())
@@ -503,24 +550,24 @@ pub fn meta_based_workflow(args: &CommonArgs) {
         .as_deref()
         .expect("--outprefix is required unless --validate-meta is used");
 
-    let handler = match ProfileHandler::from_meta(path) {
+    let handler = match ProfileHandler::from_meta_with(path, &inference_options(args)) {
         Ok(handler) => handler,
+        Err(ProfileHandlerError::TaxonomyError(details)) => {
+            error!("Taxonomy problems in the meta file:");
+            details.lines().for_each(|line| error!("  {}", line));
+            error!(
+                "Fix: add or correct the Taxonomy column for these rows, or use \
+                 --taxonomy-index <DIR> to check names against GTDB/NCBI releases."
+            );
+            exit(1);
+        }
         Err(e) => {
             error!("Failed to load meta file '{}': {}", path.display(), e);
             exit(1);
         }
     };
-
-    if args.adjusted
-        && handler
-            .meta
-            .raw
-            .column(MetaColumn::Dataset.to_str())
-            .is_err()
-    {
-        error!("--adjusted needs a 'Dataset' column in the meta file");
-        exit(2);
-    }
+    let mut warning_count = report_taxonomy(&handler);
+    warning_count += check_adjusted_inputs(args, &handler.meta);
 
     let tree_handler = match TreeHandler::from_meta(&handler.meta) {
         Ok(th) => th,
@@ -665,6 +712,8 @@ pub fn meta_based_workflow(args: &CommonArgs) {
         .expect("Cannot sort summary output");
 
     // Open the file for writing
+    warning_count += check_results(&newdf);
+
     let file_name_bc = format!("{}.tsv", outprefix);
     let file_path: &Path = Path::new(&file_name_bc);
     let mut file = File::create(file_path).expect("Could not create file");
@@ -677,8 +726,404 @@ pub fn meta_based_workflow(args: &CommonArgs) {
         .finish(&mut newdf);
 
     debug!("NEWDF {}", newdf);
-    info!("File written to: {}", file_name_detailed);
-    info!("File written to: {}", file_name_bc);
+    let file_name_inputs = format!("{}_inputs.tsv", outprefix);
+    if let Err(e) = write_inputs_report(&file_name_inputs, &handler, args) {
+        warn!("Could not write {}: {}", file_name_inputs, e);
+        warning_count += 1;
+    }
+
+    let rows = handler.meta.entries.len();
+    let inferred = handler
+        .taxonomy_rows
+        .iter()
+        .filter(|r| r.source == "inferred")
+        .count();
+    let adjusted = handler
+        .meta
+        .entries
+        .iter()
+        .filter(|e| e.goldstd_tree.is_some())
+        .count();
+    let evaluated = newdf
+        .column("ID")
+        .ok()
+        .and_then(|c| c.str().ok())
+        .map(|c| {
+            c.into_iter()
+                .flatten()
+                .map(str::to_string)
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+    let not_evaluated = handler
+        .meta
+        .entries
+        .iter()
+        .filter(|e| !evaluated.contains(&e.id))
+        .map(|e| e.id.as_str())
+        .collect::<Vec<_>>();
+    info!(
+        "Done: {} rows, taxonomy given for {}, inferred for {}",
+        rows,
+        rows - inferred,
+        inferred
+    );
+    if !not_evaluated.is_empty() {
+        warn!(
+            "{} row(s) not evaluated (reasons in the warnings above): {}. For CAMI lineage \
+             length errors, add ProfileColumns/GoldStdColumns or use --cami-ignore-lineage-error",
+            not_evaluated.len(),
+            preview(&not_evaluated)
+        );
+        warning_count += 1;
+    }
+    if args.adjusted {
+        info!(
+            "Adjusted: {} rows, skipped {} (no GoldStdTree)",
+            adjusted,
+            rows - adjusted
+        );
+    }
+    info!("Warnings: {}", warning_count);
+    info!("Summary:  {}", file_name_bc);
+    info!("Per taxon: {}", file_name_detailed);
+    info!(
+        "Inputs (what was given, inferred and skipped): {}",
+        file_name_inputs
+    );
+}
+
+fn inference_options(args: &CommonArgs) -> InferenceOptions {
+    InferenceOptions {
+        index_dir: args.resolved_taxonomy_index(),
+        allow_taxonomy_mismatch: args.allow_taxonomy_mismatch,
+    }
+}
+
+/// Logs inferred taxonomies and grouped warnings; returns the number of warning lines.
+fn report_taxonomy(handler: &ProfileHandler) -> usize {
+    let mut inferred: Vec<(&str, &str)> = handler
+        .taxonomy_rows
+        .iter()
+        .filter(|r| r.source == "inferred")
+        .map(|r| (r.taxonomy.as_str(), r.id.as_str()))
+        .collect();
+    inferred.sort();
+    for (taxonomy, group) in &inferred.iter().chunk_by(|(taxonomy, _)| *taxonomy) {
+        let ids = group.map(|(_, id)| *id).collect::<Vec<_>>();
+        info!(
+            "Taxonomy inferred as {} for {} row(s): {}",
+            taxonomy,
+            ids.len(),
+            preview(&ids)
+        );
+    }
+    log_taxonomy_warnings(&handler.taxonomy_rows, &handler.meta)
+}
+
+/// Logs one line per warning kind (rows, tools, one example); details go to `_inputs.tsv`.
+///
+/// # Arguments
+///
+/// * `rows` - Taxonomy decisions per meta row
+/// * `meta` - Parsed meta table, used to name the tools involved
+///
+/// # Returns
+///
+/// Number of warning lines logged.
+fn log_taxonomy_warnings(rows: &[RowTaxonomy], meta: &Meta) -> usize {
+    let tool_of = meta
+        .entries
+        .iter()
+        .map(|e| (e.id.as_str(), e.tool.as_str()))
+        .collect::<HashMap<_, _>>();
+    let mut kinds: Vec<&str> = Vec::new();
+    let mut by_kind: HashMap<&str, Vec<(&str, &str)>> = HashMap::new();
+    for row in rows {
+        for warning in &row.warnings {
+            if !by_kind.contains_key(warning.kind) {
+                kinds.push(warning.kind);
+            }
+            by_kind
+                .entry(warning.kind)
+                .or_default()
+                .push((row.id.as_str(), warning.message.as_str()));
+        }
+    }
+    for kind in &kinds {
+        let items = &by_kind[kind];
+        let tools = items
+            .iter()
+            .map(|(id, _)| tool_of.get(id).copied().unwrap_or("?"))
+            .unique()
+            .collect::<Vec<_>>();
+        warn!(
+            "{}: {} row(s), tools {}. Example: {}",
+            kind,
+            items.iter().map(|(id, _)| id).unique().count(),
+            preview(&tools),
+            items[0].1
+        );
+    }
+    if !kinds.is_empty() {
+        warn!("Per-row details: Warnings column of <outprefix>_inputs.tsv");
+    }
+    kinds.len()
+}
+
+/// Checks which rows `--adjusted` can run on; exits when none can.
+///
+/// # Arguments
+///
+/// * `args` - CLI arguments
+/// * `meta` - Parsed meta table
+///
+/// # Returns
+///
+/// Number of warnings logged.
+fn check_adjusted_inputs(args: &CommonArgs, meta: &Meta) -> usize {
+    if !args.adjusted {
+        return 0;
+    }
+    let without_tree = meta
+        .entries
+        .iter()
+        .filter(|e| e.goldstd_tree.is_none())
+        .map(|e| e.id.as_str())
+        .collect::<Vec<_>>();
+    if without_tree.len() == meta.entries.len() {
+        error!("--adjusted needs a GoldStdTree for at least one row; none has one");
+        exit(2);
+    }
+    let mut warnings = 0;
+    if !without_tree.is_empty() {
+        warn!(
+            "--adjusted skips {} row(s) without GoldStdTree: {}",
+            without_tree.len(),
+            preview(&without_tree)
+        );
+        warnings += 1;
+    }
+    let lenient = meta
+        .entries
+        .iter()
+        .filter(|e| e.goldstd_tree.is_some() && e.taxa_list.is_none())
+        .map(|e| e.id.as_str())
+        .collect::<Vec<_>>();
+    if !lenient.is_empty() {
+        warn!(
+            "{} adjusted row(s) have no AvailableSpecies, so every FN counts as undetectable \
+             and adjusted results are more lenient: {}",
+            lenient.len(),
+            preview(&lenient)
+        );
+        warnings += 1;
+    }
+    warnings
+}
+
+/// Formats up to five items, noting how many more there are.
+fn preview(items: &[&str]) -> String {
+    let shown = items.iter().take(5).copied().collect::<Vec<_>>().join(", ");
+    match items.len() {
+        n if n > 5 => format!("{} and {} more", shown, n - 5),
+        _ => shown,
+    }
+}
+
+/// Warns about results that usually mean a naming or taxonomy problem, not a bad tool.
+///
+/// # Arguments
+///
+/// * `summary` - Summary DataFrame
+///
+/// # Returns
+///
+/// Number of warnings logged.
+fn check_results(summary: &DataFrame) -> usize {
+    let zero_tp = summary
+        .clone()
+        .lazy()
+        .filter(
+            col("Rank")
+                .eq(lit(TaxonomicRank::Species.to_string()))
+                .and(col("AllowAlternatives").eq(lit(false)))
+                .and(col("Adjusted").eq(lit("False")))
+                .and(col("TP").eq(lit(0))),
+        )
+        .select([col("ID")])
+        .collect();
+    let Ok(zero_tp) = zero_tp else {
+        return 0;
+    };
+    let ids = zero_tp
+        .column("ID")
+        .ok()
+        .and_then(|c| c.str().ok())
+        .map(|c| {
+            c.into_iter()
+                .flatten()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if ids.is_empty() {
+        return 0;
+    }
+    warn!(
+        "{} row(s) have 0 true positives at species level. This usually means the prediction \
+         and gold standard name species differently (taxonomy or release mismatch): {}",
+        ids.len(),
+        preview(&ids.iter().map(String::as_str).collect::<Vec<_>>())
+    );
+    1
+}
+
+/// Writes one row per meta entry describing what was given, inferred, loaded and skipped.
+///
+/// # Arguments
+///
+/// * `path` - Output file path
+/// * `handler` - Loaded profiles and taxonomy decisions
+/// * `args` - CLI arguments
+///
+/// # Returns
+///
+/// `Ok(())` when the file is written.
+///
+/// # Errors
+///
+/// Returns a Polars error when the file cannot be created or written.
+fn write_inputs_report(
+    path: &str,
+    handler: &ProfileHandler,
+    args: &CommonArgs,
+) -> PolarsResult<()> {
+    let mut columns: Vec<(&str, Vec<String>)> = [
+        "ID",
+        "Sample",
+        "Tool",
+        "Profile",
+        "GoldStd",
+        "Taxonomy",
+        "TaxonomySource",
+        "ProfileTaxonomy",
+        "ProfileConfidence",
+        "ProfileRelease",
+        "ProfileEvidence",
+        "GoldStdTaxonomy",
+        "GoldStdConfidence",
+        "GoldStdRelease",
+        "GoldStdEvidence",
+        "ProfileLoaded",
+        "ProfileSpecies",
+        "GoldStdLoaded",
+        "GoldStdSpecies",
+        "GoldStdTree",
+        "AvailableSpecies",
+        "Adjusted",
+        "Warnings",
+    ]
+    .into_iter()
+    .map(|name| (name, Vec::new()))
+    .collect();
+
+    let taxonomy_by_id = handler
+        .taxonomy_rows
+        .iter()
+        .map(|r| (r.id.as_str(), r))
+        .collect::<HashMap<_, _>>();
+    let describe = |f: Option<&FileInference>| -> [String; 4] {
+        match f {
+            None => ["unreadable".into(), "none".into(), "".into(), "".into()],
+            Some(f) => [
+                f.family.map_or("unknown".to_string(), |x| x.to_string()),
+                f.confidence.to_string(),
+                match f.release_candidates.len() {
+                    0 => String::new(),
+                    _ => describe_versions(&f.release_candidates),
+                },
+                f.evidence.clone(),
+            ],
+        }
+    };
+    let loaded = |map: &HashMap<String, ProfileWrapper>, p: &Path| -> [String; 2] {
+        match map.get(p.to_str().unwrap_or_default()) {
+            None => ["no".into(), "".into()],
+            Some(profile) => [
+                "yes".into(),
+                profile
+                    .taxa(&TaxonomicRank::Species)
+                    .map_or(0, |t| t.len())
+                    .to_string(),
+            ],
+        }
+    };
+
+    for entry in &handler.meta.entries {
+        let row = taxonomy_by_id.get(entry.id.as_str());
+        let [pt, pc, pr, pe] = describe(row.and_then(|r| r.profile.as_ref()));
+        let [gt, gc, gr, ge] = describe(row.and_then(|r| r.goldstd.as_ref()));
+        let [pl, ps] = loaded(&handler.prediction_map, &entry.profile);
+        let [gl, gs] = loaded(&handler.gold_std_map, &entry.goldstd);
+        let path_or_na = |p: &Option<std::path::PathBuf>| {
+            p.as_ref()
+                .map_or("NA".to_string(), |p| p.display().to_string())
+        };
+        let adjusted = match (args.adjusted, &entry.goldstd_tree) {
+            (false, _) => "not requested",
+            (true, None) => "skipped: no GoldStdTree",
+            (true, Some(_)) if entry.taxa_list.is_none() => "run (lenient: no AvailableSpecies)",
+            (true, Some(_)) => "run",
+        };
+        let values = [
+            entry.id.clone(),
+            entry.sample.clone(),
+            entry.tool.clone(),
+            entry.profile.display().to_string(),
+            entry.goldstd.display().to_string(),
+            entry.taxonomy.clone(),
+            row.map_or(String::new(), |r| r.source.clone()),
+            pt,
+            pc,
+            pr,
+            pe,
+            gt,
+            gc,
+            gr,
+            ge,
+            pl,
+            ps,
+            gl,
+            gs,
+            path_or_na(&entry.goldstd_tree),
+            path_or_na(&entry.taxa_list),
+            adjusted.to_string(),
+            row.map_or(String::new(), |r| {
+                r.warnings
+                    .iter()
+                    .map(|w| w.message.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            }),
+        ];
+        for ((_, column), value) in columns.iter_mut().zip(values) {
+            column.push(value.replace(['\t', '\n'], " "));
+        }
+    }
+
+    let mut df = DataFrame::new(
+        columns
+            .into_iter()
+            .map(|(name, values)| Series::new(name.into(), values))
+            .collect(),
+    )?;
+    let mut file = File::create(path)?;
+    CsvWriter::new(&mut file)
+        .include_header(true)
+        .with_separator(b'\t')
+        .with_quote_style(QuoteStyle::Never)
+        .finish(&mut df)
 }
 
 #[cfg(test)]

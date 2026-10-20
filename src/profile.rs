@@ -1132,10 +1132,12 @@ impl<T: Taxonomy> Profile<T> {
             }
         }
 
-        let mut joined_df = dfs
-            .into_iter()
-            .reduce(|df1, df2| df1.vstack(&df2).unwrap())
-            .unwrap();
+        let Some(mut joined_df) = dfs.into_iter().reduce(|df1, df2| df1.vstack(&df2).unwrap())
+        else {
+            return Err(polars::error::PolarsError::ComputeError(
+                "prediction and gold standard have no taxon names at any common rank".into(),
+            ));
+        };
         joined_df.with_column(Series::new(
             "AllowAlternatives".into(),
             std::iter::repeat(false)
